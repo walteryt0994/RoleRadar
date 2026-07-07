@@ -22,6 +22,19 @@ Completed:
 - Added a JD text area and character counter
 - Verified backend and frontend locally
 
+### Day 2
+
+Completed:
+
+- Added `requests` to the frontend dependencies
+- Connected the Streamlit frontend to the FastAPI `/parse-jd` endpoint
+- Added an `Analyze JD` button
+- Sent JD text from the frontend to the backend using a POST request
+- Displayed detected skills in the frontend
+- Added a warning for empty JD input
+- Committed the Day 2 frontend-backend integration
+
+
 ## Tech Stack
 
 - Python
