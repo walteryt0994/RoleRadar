@@ -1,5 +1,7 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+from app.parser import extract_skills
+
 
 class JobDescription(BaseModel):
     text:str
@@ -10,29 +12,6 @@ app = FastAPI(
     description="Backend API for RoleRadar job intelligence and skill-gap analysis.",
 )
 
-KNOWN_SKILLS = [
-    "Python",
-    "SQL",
-    "JavaScript",
-    "Java",
-    "C++",
-    "AWS",
-    "Docker",
-    "Kubernetes",
-    "Excel",
-    "Tableau",
-    "Power BI",
-    "Machine Learning",
-    "Deep Learning",
-    "NLP",
-    "Computer Vision",
-    "Data Analysis",
-    "Data Visualization",
-    "Data Engineering",
-    "DevOps",
-    "Agile Methodologies",
-    "Project Management",
-]
 
 @app.get("/")
 def read_root():
@@ -44,13 +23,8 @@ def health_check():
 
 @app.post("/parse-jd")
 def parse_jd(payload: JobDescription):
-    known_skills = KNOWN_SKILLS
-    found_skills = []
 
-    for skill in known_skills:
-        if skill.lower() in payload.text.lower():
-            found_skills.append(skill)
-
+    found_skills = extract_skills(payload.text)
 
     return{"message": "JD parser endpoint is ready" ,
            "jd_text_length": len(payload.text),

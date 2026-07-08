@@ -34,6 +34,18 @@ Completed:
 - Added a warning for empty JD input
 - Committed the Day 2 frontend-backend integration
 
+### Day 3
+
+Completed:
+
+- Refactored JD parsing logic into a separate parser module
+- Added `backend/app/parser.py`
+- Moved `KNOWN_SKILLS` into the parser module
+- Added `extract_skills()` helper function
+- Updated `/parse-jd` to call `extract_skills()`
+- Verified the FastAPI `/parse-jd` endpoint after refactor
+- Verified the Streamlit frontend still displays detected skills
+
 
 ## Tech Stack
 
