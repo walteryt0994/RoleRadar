@@ -46,6 +46,19 @@ Completed:
 - Verified the FastAPI `/parse-jd` endpoint after refactor
 - Verified the Streamlit frontend still displays detected skills
 
+### Day 4
+
+Completed:
+
+- Started Stage 2 : SkillMap and FitScore preparation
+- Added a user skills input field to the Streamlit frontend
+- Parsed comma-separated user skills into a Python list
+- Trimmed extra spaces from user skill input
+- Filtered out empty skill entries
+- Displayed user skills in the frontend
+- Verified the existing JD skill extraction still works after the frontend update
+- Committed and pushed the Day 4 user skills input features
+
 
 ## Tech Stack
 
@@ -115,8 +128,10 @@ http://localhost:8501
 
 ## Current Notes
 
-The backend and frontend both run locally, but they are not connected yet.
+The backend and frontend run locally and are connected through the FastAPI `/parse-jd` endpoint.
 
-Next step:
+Current focus:
 
-- Connect the Streamlit frontend to the FastAPI `/parse-jd` endpoint.
+- Stage 2: SkillMap and FitScore
+- User skills input has been added to the frontend
+- Next step: compare detected JD skills with user skills
