@@ -10,6 +10,12 @@ st.write("Job intelligence & Skill-Gap Analysis Platform")
 jd_text = st.text_area("Paste the job description here:")
 st.write("Characters:", len(jd_text))
 
+user_skills_text = st.text_input("Enter your skills, separated by commas:")
+user_skills = [skill.strip() for skill in user_skills_text.split(",") if skill.strip()]
+
+if user_skills:
+    st.write("Your skills:", user_skills)
+
 # Core logic to send the job description to the backend API and display the detected skills
 
 if st.button("Analyze JD"):  #create a button to trigger the analysis
