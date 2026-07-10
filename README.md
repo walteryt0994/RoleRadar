@@ -59,6 +59,20 @@ Completed:
 - Verified the existing JD skill extraction still works after the frontend update
 - Committed and pushed the Day 4 user skills input features
 
+### Day 5
+
+Completed:
+
+- Started comparing detected JD skills with user skills
+- Added `jd_skills` as a named frontend variable from the `parse-jd` response
+- Added case-insensitive matching between JD skills and user skills
+- Displayed matched skills in the Streamlit frontend
+- Displayed missing skills in the Streamlit frontend
+- Added empty-state messages for no matched skills and no missing skills
+- Improved user skills display formatting
+- Kept the comparison logic in the frontend for now
+- Did not implement FitScore yet
+
 
 ## Tech Stack
 
