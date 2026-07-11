@@ -76,26 +76,50 @@ if st.button("Analyze JD"):  # create a button to trigger the analysis
         ]
 
         # ----------------------------------------
-        # display the detected skills
+        # fit_score calculation
         # ----------------------------------------
 
+        if jd_skills:
+            fit_score = len(matched_skills) / len(jd_skills) * 100
+        else:
+            fit_score = 0
+
+        # ----------------------------------------
+        # display the detected skills
+        # ----------------------------------------
+        st.write("Fit Score:",f"{fit_score:.0f}%")
+
+
+
+
         st.write("Detected Skills:")
-    
-        for skill in jd_skills:
-            st.write("-", skill)
-
-        st.write("Matched Skills:")
-
-        if matched_skills:
-            for skill in matched_skills:
-                st.write("-", skill)
+        
+        if not jd_skills:
+            st.write("No known skills were detected in the job description.")
         else:
-            st.write("You don't have any of the required skills for this job description.") 
-
-        st.write("Missing Skills:")
-
-        if missing_skills:
-            for skill in missing_skills:
+            for skill in jd_skills:
                 st.write("-", skill)
-        else:
-            st.write("Congratulations! You have all the required skills for this job description.") 
+       
+
+
+            st.write("Matched Skills:")
+
+            if matched_skills:
+                for skill in matched_skills:
+                    st.write("-", skill)
+            else:
+                st.write("You don't have any of the required skills for this job description.") 
+
+
+
+
+            st.write("Missing Skills:")
+
+            if missing_skills:
+                for skill in missing_skills:
+                    st.write("-", skill)
+            else:
+                st.write("Congratulations! You have all the required skills for this job description.") 
+            
+
+        

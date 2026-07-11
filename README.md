@@ -73,6 +73,20 @@ Completed:
 - Kept the comparison logic in the frontend for now
 - Did not implement FitScore yet
 
+### Day 6
+
+Completed:
+
+- Added a basic FitScore calculation
+- Calculated FitScore from matched skills and detected JD skills
+- Formatted FitScore as a rounded percentage
+- Added protection against division by ZERO
+- Added an empty state when no known skills are detected
+- Hid matched and missing skill sections when no JD skills are detected
+- Verified partial-match, full-match, and empty-detection scenarios
+- Kept FitScore calculation in the Streamlit frontend for now 
+
+
 
 ## Tech Stack
 
