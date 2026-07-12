@@ -86,6 +86,22 @@ Completed:
 - Verified partial-match, full-match, and empty-detection scenarios
 - Kept FitScore calculation in the Streamlit frontend for now 
 
+### Day 7
+
+Completed:
+
+- Added `backend/app/analyzer.py`
+- Added the `analyze_skill_gap()` backend helper function
+- Moved case-insensitive skill comparison into the backend
+- Moved matched skills, missing skills, and FitScore calculation into the backend
+- Added the `JobAnalysisRequest` Pydantic model
+- Added the `POST /analyze-job` endpoint
+- Reused `extract_skills()` inside the new analysis endpoint
+- Updated the Streamlit frontend to send JD text and user skills together
+- Updated the frontend to read analysis results from the backend
+- Removed duplicate skill-gap and FitScore calculations from the frontend
+- Verified partial-match, full-match, no-match, and empty-detection scenarios
+- Kept the existing `POST /parse-jd` endpoint available
 
 
 ## Tech Stack

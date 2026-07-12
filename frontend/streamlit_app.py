@@ -6,7 +6,7 @@ import requests
 # APP configuration
 # ----------------------------------------
 
-API_URL = "http://127.0.0.1:8000/parse-jd"
+API_URL = "http://127.0.0.1:8000/analyze-job"
 
 
 # ----------------------------------------
@@ -37,59 +37,31 @@ if user_skills:
     st.write("Your skills:", display_user_skills)
 
 # ----------------------------------------
-# Core logic to send the job description to the backend API and display the detected skills
+# Send the JD and user skills to the backend for analysis
 # ----------------------------------------
 
 if st.button("Analyze JD"):  # create a button to trigger the analysis
-    # send the job description to the backend API for parsing
-    # method: POST, endpoint: /parse-jd, payload: {"text": jd_text}
+   # method: POST, endpoint: /analyze-job
+   # payload: {"text": jd_text, "user_skills": user_skills}
     if not jd_text.strip():
         st.warning("Please paste a job description first.")
     else:
         response = requests.post(
             API_URL,
-            json={"text": jd_text}
+            json={"text": jd_text,
+                  "user_skills":user_skills}
         )
         result = response.json()
         jd_skills = result["skills"]
+        matched_skills = result["matched_skills"]
+        missing_skills = result["missing_skills"]
+        fit_score = result["fit_score"]
 
+        
         # ----------------------------------------
-        # match the skills from the job description with the user's skills
-        # ----------------------------------------
-
-        user_skills_lower = [skill.lower() for skill in user_skills]
-
-
-        matched_skills = [
-            skill for skill in jd_skills
-            if skill.lower() in user_skills_lower
-        ]
-
-        #----------------------------------------
-        # Missing skills
-        #----------------------------------------
-
-        missing_skills = [
-            skill
-            for skill in jd_skills
-            if skill.lower() not in user_skills_lower
-        ]
-
-        # ----------------------------------------
-        # fit_score calculation
-        # ----------------------------------------
-
-        if jd_skills:
-            fit_score = len(matched_skills) / len(jd_skills) * 100
-        else:
-            fit_score = 0
-
-        # ----------------------------------------
-        # display the detected skills
+        # display the analysis results
         # ----------------------------------------
         st.write("Fit Score:",f"{fit_score:.0f}%")
-
-
 
 
         st.write("Detected Skills:")
