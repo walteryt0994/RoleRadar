@@ -11,12 +11,22 @@ class JobAnalysisRequest(BaseModel):
     text:str
     user_skills:list[str]
 
+class ApplicationCreate(BaseModel):
+    company: str
+    job_title: str
+    status: str
+    fit_score: float
+    matched_skills: list[str]
+    missing_skills: list[str]
+
 
 app = FastAPI(
     title="RoleRadar API",
     version="0.1.0",
     description="Backend API for RoleRadar job intelligence and skill-gap analysis.",
 )
+
+applications: list[dict] = []
 
 
 @app.get("/")
@@ -51,3 +61,11 @@ def analyze_job(payload: JobAnalysisRequest):
         "missing_skills":analysis["missing_skills"],
         "fit_score":analysis["fit_score"],
     }
+
+@app.post("/applications")
+def create_application(payload: ApplicationCreate):
+    application = payload.model_dump()
+    application["id"] = len(applications) + 1
+    applications.append(application)
+
+    return application

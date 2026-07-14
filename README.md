@@ -104,6 +104,22 @@ Completed:
 - Kept the existing `POST /parse-jd` endpoint available
 
 
+### Day 8
+
+Completed:
+
+- Started Stage 3: Application Tracker
+- Added the `ApplicationCreate` Pydantic request model
+- Defined company, job title, status, FitScore, matched skills, and missing skills fields
+- Added temporary in-memory application storage
+- Added the `POST /applications` endpoint
+- Converted validated Pydantic payloads into dictionaries
+- Added temporary sequential application IDs
+- Verified successful application creation through Swagger
+- Verified invalid JSON and invalid FitScore validation errors
+- Documented that in-memory records are lost when the backend restarts
+- Identified duplicate POST requests as a limitation for future handling
+
 ## Tech Stack
 
 - Python
