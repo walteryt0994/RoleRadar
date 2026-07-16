@@ -13,3 +13,6 @@ __pycache__/
 
 # Streamlit local config
 .streamlit/
+
+# Local SQLite database
+backend/roleradar.db

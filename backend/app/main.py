@@ -1,7 +1,14 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
-from app.parser import extract_skills
+from datetime import datetime
+
+from fastapi import Depends, FastAPI
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
 from app.analyzer import analyze_skill_gap
+from app.database import Base, engine, get_db
+from app.models import Application
+from app.parser import extract_skills
 
 
 class JobDescription(BaseModel):
@@ -19,6 +26,20 @@ class ApplicationCreate(BaseModel):
     matched_skills: list[str]
     missing_skills: list[str]
 
+class ApplicationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    company: str
+    job_title: str
+    status: str
+    fit_score: float
+    matched_skills: list[str]
+    missing_skills: list[str]
+    created_at: datetime
+
+
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="RoleRadar API",
@@ -26,12 +47,11 @@ app = FastAPI(
     description="Backend API for RoleRadar job intelligence and skill-gap analysis.",
 )
 
-applications: list[dict] = []
 
 
 @app.get("/")
 def read_root():
-    return {"message": "RoleRadar backend is running"}   
+    return {"message": "RoleRadar backend is running"}
 
 @app.get("/health")
 def health_check():
@@ -62,10 +82,21 @@ def analyze_job(payload: JobAnalysisRequest):
         "fit_score":analysis["fit_score"],
     }
 
-@app.post("/applications")
-def create_application(payload: ApplicationCreate):
-    application = payload.model_dump()
-    application["id"] = len(applications) + 1
-    applications.append(application)
+@app.post("/applications", response_model=ApplicationResponse)
+def create_application(
+    payload: ApplicationCreate,
+    db: Session = Depends(get_db),
+):
+    application = Application(**payload.model_dump())
 
+    db.add(application)
+    db.commit()
+    db.refresh(application)
     return application
+
+@app.get("/applications", response_model=list[ApplicationResponse])
+def list_applications(db: Session = Depends(get_db)):
+    statement = select(Application)
+    applications = db.scalars(statement).all()
+
+    return applications
