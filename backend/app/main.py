@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -25,6 +25,9 @@ class ApplicationCreate(BaseModel):
     fit_score: float
     matched_skills: list[str]
     missing_skills: list[str]
+
+class ApplicationStatusUpdate(BaseModel):
+    status: str
 
 class ApplicationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -100,3 +103,30 @@ def list_applications(db: Session = Depends(get_db)):
     applications = db.scalars(statement).all()
 
     return applications
+
+@app.patch(
+    "/applications/{application_id}",
+    response_model=ApplicationResponse,
+)
+def update_application_status(
+    application_id: int,
+    payload: ApplicationStatusUpdate,
+    db: Session = Depends(get_db),
+):
+    application = db.get(
+        Application,
+        application_id,
+    )
+
+    if application is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Application not found",
+        )
+
+    application.status = payload.status
+
+    db.commit()
+    db.refresh(application)
+
+    return application

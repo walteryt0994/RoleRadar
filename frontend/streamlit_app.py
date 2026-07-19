@@ -10,6 +10,13 @@ API_BASE_URL = "http://127.0.0.1:8000"
 
 ANALYZE_API_URL = f"{API_BASE_URL}/analyze-job"
 APPLICATIONS_API_URL = f"{API_BASE_URL}/applications"
+APPLICATION_STATUSES = [
+    "Interested",
+    "Applied",
+    "Interviewing",
+    "Offer",
+    "Rejected",
+]
 
 # ----------------------------------------
 # Session state
@@ -116,13 +123,7 @@ if st.session_state.analysis_result is not None:
     job_title = st.text_input("Job title")
     status = st.selectbox(
         "Application status",
-        [
-            "Interested",
-            "Applied",
-            "Interviewing",
-            "Offer",
-            "Rejected",
-        ]
+        APPLICATION_STATUSES,
     )
     application_payload = {
         "company": company.strip(),
@@ -189,6 +190,42 @@ if history_response.ok:
 
             with st.expander(title):
                 st.write("Status:", application["status"])
+
+                updated_status = st.selectbox(
+                    "Update status",
+                    APPLICATION_STATUSES,
+                    index=APPLICATION_STATUSES.index(
+                        application["status"]
+                    ),
+                    key=f"status_{application['id']}",
+                )
+
+                if st.button(
+                    "Update status",
+                    key=f"update_status_{application['id']}",
+                    disabled=updated_status == application["status"],
+                ):
+                    update_response = requests.patch(
+                        f"{APPLICATIONS_API_URL}/{application['id']}",
+                        json={"status": updated_status},
+                    )
+
+                    if update_response.ok:
+                        updated_application = update_response.json()
+
+                        st.success(
+                            "Status updated successfully: "
+                            f"{updated_application['status']}"
+                        )
+
+                        st.rerun()
+
+                    else:
+                        st.error(
+                            "Unable to update application status. "
+                            f"Status code: {update_response.status_code}"
+                        )
+
                 st.write(
                     "Fit score:",
                     f"{application['fit_score']:.0f}%",
