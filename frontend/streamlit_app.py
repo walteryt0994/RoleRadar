@@ -167,11 +167,8 @@ if st.session_state.analysis_result is not None:
                 )
 
 # ----------------------------
-# Application history
+# Load application data
 # ----------------------------
-
-st.divider()
-st.header("Application History")
 
 history_response = requests.get(
     APPLICATIONS_API_URL
@@ -179,6 +176,68 @@ history_response = requests.get(
 
 if history_response.ok:
     applications = history_response.json()
+
+    # ----------------------------
+    # Dashboard
+    # ----------------------------
+
+    st.divider()
+    st.header("Dashboard")
+
+    total_applications = len(applications)
+
+    status_counts = {
+        status: 0 for status in APPLICATION_STATUSES
+    }
+
+    for application_record in applications:
+        application_status = application_record["status"]
+
+        if application_status in status_counts:
+            status_counts[application_status] += 1
+
+    total_fit_score = sum(
+        application_record["fit_score"]
+        for application_record in applications
+    )
+
+    if total_applications > 0:
+        average_fit_score = (
+            total_fit_score / total_applications
+        )
+    else:
+        average_fit_score = 0
+
+    summary_columns = st.columns(2)
+
+    summary_columns[0].metric(
+        "Total Applications",
+        total_applications,
+    )
+    summary_columns[1].metric(
+        "Average FitScore",
+        f"{average_fit_score:.1f}%",
+    )
+
+    status_columns = st.columns(
+        len(APPLICATION_STATUSES)
+    )
+
+    for index, status_name in enumerate(
+        APPLICATION_STATUSES
+    ):
+        status_columns[index].metric(
+            status_name,
+            status_counts[status_name],
+        )
+
+
+    # ---------------------------
+    # Application history
+    # ---------------------------
+
+    st.divider()
+    st.header("Application History")
 
     if applications:
         for application in applications:
