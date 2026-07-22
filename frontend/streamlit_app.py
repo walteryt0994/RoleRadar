@@ -231,6 +231,116 @@ if history_response.ok:
             status_counts[status_name],
         )
 
+    # ---------------------------
+    # Dashboard charts
+    # ---------------------------
+
+    status_chart_data = {
+        "Status": APPLICATION_STATUSES,
+        "Applications": [
+            status_counts[status_name]
+            for status_name in APPLICATION_STATUSES
+        ],
+    }
+
+    st.subheader("Application Status Distribution")
+
+    st.bar_chart(
+        status_chart_data,
+        x="Status",
+        y="Applications",
+        x_label="Application Status",
+        y_label="Number of Applications",
+        sort=False,
+    )
+
+    fit_score_counts = {
+        "Below 25%": 0,
+        "25% to <50%": 0,
+        "50% to <75%": 0,
+        "75% to 100%": 0,
+    }
+
+    for application_record in applications:
+        fit_score = application_record["fit_score"]
+
+        if fit_score < 25:
+            fit_score_counts["Below 25%"] += 1
+        elif fit_score < 50:
+            fit_score_counts["25% to <50%"] += 1
+        elif fit_score < 75:
+            fit_score_counts["50% to <75%"] += 1
+        else:
+            fit_score_counts["75% to 100%"] += 1
+
+    fit_score_chart_data = {
+        "FitScore Range": list(
+            fit_score_counts.keys()
+        ),
+        "Applications": list(
+            fit_score_counts.values()
+        ),
+    }
+
+    st.subheader("FitScore Distribution")
+
+    st.bar_chart(
+        fit_score_chart_data,
+        x="FitScore Range",
+        y="Applications",
+        x_label="FitScore Range",
+        y_label="Number of Applications",
+        sort=False,
+    )
+
+    all_missing_skills = []
+
+    for application_record in applications:
+        all_missing_skills.extend(
+            application_record["missing_skills"]
+        )
+
+    missing_skill_counts = {}
+
+    for missing_skill in all_missing_skills:
+        if missing_skill not in missing_skill_counts:
+            missing_skill_counts[missing_skill] = 0
+
+        missing_skill_counts[missing_skill] += 1
+
+    sorted_missing_skills = sorted(
+        missing_skill_counts.items(),
+        key=lambda skill_count: skill_count[1],
+        reverse=True,
+    )
+
+    top_missing_skills = sorted_missing_skills[:5]
+
+    top_missing_skills_chart_data = {
+        "Skill": [
+            skill
+            for skill, count in top_missing_skills
+        ],
+        "Missing Count": [
+            count
+            for skill, count in top_missing_skills
+        ],
+    }
+
+    st.subheader("Top Missing Skills")
+
+    if top_missing_skills:
+        st.bar_chart(
+            top_missing_skills_chart_data,
+            x="Skill",
+            y="Missing Count",
+            horizontal=True,
+            sort=False,
+        )
+    else:
+        st.info(
+            "No missing skills found across saved applications."
+        )
 
     # ---------------------------
     # Application history

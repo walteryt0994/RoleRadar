@@ -194,6 +194,25 @@ Completed:
 - Verified the Dashboard with a single application record
 - Confirmed that Application History still displays correctly below the Dashboard
 
+### Day 13
+
+Completed:
+
+- Added an Application Status Distribution bar chart
+- Preserved the application workflow order in the status chart
+- Defined four non-overlapping FitScore ranges
+- Added FitScore range frequency counting
+- Added a FitScore Distribution bar chart
+- Flattened nested missing-skills lists across application records
+- Added missing-skill frequency counting
+- Sorted missing skills by frequency and selected the Top 5
+- Added a horizontal Top Missing Skills bar chart
+- Added an empty state when no missing skills are found
+- Reused real application records returned by `GET /applications`
+- Used Streamlit built-in charts without adding new dependencies
+- Verified multiple-record, empty-database, single-record, and empty-missing-skills scenarios
+- Confirmed that Application History still works below the Dashboard
+
 
 ## Tech Stack
 
@@ -281,8 +300,10 @@ Current focus:
 - `GET /applications` returns saved application records
 - `PATCH /applications/{application_id}` updates a saved application record
 - The Streamlit Dashboard reuses real application records returned by `GET /applications`
-- The Dashboard displays total applications, status counts, and average FitScore
-- The Dashboard handles empty application data without division-by-zero errors
+- The Dashboard displays application metrics, status distribution, and FitScore distribution
+- The Dashboard displays the Top 5 Missing Skills across saved applications
+- Dashboard charts use Streamlit built-in visualization components
+- Empty application data and empty missing-skills data are handled safely
 - Application history remains available using expandable records
 - The local SQLite database file is excluded from Git
-- Next step: add status and FitScore visual distributions and Top Missing Skills
+- Next step: complete V1 regression testing, documentation, demo preparation, and final handoff
