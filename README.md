@@ -256,6 +256,17 @@ Completed:
 - Validated the final V1 demo flow
 - Completed Stage 4 and RoleRadar V1
 
+### Day 15
+
+Completed:
+
+- Added pytest as a backend testing dependency
+- Created the initial backend test directory
+- Added the first isolated unit test for the rule-based JD parser
+- Verified pytest discovery and assertion behavior
+- Confirmed that the parser test does not access the SQLite database
+- Ignored pytest cache files in Git
+
 ## Tech Stack
 
 - Python
@@ -264,6 +275,7 @@ Completed:
 - Streamlit
 - SQLite
 - SQLAlchemy
+- pytest
 
 Planned later:
 
@@ -282,6 +294,8 @@ roleradar/
 │   │   ├── main.py
 │   │   ├── models.py
 │   │   └── parser.py
+│   ├── tests/
+│   │   └── test_parser.py
 │   ├── requirements.txt
 │   └── roleradar.db        # Local SQLite database, gitignored
 ├── frontend/
@@ -302,6 +316,15 @@ roleradar/
 | POST | `/applications` | Save an application record |
 | GET | `/applications` | Return all saved application records |
 | PATCH | `/applications/{application_id}` | Update an application status |
+
+## Run Tests
+
+From the project root:
+
+```bash
+cd backend
+python -m pytest -v
+```
 
 ## Run Backend
 
@@ -393,4 +416,4 @@ RoleRadar V1 implementation and final regression testing are complete.
 - Duplicate-save protection only applies to the current Streamlit session
 - Application records support create, read, and status update operations, but not deletion
 - Application status is the only editable field after a record is saved
-- Regression testing is currently manual rather than automated
+- Automated coverage currently includes only an initial isolated parser unit test; broader parser, analyzer, and API coverage is planned for Stage 5
