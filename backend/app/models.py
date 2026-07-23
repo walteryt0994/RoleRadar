@@ -1,8 +1,10 @@
 from datetime import datetime
-from sqlalchemy import DateTime, Float, String, JSON, func
+
+from sqlalchemy import JSON, DateTime, Float, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+
 
 class Application(Base):
     __tablename__ = "applications"

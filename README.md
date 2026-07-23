@@ -1,8 +1,33 @@
- # RoleRadar
+# RoleRadar
 
 RoleRadar is a Job Intelligence & Skill-Gap Analysis Platform for students.
 
 The goal of this project is to help users parse job descriptions, identify required skills, analyze skill gaps, and track job applications.
+
+## V1 Features
+
+- Extract required skills from job descriptions
+- Compare detected job skills with user skills
+- Calculate a FitScore
+- Display matched and missing skills
+- Save application records to SQLite
+- Track application status changes
+- Display total applications, status counts, and average FitScore
+- Visualize application status and FitScore distributions
+- Display the Top 5 Missing Skills across saved applications
+- Preserve application history across backend and frontend restarts
+
+## How V1 Works
+
+1. The user enters a job description and a comma-separated skills list.
+2. The Streamlit frontend sends the input to `POST /analyze-job`.
+3. The FastAPI backend extracts job skills and calculates matched skills, missing skills, and FitScore.
+4. The frontend displays the analysis result.
+5. The user adds company, job title, and application status information.
+6. The frontend saves the application through `POST /applications`.
+7. The Dashboard loads saved records through `GET /applications`.
+8. The user can update an application status through `PATCH /applications/{application_id}`.
+9. Dashboard metrics, charts, and application history refresh from the updated records.
 
 ## Progress
 
@@ -213,6 +238,23 @@ Completed:
 - Verified multiple-record, empty-database, single-record, and empty-missing-skills scenarios
 - Confirmed that Application History still works below the Dashboard
 
+### Day 14
+
+Completed:
+
+- Ran the final V1 regression test using an isolated SQLite database
+- Verified job analysis, FitScore, matched skills, and missing skills
+- Confirmed that analysis does not create an application record
+- Verified application saving through the complete frontend-backend workflow
+- Verified Dashboard metrics, charts, Top Missing Skills, and Application History
+- Verified application status updates and Dashboard synchronization
+- Verified data persistence after backend and frontend restarts
+- Restored the original local application database after regression testing
+- Cleaned frontend formatting without changing application behavior
+- Added V1 features and end-to-end workflow documentation
+- Verified all Python files with syntax and whitespace checks
+- Validated the final V1 demo flow
+- Completed Stage 4 and RoleRadar V1
 
 ## Tech Stack
 
@@ -248,6 +290,18 @@ roleradar/
 ├── .gitignore
 └── README.md
 ```
+
+## API Overview
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| GET | `/` | Confirm that the backend is running |
+| GET | `/health` | Return the backend health status |
+| POST | `/parse-jd` | Extract known skills from a job description |
+| POST | `/analyze-job` | Calculate detected, matched, and missing skills and FitScore |
+| POST | `/applications` | Save an application record |
+| GET | `/applications` | Return all saved application records |
+| PATCH | `/applications/{application_id}` | Update an application status |
 
 ## Run Backend
 
@@ -287,23 +341,56 @@ Frontend URL:
 http://localhost:8501
 ```
 
-## Current Notes
+## Demo Flow
 
-The backend and frontend run locally and are connected through the FastAPI job parsing and skill-gap analysis endpoints.
+Use the following example:
 
-Current focus:
+```txt
+Job description:
+We are looking for a backend engineer with Python, SQL, AWS, and Docker experience.
+
+User skills:
+Python, SQL
+```
+
+Expected analysis:
+
+- FitScore: 50%
+- Matched Skills: Python, SQL
+- Missing Skills: AWS, Docker
+
+Demo steps:
+
+1. Start the FastAPI backend and Streamlit frontend
+2. Confirm the backend health endpoint
+3. Analyze the example job description
+4. Save the result as an application record
+5. Show the updated Dashboard metrics and charts
+6. Show the Top Missing Skills chart
+7. Open the saved record in Application History
+8. Update its application status
+9. Confirm that the Dashboard and status chart refresh
+10. Restart the application and confirm that the record persists
+
+## V1 Status
+
+RoleRadar V1 implementation and final regression testing are complete.
 
 - Stage 3: Application Tracker completed
-- Current focus: Stage 4 — Dashboard and V1 Completion
-- Application records are persisted locally using SQLite and SQLAlchemy
-- `POST /applications` creates application records
-- `GET /applications` returns saved application records
-- `PATCH /applications/{application_id}` updates a saved application record
-- The Streamlit Dashboard reuses real application records returned by `GET /applications`
-- The Dashboard displays application metrics, status distribution, and FitScore distribution
-- The Dashboard displays the Top 5 Missing Skills across saved applications
-- Dashboard charts use Streamlit built-in visualization components
-- Empty application data and empty missing-skills data are handled safely
-- Application history remains available using expandable records
+- Stage 4: Dashboard and V1 Completion implementation completed
+- The FastAPI backend and Streamlit frontend are connected locally
+- Application records persist through SQLite and SQLAlchemy
+- Dashboard metrics, charts, Top Missing Skills, and Application History use real saved records
+- Empty application and missing-skills data are handled safely
 - The local SQLite database file is excluded from Git
-- Next step: complete V1 regression testing, documentation, demo preparation, and final handoff
+- RoleRadar V1 is complete and ready for local demonstration
+
+## V1 Limitations
+
+- Skill extraction uses a fixed rule-based known-skills list
+- The application runs locally and does not include authentication or multiple users
+- Application data is stored in a local SQLite database
+- Duplicate-save protection only applies to the current Streamlit session
+- Application records support create, read, and status update operations, but not deletion
+- Application status is the only editable field after a record is saved
+- Regression testing is currently manual rather than automated

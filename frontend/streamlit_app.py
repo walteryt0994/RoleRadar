@@ -3,7 +3,7 @@ import requests
 
 
 # ----------------------------------------
-# APP configuration
+# App configuration
 # ----------------------------------------
 
 API_BASE_URL = "http://127.0.0.1:8000"
@@ -47,10 +47,19 @@ st.write("Characters:", len(jd_text))
 # User Skills Input
 # ----------------------------------------
 
-user_skills_text = st.text_input("Enter your skills, separated by commas:")
-user_skills = [skill.strip() for skill in user_skills_text.split(",") if skill.strip()]
+user_skills_text = st.text_input(
+    "Enter your skills, separated by commas:"
+)
+user_skills = [
+    skill.strip()
+    for skill in user_skills_text.split(",")
+    if skill.strip()
+]
 
-display_user_skills =[skill.title() for skill in user_skills]
+display_user_skills = [
+    skill.title()
+    for skill in user_skills
+]
 
 if user_skills:
     st.write("Your skills:", display_user_skills)
@@ -59,25 +68,26 @@ if user_skills:
 # Send the JD and user skills to the backend for analysis
 # ----------------------------------------
 
-if st.button("Analyze JD"):  # create a button to trigger the analysis
-   # method: POST, endpoint: /analyze-job
-   # payload: {"text": jd_text, "user_skills": user_skills}
+if st.button("Analyze JD"):
+    # Method: POST, endpoint: /analyze-job
+    # Payload: {"text": jd_text, "user_skills": user_skills}
     if not jd_text.strip():
         st.warning("Please paste a job description first.")
     else:
         response = requests.post(
             ANALYZE_API_URL,
-            json={"text": jd_text,
-                  "user_skills":user_skills}
+            json={
+                "text": jd_text,
+                "user_skills": user_skills,
+            },
         )
 
         result = response.json()
         st.session_state.analysis_result = result
 
 # ----------------------------------------
-# display the analysis results
+# Display the analysis results
 # ----------------------------------------
-
 
 if st.session_state.analysis_result is not None:
     result = st.session_state.analysis_result
@@ -87,9 +97,7 @@ if st.session_state.analysis_result is not None:
     missing_skills = result["missing_skills"]
     fit_score = result["fit_score"]
 
-
-    st.write("Fit Score:",f"{fit_score:.0f}%")
-
+    st.write("FitScore:", f"{fit_score:.0f}%")
     st.write("Detected Skills:")
 
     if not jd_skills:
@@ -104,9 +112,10 @@ if st.session_state.analysis_result is not None:
             for skill in matched_skills:
                 st.write("-", skill)
         else:
-            st.write("You don't have any of the required skills for this job description.")
-
-
+            st.write(
+                "You don't have any of the required skills "
+                "for this job description."
+            )
 
         st.write("Missing Skills:")
 
@@ -114,7 +123,10 @@ if st.session_state.analysis_result is not None:
             for skill in missing_skills:
                 st.write("-", skill)
         else:
-            st.write("Congratulations! You have all the required skills for this job description.")
+            st.write(
+                "Congratulations! You have all the required "
+                "skills for this job description."
+            )
 
     st.divider()
     st.subheader("Save Application")
@@ -133,7 +145,6 @@ if st.session_state.analysis_result is not None:
         "matched_skills": matched_skills,
         "missing_skills": missing_skills,
     }
-
 
     if st.button("Save Application"):
         if not company.strip() or not job_title.strip():
@@ -396,7 +407,7 @@ if history_response.ok:
                         )
 
                 st.write(
-                    "Fit score:",
+                    "FitScore:",
                     f"{application['fit_score']:.0f}%",
                 )
                 st.write(

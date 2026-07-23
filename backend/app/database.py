@@ -10,6 +10,7 @@ engine = create_engine(
 
 SessionLocal = sessionmaker(bind=engine)
 
+
 class Base(DeclarativeBase):
     pass
 

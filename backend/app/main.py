@@ -12,11 +12,13 @@ from app.parser import extract_skills
 
 
 class JobDescription(BaseModel):
-    text:str
+    text: str
+
 
 class JobAnalysisRequest(BaseModel):
-    text:str
-    user_skills:list[str]
+    text: str
+    user_skills: list[str]
+
 
 class ApplicationCreate(BaseModel):
     company: str
@@ -26,8 +28,10 @@ class ApplicationCreate(BaseModel):
     matched_skills: list[str]
     missing_skills: list[str]
 
+
 class ApplicationStatusUpdate(BaseModel):
     status: str
+
 
 class ApplicationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -62,27 +66,27 @@ def health_check():
 
 @app.post("/parse-jd")
 def parse_jd(payload: JobDescription):
-
     found_skills = extract_skills(payload.text)
 
-    return{"message": "JD parser endpoint is ready" ,
-           "jd_text_length": len(payload.text),
-           "skills":found_skills,
-           }
+    return {
+        "message": "JD parser endpoint is ready",
+        "jd_text_length": len(payload.text),
+        "skills": found_skills,
+    }
 
 @app.post("/analyze-job")
 def analyze_job(payload: JobAnalysisRequest):
     jd_skills = extract_skills(payload.text)
     analysis = analyze_skill_gap(
         jd_skills,
-        payload.user_skills
+        payload.user_skills,
     )
 
-    return{
-        "skills":jd_skills,
-        "matched_skills":analysis["matched_skills"],
-        "missing_skills":analysis["missing_skills"],
-        "fit_score":analysis["fit_score"],
+    return {
+        "skills": jd_skills,
+        "matched_skills": analysis["matched_skills"],
+        "missing_skills": analysis["missing_skills"],
+        "fit_score": analysis["fit_score"],
     }
 
 @app.post("/applications", response_model=ApplicationResponse)

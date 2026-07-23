@@ -19,10 +19,11 @@ KNOWN_SKILLS = [
     "Data Engineering",
     "DevOps",
     "Agile Methodologies",
-    "Project Management"
+    "Project Management",
 ]
 
-def extract_skills(text:str) ->list[str]:
+
+def extract_skills(text: str) -> list[str]:
     found_skills = []
 
     for skill in KNOWN_SKILLS:
