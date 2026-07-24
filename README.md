@@ -267,6 +267,18 @@ Completed:
 - Confirmed that the parser test does not access the SQLite database
 - Ignored pytest cache files in Git
 
+### Day 16
+
+Completed:
+
+- Expanded parser unit tests with normal, case-insensitive, empty, and unknown-skill cases
+- Added a regression test for overlapping skill names
+- Fixed substring matching so Java is not detected inside JavaScript
+- Preserved support for skill names containing special characters, such as C++
+- Added parameterized analyzer tests for full, partial, no-match, and empty-JD cases
+- Used `pytest.approx()` for floating-point FitScore comparisons
+- Verified all ten parser and analyzer tests without accessing SQLite
+
 ## Tech Stack
 
 - Python
@@ -295,6 +307,7 @@ roleradar/
 │   │   ├── models.py
 │   │   └── parser.py
 │   ├── tests/
+│   │   ├── test_analyzer.py
 │   │   └── test_parser.py
 │   ├── requirements.txt
 │   └── roleradar.db        # Local SQLite database, gitignored
@@ -416,4 +429,4 @@ RoleRadar V1 implementation and final regression testing are complete.
 - Duplicate-save protection only applies to the current Streamlit session
 - Application records support create, read, and status update operations, but not deletion
 - Application status is the only editable field after a record is saved
-- Automated coverage currently includes only an initial isolated parser unit test; broader parser, analyzer, and API coverage is planned for Stage 5
+- Automated unit coverage currently includes the parser and analyzer; isolated Applications API and database tests are planned for Stage 5

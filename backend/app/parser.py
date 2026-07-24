@@ -1,3 +1,5 @@
+import re
+
 KNOWN_SKILLS = [
     "Python",
     "SQL",
@@ -27,6 +29,9 @@ def extract_skills(text: str) -> list[str]:
     found_skills = []
 
     for skill in KNOWN_SKILLS:
-        if skill.lower() in text.lower():
+        pattern = rf"(?<!\w){re.escape(skill)}(?!\w)"
+
+        if re.search(pattern, text, re.IGNORECASE):
             found_skills.append(skill)
+
     return found_skills
