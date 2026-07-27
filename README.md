@@ -279,6 +279,19 @@ Completed:
 - Used `pytest.approx()` for floating-point FitScore comparisons
 - Verified all ten parser and analyzer tests without accessing SQLite
 
+### Day 17
+
+Completed:
+
+- Added FastAPI API tests using TestClient and HTTPX2
+- Created an isolated temporary SQLite database for each test
+- Overrode the FastAPI database dependency so tests never access the real database
+- Added POST, GET, and PATCH tests for Applications
+- Added 404 coverage for missing applications
+- Added 422 coverage for invalid request payloads
+- Verified all 15 backend tests
+- Confirmed that the real SQLite database remained unchanged
+
 ## Tech Stack
 
 - Python
@@ -288,6 +301,7 @@ Completed:
 - SQLite
 - SQLAlchemy
 - pytest
+- HTTPX2
 
 Planned later:
 
@@ -308,6 +322,7 @@ roleradar/
 │   │   └── parser.py
 │   ├── tests/
 │   │   ├── test_analyzer.py
+│   │   ├── test_applications.py
 │   │   └── test_parser.py
 │   ├── requirements.txt
 │   └── roleradar.db        # Local SQLite database, gitignored
@@ -429,4 +444,3 @@ RoleRadar V1 implementation and final regression testing are complete.
 - Duplicate-save protection only applies to the current Streamlit session
 - Application records support create, read, and status update operations, but not deletion
 - Application status is the only editable field after a record is saved
-- Automated unit coverage currently includes the parser and analyzer; isolated Applications API and database tests are planned for Stage 5
