@@ -307,6 +307,22 @@ Completed:
 - Verified both successful requests and backend connection failures
 - Confirmed all 15 backend tests pass and the real database remains unchanged
 
+### Day 19
+
+Completed:
+
+- Separated API data contracts into `backend/app/schemas.py`
+- Separated Application database operations into `backend/app/services.py`
+- Moved all seven API operations into `backend/app/routers.py`
+- Kept HTTP-specific validation and 404 handling in the Router layer
+- Kept ORM creation, queries, updates, commits, and refreshes in the Service layer
+- Reduced `backend/app/main.py` to application creation and Router assembly
+- Preserved all existing API endpoints and response formats
+- Verified all 15 backend tests after the refactor
+- Manually verified health, analysis, POST, GET, PATCH, 404, and 422 behavior
+- Used a temporary SQLite database for manual verification
+- Confirmed that the real SQLite database still contains six Application records
+
 ## Tech Stack
 
 - Python
@@ -334,7 +350,10 @@ roleradar/
 │   │   ├── database.py
 │   │   ├── main.py
 │   │   ├── models.py
-│   │   └── parser.py
+│   │   ├── parser.py
+│   │   ├── routers.py
+│   │   ├── schemas.py
+│   │   └── services.py
 │   ├── tests/
 │   │   ├── test_analyzer.py
 │   │   ├── test_applications.py
@@ -348,6 +367,39 @@ roleradar/
 ├── .gitignore
 └── README.md
 ```
+
+## Backend Architecture
+
+The backend uses a basic responsibility-separated structure:
+
+| Module | Responsibility |
+| --- | --- |
+| `main.py` | Create the FastAPI application and register the Router |
+| `routers.py` | Define HTTP endpoints, inject dependencies, and translate business results into HTTP responses |
+| `schemas.py` | Define Pydantic request and response contracts |
+| `services.py` | Perform Application business and database operations |
+| `models.py` | Define SQLAlchemy ORM models and database-table mappings |
+| `database.py` | Configure the database engine, sessions, and declarative base |
+| `parser.py` | Extract known skills from job-description text |
+| `analyzer.py` | Calculate matched skills, missing skills, and FitScore |
+
+```mermaid
+flowchart TD
+    main["main.py"] --> routers["routers.py"]
+    main --> database["database.py"]
+
+    routers --> schemas["schemas.py"]
+    routers --> services["services.py"]
+    routers --> parser["parser.py"]
+    routers --> analyzer["analyzer.py"]
+    routers --> database
+
+    services --> schemas
+    services --> models["models.py"]
+    models --> database
+```
+
+An arrow from module A to module B means that A imports or directly uses B. Dependencies flow from the application entry point toward lower-level modules; lower-level modules do not import `main.py` or `routers.py`.
 
 ## API Overview
 
