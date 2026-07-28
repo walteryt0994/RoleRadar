@@ -292,6 +292,21 @@ Completed:
 - Verified all 15 backend tests
 - Confirmed that the real SQLite database remained unchanged
 
+### Day 18
+
+Completed:
+
+- Made the backend database URL configurable through an environment variable
+- Made the frontend API base URL configurable through an environment variable
+- Preserved local development defaults for both configuration values
+- Added a request timeout to all frontend API calls
+- Added timeout, connection, HTTP, and general request error handling
+- Prevented failed analysis requests from displaying stale results
+- Distinguished failed application-history loading from a valid empty history
+- Added a safe environment-variable example file
+- Verified both successful requests and backend connection failures
+- Confirmed all 15 backend tests pass and the real database remains unchanged
+
 ## Tech Stack
 
 - Python
@@ -329,6 +344,7 @@ roleradar/
 ├── frontend/
 │   ├── requirements.txt
 │   └── streamlit_app.py
+├── .env.example
 ├── .gitignore
 └── README.md
 ```
@@ -344,6 +360,33 @@ roleradar/
 | POST | `/applications` | Save an application record |
 | GET | `/applications` | Return all saved application records |
 | PATCH | `/applications/{application_id}` | Update an application status |
+
+## Configuration
+
+RoleRadar provides local development defaults for all current configuration values.
+
+| Environment variable | Used by | Default |
+| --- | --- | --- |
+| `DATABASE_URL` | FastAPI backend | `sqlite:///./roleradar.db` |
+| `API_BASE_URL` | Streamlit frontend | `http://127.0.0.1:8000` |
+
+Environment variables are read when each service starts. Restart the corresponding service after changing a value.
+
+Example backend configuration:
+
+```bash
+cd backend
+DATABASE_URL=sqlite:////tmp/roleradar.db uvicorn app.main:app --reload
+```
+
+Example frontend configuration:
+
+```bash
+cd frontend
+API_BASE_URL=http://127.0.0.1:8000 streamlit run streamlit_app.py
+```
+
+See `.env.example` for the available configuration names. The application currently reads process environment variables with `os.getenv()` and does not automatically load a local `.env` file.
 
 ## Run Tests
 

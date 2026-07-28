@@ -1,3 +1,5 @@
+import os
+
 import streamlit as st
 import requests
 
@@ -6,10 +8,14 @@ import requests
 # App configuration
 # ----------------------------------------
 
-API_BASE_URL = "http://127.0.0.1:8000"
+API_BASE_URL = os.getenv(
+    "API_BASE_URL",
+    "http://127.0.0.1:8000",
+).rstrip("/")
 
 ANALYZE_API_URL = f"{API_BASE_URL}/analyze-job"
 APPLICATIONS_API_URL = f"{API_BASE_URL}/applications"
+REQUEST_TIMEOUT_SECONDS = 10
 APPLICATION_STATUSES = [
     "Interested",
     "Applied",
@@ -74,16 +80,41 @@ if st.button("Analyze JD"):
     if not jd_text.strip():
         st.warning("Please paste a job description first.")
     else:
-        response = requests.post(
-            ANALYZE_API_URL,
-            json={
-                "text": jd_text,
-                "user_skills": user_skills,
-            },
-        )
+        st.session_state.analysis_result = None
 
-        result = response.json()
-        st.session_state.analysis_result = result
+        try:
+            response = requests.post(
+                ANALYZE_API_URL,
+                json={
+                    "text": jd_text,
+                    "user_skills": user_skills,
+                },
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            result = response.json()
+        except requests.exceptions.Timeout:
+            st.error(
+                "The analysis request timed out. "
+                "Please try again."
+            )
+        except requests.exceptions.ConnectionError:
+            st.error(
+                "Unable to connect to the RoleRadar backend. "
+                "Please make sure the backend is running."
+            )
+        except requests.exceptions.HTTPError:
+            st.error(
+                "Unable to analyze the job description. "
+                f"Status code: {response.status_code}"
+            )
+        except requests.exceptions.RequestException:
+            st.error(
+                "Unable to analyze the job description. "
+                "Please try again."
+            )
+        else:
+            st.session_state.analysis_result = result
 
 # ----------------------------------------
 # Display the analysis results
@@ -156,13 +187,35 @@ if st.session_state.analysis_result is not None:
                 "This application has already been saved."
             )
         else:
-            save_response = requests.post(
-                APPLICATIONS_API_URL,
-                json=application_payload,
-            )
-
-            if save_response.ok:
+            try:
+                save_response = requests.post(
+                    APPLICATIONS_API_URL,
+                    json=application_payload,
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                )
+                save_response.raise_for_status()
                 saved_application = save_response.json()
+            except requests.exceptions.Timeout:
+                st.error(
+                    "The save request timed out. "
+                    "Please try again."
+                )
+            except requests.exceptions.ConnectionError:
+                st.error(
+                    "Unable to connect to the RoleRadar backend. "
+                    "Please make sure the backend is running."
+                )
+            except requests.exceptions.HTTPError:
+                st.error(
+                    "Unable to save application. "
+                    f"Status code: {save_response.status_code}"
+                )
+            except requests.exceptions.RequestException:
+                st.error(
+                    "Unable to save application. "
+                    "Please try again."
+                )
+            else:
                 st.session_state.last_saved_payload = (
                     application_payload.copy()
                 )
@@ -171,26 +224,42 @@ if st.session_state.analysis_result is not None:
                     "Application saved successfully. "
                     f"ID: {saved_application['id']}"
                 )
-            else:
-                st.error(
-                    "Unable to save application. "
-                    f"Status code: {save_response.status_code}"
-                )
 
 # ----------------------------
 # Load application data
 # ----------------------------
 
-history_response = requests.get(
-    APPLICATIONS_API_URL
-)
+applications = None
 
-if history_response.ok:
+try:
+    history_response = requests.get(
+        APPLICATIONS_API_URL,
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    history_response.raise_for_status()
     applications = history_response.json()
+except requests.exceptions.Timeout:
+    st.error(
+        "The application history request timed out. "
+        "Please try again."
+    )
+except requests.exceptions.ConnectionError:
+    st.error(
+        "Unable to connect to the RoleRadar backend. "
+        "Application history could not be loaded."
+    )
+except requests.exceptions.HTTPError:
+    st.error(
+        "Unable to load application history. "
+        f"Status code: {history_response.status_code}"
+    )
+except requests.exceptions.RequestException:
+    st.error(
+        "Unable to load application history. "
+        "Please try again."
+    )
 
-    # ----------------------------
-    # Dashboard
-    # ----------------------------
+if applications is not None:
 
     st.divider()
     st.header("Dashboard")
@@ -385,26 +454,41 @@ if history_response.ok:
                     key=f"update_status_{application['id']}",
                     disabled=updated_status == application["status"],
                 ):
-                    update_response = requests.patch(
-                        f"{APPLICATIONS_API_URL}/{application['id']}",
-                        json={"status": updated_status},
-                    )
-
-                    if update_response.ok:
+                    try:
+                        update_response = requests.patch(
+                            f"{APPLICATIONS_API_URL}/{application['id']}",
+                            json={"status": updated_status},
+                            timeout=REQUEST_TIMEOUT_SECONDS,
+                        )
+                        update_response.raise_for_status()
                         updated_application = update_response.json()
-
+                    except requests.exceptions.Timeout:
+                        st.error(
+                            "The status update request timed out. "
+                            "Please try again."
+                        )
+                    except requests.exceptions.ConnectionError:
+                        st.error(
+                            "Unable to connect to the RoleRadar backend. "
+                            "Please make sure the backend is running."
+                        )
+                    except requests.exceptions.HTTPError:
+                        st.error(
+                            "Unable to update application status. "
+                            f"Status code: {update_response.status_code}"
+                        )
+                    except requests.exceptions.RequestException:
+                        st.error(
+                            "Unable to update application status. "
+                            "Please try again."
+                        )
+                    else:
                         st.success(
                             "Status updated successfully: "
                             f"{updated_application['status']}"
                         )
 
                         st.rerun()
-
-                    else:
-                        st.error(
-                            "Unable to update application status. "
-                            f"Status code: {update_response.status_code}"
-                        )
 
                 st.write(
                     "FitScore:",
@@ -424,8 +508,3 @@ if history_response.ok:
                 )
     else:
         st.info("No saved applications yet.")
-else:
-    st.error(
-        "Unable to load application history. "
-        f"Status code: {history_response.status_code}"
-    )
