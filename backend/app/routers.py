@@ -1,18 +1,26 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app import services
 from app.analyzer import analyze_skill_gap
 from app.database import get_db
 from app.parser import extract_skills
+from app.resume_service import (
+    process_resume_pdf,
+    process_resume_text,
+)
 from app.schemas import (
     ApplicationCreate,
     ApplicationResponse,
     ApplicationStatusUpdate,
     JobAnalysisRequest,
     JobDescription,
+    ResumeTextRequest,
+    ResumeTextResponse,
 )
 
+MAX_RESUME_PDF_SIZE_BYTES = 5 * 1024 * 1024
+PDF_CONTENT_TYPE = "application/pdf"
 
 router = APIRouter()
 
@@ -25,6 +33,72 @@ def read_root():
 @router.get("/health")
 def health_check():
     return {"status": "ok"}
+
+
+@router.post(
+    "/resumes/text",
+    response_model=ResumeTextResponse,
+)
+def intake_resume_text(payload: ResumeTextRequest):
+    try:
+        return process_resume_text(
+            payload.text,
+            source_type="text",
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error
+
+
+@router.post(
+    "/resumes/pdf",
+    response_model=ResumeTextResponse,
+)
+async def intake_resume_pdf(file: UploadFile):
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(
+            status_code=415,
+            detail="Only PDF files are supported",
+        )
+
+    if file.content_type != PDF_CONTENT_TYPE:
+        raise HTTPException(
+            status_code=415,
+            detail="Only PDF files are supported",
+        )
+
+    pdf_bytes = await file.read(MAX_RESUME_PDF_SIZE_BYTES + 1)
+
+    if not pdf_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail="PDF file cannot be empty",
+        )
+
+    if len(pdf_bytes) > MAX_RESUME_PDF_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="PDF file must be 5 MB or smaller",
+        )
+
+    if not pdf_bytes.startswith(b"%PDF-"):
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file is not a valid PDF",
+        )
+
+    try:
+        return process_resume_pdf(
+            pdf_bytes,
+            filename=file.filename,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error
 
 
 @router.post("/parse-jd")

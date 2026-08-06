@@ -3,3 +3,5 @@ uvicorn[standard]
 sqlalchemy
 pytest
 httpx2
+python-multipart
+pypdf

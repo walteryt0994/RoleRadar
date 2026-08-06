@@ -7,6 +7,17 @@ class JobDescription(BaseModel):
     text: str
 
 
+class ResumeTextRequest(BaseModel):
+    text: str
+
+
+class ResumeTextResponse(BaseModel):
+    text: str
+    character_count: int
+    source_type: str
+    filename: str | None = None
+
+
 class JobAnalysisRequest(BaseModel):
     text: str
     user_skills: list[str]

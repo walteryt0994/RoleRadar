@@ -109,7 +109,7 @@ Completed:
 - Added an empty state when no known skills are detected
 - Hid matched and missing skill sections when no JD skills are detected
 - Verified partial-match, full-match, and empty-detection scenarios
-- Kept FitScore calculation in the Streamlit frontend for now 
+- Kept FitScore calculation in the Streamlit frontend for now
 
 ### Day 7
 
@@ -323,6 +323,22 @@ Completed:
 - Used a temporary SQLite database for manual verification
 - Confirmed that the real SQLite database still contains six Application records
 
+### Day 20
+
+Completed:
+
+- Added validated resume intake from pasted plain text
+- Added controlled single-PDF resume upload and text extraction
+- Added shared response fields for resume text, character count, source type, and filename
+- Added PDF type, size, header, encryption, damage, and extractable-text validation
+- Limited PDF uploads to 5 MB
+- Added `pypdf` and `python-multipart` backend dependencies
+- Added a synthetic PDF fixture containing no personal data
+- Added 11 isolated resume API tests that do not access the real database
+- Connected both resume intake methods to the Streamlit frontend
+- Verified successful text and PDF flows, validation errors, and backend connection failures
+- Confirmed all 26 backend tests pass and the real database remains unchanged
+
 ## Tech Stack
 
 - Python
@@ -333,6 +349,8 @@ Completed:
 - SQLAlchemy
 - pytest
 - HTTPX2
+- pypdf
+- python-multipart
 
 Planned later:
 
@@ -351,13 +369,17 @@ roleradar/
 │   │   ├── main.py
 │   │   ├── models.py
 │   │   ├── parser.py
+│   │   ├── resume_service.py
 │   │   ├── routers.py
 │   │   ├── schemas.py
 │   │   └── services.py
 │   ├── tests/
+│   │   ├── fixtures/
+│   │   │   └── synthetic_resume.pdf
 │   │   ├── test_analyzer.py
 │   │   ├── test_applications.py
-│   │   └── test_parser.py
+│   │   ├── test_parser.py
+│   │   └── test_resumes.py
 │   ├── requirements.txt
 │   └── roleradar.db        # Local SQLite database, gitignored
 ├── frontend/
@@ -377,6 +399,7 @@ The backend uses a basic responsibility-separated structure:
 | `main.py` | Create the FastAPI application and register the Router |
 | `routers.py` | Define HTTP endpoints, inject dependencies, and translate business results into HTTP responses |
 | `schemas.py` | Define Pydantic request and response contracts |
+| `resume_service.py` | Validate resume text and extract text from supported PDF files |
 | `services.py` | Perform Application business and database operations |
 | `models.py` | Define SQLAlchemy ORM models and database-table mappings |
 | `database.py` | Configure the database engine, sessions, and declarative base |
@@ -389,11 +412,13 @@ flowchart TD
     main --> database["database.py"]
 
     routers --> schemas["schemas.py"]
+    routers --> resume_service["resume_service.py"]
     routers --> services["services.py"]
     routers --> parser["parser.py"]
     routers --> analyzer["analyzer.py"]
     routers --> database
 
+    resume_service --> schemas
     services --> schemas
     services --> models["models.py"]
     models --> database
@@ -407,6 +432,8 @@ An arrow from module A to module B means that A imports or directly uses B. Depe
 | --- | --- | --- |
 | GET | `/` | Confirm that the backend is running |
 | GET | `/health` | Return the backend health status |
+| POST | `/resumes/text` | Validate pasted plain-text resume content |
+| POST | `/resumes/pdf` | Upload one PDF up to 5 MB and extract its text |
 | POST | `/parse-jd` | Extract known skills from a job description |
 | POST | `/analyze-job` | Calculate detected, matched, and missing skills and FitScore |
 | POST | `/applications` | Save an application record |

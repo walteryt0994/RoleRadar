@@ -15,6 +15,8 @@ API_BASE_URL = os.getenv(
 
 ANALYZE_API_URL = f"{API_BASE_URL}/analyze-job"
 APPLICATIONS_API_URL = f"{API_BASE_URL}/applications"
+RESUME_TEXT_API_URL = f"{API_BASE_URL}/resumes/text"
+RESUME_PDF_API_URL = f"{API_BASE_URL}/resumes/pdf"
 REQUEST_TIMEOUT_SECONDS = 10
 APPLICATION_STATUSES = [
     "Interested",
@@ -27,6 +29,8 @@ APPLICATION_STATUSES = [
 # ----------------------------------------
 # Session state
 # ----------------------------------------
+if "resume_result" not in st.session_state:
+    st.session_state.resume_result = None
 
 if "analysis_result" not in st.session_state:
     st.session_state.analysis_result = None
@@ -40,6 +44,152 @@ if "last_saved_payload" not in st.session_state:
 
 st.title("RoleRadar")
 st.write("Job intelligence & Skill-Gap Analysis Platform")
+
+# ----------------------------------------
+# Resume Text Input
+# ----------------------------------------
+
+st.header("Resume Intake")
+
+resume_text = st.text_area(
+    "Paste your resume text here:",
+    key="resume_text_input",
+)
+st.write("Resume characters:", len(resume_text))
+
+if st.button("Process Resume Text"):
+    st.session_state.resume_result = None
+
+    if not resume_text.strip():
+        st.warning("Please paste your resume text first.")
+    else:
+        try:
+            resume_response = requests.post(
+                RESUME_TEXT_API_URL,
+                json={"text": resume_text},
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+            resume_response.raise_for_status()
+            resume_result = resume_response.json()
+        except requests.exceptions.Timeout:
+            st.error(
+                "The resume request timed out. "
+                "Please try again."
+            )
+        except requests.exceptions.ConnectionError:
+            st.error(
+                "Unable to connect to the RoleRadar backend. "
+                "Please make sure the backend is running."
+            )
+        except requests.exceptions.HTTPError:
+            error_detail = resume_response.json().get(
+                "detail",
+                "The backend rejected the resume text.",
+            )
+            st.error(
+                "Unable to process the resume. "
+                f"{error_detail}"
+            )
+        except requests.exceptions.RequestException:
+            st.error(
+                "Unable to process the resume. "
+                "Please try again."
+            )
+        else:
+            st.session_state.resume_result = resume_result
+            st.success(
+                "Resume text processed successfully. "
+                f"Characters: {resume_result['character_count']}"
+            )
+
+st.write("Or upload a PDF resume:")
+
+resume_pdf = st.file_uploader(
+    "Upload one PDF resume:",
+    type=["pdf"],
+    accept_multiple_files=False,
+    max_upload_size=5,
+    key="resume_pdf_input",
+)
+
+if st.button("Process Resume PDF"):
+    st.session_state.resume_result = None
+
+    if resume_pdf is None:
+        st.warning("Please upload a PDF resume first.")
+    else:
+        try:
+            pdf_response = requests.post(
+                RESUME_PDF_API_URL,
+                files={
+                    "file": (
+                        resume_pdf.name,
+                        resume_pdf.getvalue(),
+                        resume_pdf.type or "application/pdf",
+                    ),
+                },
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+            pdf_response.raise_for_status()
+            resume_result = pdf_response.json()
+        except requests.exceptions.Timeout:
+            st.error(
+                "The PDF upload request timed out. "
+                "Please try again."
+            )
+        except requests.exceptions.ConnectionError:
+            st.error(
+                "Unable to connect to the RoleRadar backend. "
+                "Please make sure the backend is running."
+            )
+        except requests.exceptions.HTTPError:
+            error_detail = pdf_response.json().get(
+                "detail",
+                "The backend rejected the PDF file.",
+            )
+            st.error(
+                "Unable to process the PDF resume. "
+                f"{error_detail}"
+            )
+        except requests.exceptions.RequestException:
+            st.error(
+                "Unable to process the PDF resume. "
+                "Please try again."
+            )
+        else:
+            st.session_state.resume_result = resume_result
+            st.success(
+                "PDF resume processed successfully. "
+                f"Characters: {resume_result['character_count']}"
+            )
+
+if st.session_state.resume_result is not None:
+    resume_result = st.session_state.resume_result
+
+    st.subheader("Validated Resume")
+
+    st.write(
+        "Source:",
+        resume_result["source_type"],
+    )
+    st.write(
+        "Characters:",
+        resume_result["character_count"],
+    )
+
+    if resume_result["filename"] is not None:
+        st.write(
+            "Filename:",
+            resume_result["filename"],
+        )
+
+    st.write("Validated resume text:")
+    st.code(
+        resume_result["text"],
+        language=None,
+    )
+
+st.divider()
 
 # ----------------------------------------
 # Job Description Input
