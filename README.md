@@ -353,6 +353,18 @@ Completed:
 - Confirmed all 36 backend tests pass and the real database remains unchanged
 - Did not add SkillEvidence, profile persistence, profile API endpoints, or a profile editing UI
 
+### Day 22
+
+Completed:
+
+- Added an `EvidenceSourceType` enum for the limited set of evidence sources (education, experience, project, course, certification, resume)
+- Added a `SkillEvidence` Pydantic model with required skill and evidence-text fields, an optional source ID, a 0.0–1.0 confidence score, and a three-state user-confirmation flag
+- Kept `confidence` as `None` when unset instead of defaulting to 0, and kept `user_confirmed` as `None` until reviewed instead of defaulting to `False`
+- Added `skill_evidence` to `StudentProfile` as an independent list alongside the existing self-reported `skills` list
+- Added 15 isolated schema tests covering full payloads, multiple evidence entries per skill, serialization round-trips, invalid enum values, confidence boundaries, three-state confirmation values, missing/None required fields, and rejected extra fields
+- Confirmed all 51 backend tests pass and the real database remains unchanged
+- Did not add profile persistence, profile API endpoints, or a profile editing UI
+
 ## Tech Stack
 
 - Python
@@ -394,7 +406,8 @@ roleradar/
 │   │   ├── test_applications.py
 │   │   ├── test_parser.py
 │   │   ├── test_resumes.py
-│   │   └── test_student_profile.py
+│   │   ├── test_student_profile.py
+│   │   └── test_skill_evidence.py
 │   ├── requirements.txt
 │   └── roleradar.db        # Local SQLite database, gitignored
 ├── frontend/

@@ -119,6 +119,28 @@ class Preferences(ProfileBaseModel):
     work_mode: WorkMode | None = None
 
 
+class EvidenceSourceType(str, Enum):
+    EDUCATION = "education"
+    EXPERIENCE = "experience"
+    PROJECT = "project"
+    COURSE = "course"
+    CERTIFICATION = "certification"
+    RESUME = "resume"
+
+
+class SkillEvidence(ProfileBaseModel):
+    skill: str
+    evidence_text: str
+    source_type: EvidenceSourceType
+    source_id: str | None = None
+    confidence: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    user_confirmed: bool | None = None
+
+
 class StudentProfile(ProfileBaseModel):
     education: list[Education] = Field(default_factory=list)
     experience: list[Experience] = Field(default_factory=list)
@@ -128,3 +150,4 @@ class StudentProfile(ProfileBaseModel):
     skills: list[str] = Field(default_factory=list)
     preferences: Preferences | None = None
     work_authorization: WorkAuthorization | None = None
+    skill_evidence: list[SkillEvidence] = Field(default_factory=list)
