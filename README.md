@@ -339,6 +339,20 @@ Completed:
 - Verified successful text and PDF flows, validation errors, and backend connection failures
 - Confirmed all 26 backend tests pass and the real database remains unchanged
 
+### Day 21
+
+Completed:
+
+- Added a `StudentProfile` Pydantic schema with nested models for education, experience, projects, courses, certifications, and preferences
+- Added a shared `ProfileBaseModel` base class that rejects unexpected extra fields
+- Added a `WorkAuthorizationStatus` enum and a `WorkAuthorization` nested model with country, status, and sponsorship fields
+- Added a `WorkMode` enum and a `Preferences` nested model for desired roles, locations, and work mode
+- Used empty lists as the default for repeatable sections and `None` for sections that may be entirely unfilled
+- Represented dates as plain strings to accommodate ongoing entries and partial dates
+- Added 10 isolated schema tests covering full payloads, minimal payloads, list-instance isolation, serialization round-trips, invalid enum values, missing/None required fields, empty-string optional fields, and rejected extra fields
+- Confirmed all 36 backend tests pass and the real database remains unchanged
+- Did not add SkillEvidence, profile persistence, profile API endpoints, or a profile editing UI
+
 ## Tech Stack
 
 - Python
@@ -379,7 +393,8 @@ roleradar/
 │   │   ├── test_analyzer.py
 │   │   ├── test_applications.py
 │   │   ├── test_parser.py
-│   │   └── test_resumes.py
+│   │   ├── test_resumes.py
+│   │   └── test_student_profile.py
 │   ├── requirements.txt
 │   └── roleradar.db        # Local SQLite database, gitignored
 ├── frontend/

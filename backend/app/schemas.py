@@ -1,6 +1,7 @@
 from datetime import datetime
+from enum import Enum
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class JobDescription(BaseModel):
@@ -47,3 +48,83 @@ class ApplicationResponse(BaseModel):
     matched_skills: list[str]
     missing_skills: list[str]
     created_at: datetime
+
+
+class ProfileBaseModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class WorkAuthorizationStatus(str, Enum):
+    AUTHORIZED = "authorized"
+    NOT_AUTHORIZED = "not_authorized"
+    UNKNOWN = "unknown"
+    PREFER_NOT_TO_SAY = "prefer_not_to_say"
+
+
+class WorkAuthorization(ProfileBaseModel):
+    work_country: str = "US"
+    status: WorkAuthorizationStatus | None = None
+    requires_sponsorship: bool | None = None
+
+
+class Education(ProfileBaseModel):
+    school: str
+    degree: str | None = None
+    major: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    gpa: float | None = None
+
+
+class Experience(ProfileBaseModel):
+    company: str
+    title: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    description: str | None = None
+
+
+class Project(ProfileBaseModel):
+    name: str
+    description: str | None = None
+    technologies: list[str] = Field(default_factory=list)
+    link: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+
+
+class Course(ProfileBaseModel):
+    name: str
+    institution: str | None = None
+    completion_date: str | None = None
+
+
+class Certification(ProfileBaseModel):
+    name: str
+    issuer: str | None = None
+    issue_date: str | None = None
+    expiration_date: str | None = None
+
+
+class WorkMode(str, Enum):
+    REMOTE = "remote"
+    HYBRID = "hybrid"
+    ONSITE = "onsite"
+    NO_PREFERENCE = "no_preference"
+
+
+class Preferences(ProfileBaseModel):
+    desired_roles: list[str] = Field(default_factory=list)
+    locations: list[str] = Field(default_factory=list)
+    work_mode: WorkMode | None = None
+
+
+class StudentProfile(ProfileBaseModel):
+    education: list[Education] = Field(default_factory=list)
+    experience: list[Experience] = Field(default_factory=list)
+    projects: list[Project] = Field(default_factory=list)
+    courses: list[Course] = Field(default_factory=list)
+    certifications: list[Certification] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
+    preferences: Preferences | None = None
+    work_authorization: WorkAuthorization | None = None
