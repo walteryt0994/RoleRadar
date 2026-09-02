@@ -1,7 +1,8 @@
 from datetime import datetime
 from enum import Enum
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 
 class JobDescription(BaseModel):
@@ -127,10 +128,12 @@ class EvidenceSourceType(str, Enum):
     CERTIFICATION = "certification"
     RESUME = "resume"
 
+NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
 
 class SkillEvidence(ProfileBaseModel):
-    skill: str
-    evidence_text: str
+    skill: NonEmptyStr
+    evidence_text: NonEmptyStr
     source_type: EvidenceSourceType
     source_id: str | None = None
     confidence: float | None = Field(

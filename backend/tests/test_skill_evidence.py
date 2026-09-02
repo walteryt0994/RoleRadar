@@ -163,3 +163,58 @@ def test_student_profile_instances_do_not_share_skill_evidence_list():
 
     assert len(profile_a.skill_evidence) == 1
     assert profile_b.skill_evidence == []
+
+
+
+@pytest.mark.parametrize("skill", ["", "   "])
+def test_skill_evidence_rejects_blank_skill(skill):
+    with pytest.raises(ValidationError):
+        SkillEvidence(
+            skill=skill,
+            evidence_text="Some evidence text.",
+            source_type=EvidenceSourceType.COURSE,
+        )
+
+
+@pytest.mark.parametrize("evidence_text", ["", "   "])
+def test_skill_evidence_rejects_blank_evidence_text(evidence_text):
+    with pytest.raises(ValidationError):
+        SkillEvidence(
+            skill="Python",
+            evidence_text=evidence_text,
+            source_type=EvidenceSourceType.COURSE,
+        )
+
+
+def test_skill_evidence_rejects_missing_evidence_text():
+    with pytest.raises(ValidationError):
+        SkillEvidence(
+            skill="Python",
+            source_type=EvidenceSourceType.COURSE,
+        )
+
+
+def test_skill_evidence_rejects_none_for_evidence_text():
+    with pytest.raises(ValidationError):
+        SkillEvidence(
+            skill="Python",
+            evidence_text=None,
+            source_type=EvidenceSourceType.COURSE,
+        )
+
+
+def test_skill_evidence_rejects_missing_source_type():
+    with pytest.raises(ValidationError):
+        SkillEvidence(
+            skill="Python",
+            evidence_text="Some evidence text.",
+        )
+
+
+def test_skill_evidence_rejects_none_for_source_type():
+    with pytest.raises(ValidationError):
+        SkillEvidence(
+            skill="Python",
+            evidence_text="Some evidence text.",
+            source_type=None,
+        )
