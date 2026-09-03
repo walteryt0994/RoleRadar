@@ -154,3 +154,13 @@ class StudentProfile(ProfileBaseModel):
     preferences: Preferences | None = None
     work_authorization: WorkAuthorization | None = None
     skill_evidence: list[SkillEvidence] = Field(default_factory=list)
+
+
+class ProfileResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    profile_data: StudentProfile
+    is_confirmed: bool
+    created_at: datetime
+    updated_at: datetime

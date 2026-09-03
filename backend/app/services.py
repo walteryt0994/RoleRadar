@@ -1,8 +1,8 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Application
-from app.schemas import ApplicationCreate
+from app.models import Application, StudentProfileRecord
+from app.schemas import ApplicationCreate, StudentProfile
 
 
 def create_application(
@@ -46,3 +46,47 @@ def update_application_status(
     db.refresh(application)
 
     return application
+
+
+def get_profile(db: Session) -> StudentProfileRecord | None:
+    statement = select(StudentProfileRecord)
+
+    return db.scalars(statement).first()
+
+
+def save_or_replace_profile(
+    db: Session,
+    profile: StudentProfile,
+) -> StudentProfileRecord:
+    record = get_profile(db)
+
+    if record is None:
+        record = StudentProfileRecord(
+            profile_data=profile.model_dump(mode="json"),
+            is_confirmed=False,
+        )
+        db.add(record)
+    else:
+        record.profile_data = profile.model_dump(mode="json")
+        record.is_confirmed = False
+
+    db.commit()
+    db.refresh(record)
+
+    return record
+
+
+def update_profile_confirmation(
+    db: Session,
+) -> StudentProfileRecord | None:
+    record = get_profile(db)
+
+    if record is None:
+        return None
+
+    record.is_confirmed = True
+
+    db.commit()
+    db.refresh(record)
+
+    return record

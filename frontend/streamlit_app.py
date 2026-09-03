@@ -1,3 +1,4 @@
+import json
 import os
 
 import streamlit as st
@@ -16,6 +17,8 @@ API_BASE_URL = os.getenv(
 ANALYZE_API_URL = f"{API_BASE_URL}/analyze-job"
 APPLICATIONS_API_URL = f"{API_BASE_URL}/applications"
 RESUME_TEXT_API_URL = f"{API_BASE_URL}/resumes/text"
+PROFILE_API_URL = f"{API_BASE_URL}/profile"
+PROFILE_CONFIRMATION_API_URL = f"{API_BASE_URL}/profile/confirmation"
 RESUME_PDF_API_URL = f"{API_BASE_URL}/resumes/pdf"
 REQUEST_TIMEOUT_SECONDS = 10
 APPLICATION_STATUSES = [
@@ -37,6 +40,9 @@ if "analysis_result" not in st.session_state:
 
 if "last_saved_payload" not in st.session_state:
     st.session_state.last_saved_payload = None
+
+if "profile_result" not in st.session_state:
+    st.session_state.profile_result = None
 
 # ----------------------------------------
 # Page header
@@ -188,6 +194,175 @@ if st.session_state.resume_result is not None:
         resume_result["text"],
         language=None,
     )
+
+st.divider()
+
+
+# ----------------------------------------
+# Student Profile
+# ----------------------------------------
+
+st.header("Student Profile")
+
+EMPTY_PROFILE_JSON = json.dumps(
+    {
+        "education": [],
+        "experience": [],
+        "projects": [],
+        "courses": [],
+        "certifications": [],
+        "skills": [],
+        "preferences": None,
+        "work_authorization": None,
+        "skill_evidence": [],
+    },
+    indent=2,
+)
+
+try:
+    profile_response = requests.get(
+        PROFILE_API_URL,
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+
+    if profile_response.status_code == 404:
+        st.session_state.profile_result = None
+    else:
+        profile_response.raise_for_status()
+        st.session_state.profile_result = profile_response.json()
+except requests.exceptions.Timeout:
+    st.error(
+        "The profile request timed out. "
+        "Please try again."
+    )
+except requests.exceptions.ConnectionError:
+    st.error(
+        "Unable to connect to the RoleRadar backend. "
+        "Profile could not be loaded."
+    )
+except requests.exceptions.RequestException:
+    st.error(
+        "Unable to load the profile. "
+        "Please try again."
+    )
+
+if st.session_state.profile_result is not None:
+    default_profile_json = json.dumps(
+        st.session_state.profile_result["profile_data"],
+        indent=2,
+    )
+else:
+    default_profile_json = EMPTY_PROFILE_JSON
+    st.info("No profile saved yet. Fill in the JSON below and save.")
+
+profile_json_text = st.text_area(
+    "Student Profile (JSON):",
+    value=default_profile_json,
+    height=300,
+    key="profile_json_input",
+)
+
+if st.button("Save Profile"):
+    try:
+        profile_payload = json.loads(profile_json_text)
+    except json.JSONDecodeError:
+        st.error(
+            "The profile JSON is not valid. "
+            "Please check the formatting."
+        )
+    else:
+        try:
+            save_profile_response = requests.put(
+                PROFILE_API_URL,
+                json=profile_payload,
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+            save_profile_response.raise_for_status()
+            saved_profile = save_profile_response.json()
+        except requests.exceptions.Timeout:
+            st.error(
+                "The save request timed out. "
+                "Please try again."
+            )
+        except requests.exceptions.ConnectionError:
+            st.error(
+                "Unable to connect to the RoleRadar backend. "
+                "Please make sure the backend is running."
+            )
+        except requests.exceptions.HTTPError:
+            st.error(
+                "Unable to save the profile. "
+                f"Status code: {save_profile_response.status_code}"
+            )
+        except requests.exceptions.RequestException:
+            st.error(
+                "Unable to save the profile. "
+                "Please try again."
+            )
+        else:
+            st.session_state.profile_result = saved_profile
+            st.success("Profile saved successfully.")
+            st.rerun()
+
+if st.session_state.profile_result is not None:
+    profile_data = st.session_state.profile_result["profile_data"]
+
+    st.write(
+        "Confirmed:",
+        "Yes" if st.session_state.profile_result["is_confirmed"] else "No",
+    )
+
+    st.subheader("Skill Evidence")
+
+    skill_evidence = profile_data["skill_evidence"]
+
+    if skill_evidence:
+        for evidence in skill_evidence:
+            with st.expander(
+                f"{evidence['skill']} — {evidence['source_type']}"
+            ):
+                st.write("Evidence:", evidence["evidence_text"])
+                st.write("Source ID:", evidence["source_id"] or "None")
+                st.write("Confidence:", evidence["confidence"])
+                st.write("User confirmed:", evidence["user_confirmed"])
+    else:
+        st.info("No skill evidence recorded yet.")
+
+    if st.button(
+        "Confirm Profile",
+        disabled=st.session_state.profile_result["is_confirmed"],
+    ):
+        try:
+            confirm_response = requests.patch(
+                PROFILE_CONFIRMATION_API_URL,
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+            confirm_response.raise_for_status()
+            confirmed_profile = confirm_response.json()
+        except requests.exceptions.Timeout:
+            st.error(
+                "The confirmation request timed out. "
+                "Please try again."
+            )
+        except requests.exceptions.ConnectionError:
+            st.error(
+                "Unable to connect to the RoleRadar backend. "
+                "Please make sure the backend is running."
+            )
+        except requests.exceptions.HTTPError:
+            st.error(
+                "Unable to confirm the profile. "
+                f"Status code: {confirm_response.status_code}"
+            )
+        except requests.exceptions.RequestException:
+            st.error(
+                "Unable to confirm the profile. "
+                "Please try again."
+            )
+        else:
+            st.session_state.profile_result = confirmed_profile
+            st.success("Profile confirmed successfully.")
+            st.rerun()
 
 st.divider()
 

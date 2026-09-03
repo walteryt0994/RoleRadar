@@ -15,8 +15,10 @@ from app.schemas import (
     ApplicationStatusUpdate,
     JobAnalysisRequest,
     JobDescription,
+    ProfileResponse,
     ResumeTextRequest,
     ResumeTextResponse,
+    StudentProfile,
 )
 
 MAX_RESUME_PDF_SIZE_BYTES = 5 * 1024 * 1024
@@ -174,3 +176,50 @@ def update_application_status(
         )
 
     return application
+
+
+@router.get(
+    "/profile",
+    response_model=ProfileResponse,
+)
+def get_profile(
+    db: Session = Depends(get_db),
+):
+    profile = services.get_profile(db)
+
+    if profile is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Profile not found",
+        )
+
+    return profile
+
+
+@router.put(
+    "/profile",
+    response_model=ProfileResponse,
+)
+def save_profile(
+    payload: StudentProfile,
+    db: Session = Depends(get_db),
+):
+    return services.save_or_replace_profile(db, payload)
+
+
+@router.patch(
+    "/profile/confirmation",
+    response_model=ProfileResponse,
+)
+def confirm_profile(
+    db: Session = Depends(get_db),
+):
+    profile = services.update_profile_confirmation(db)
+
+    if profile is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Profile not found",
+        )
+
+    return profile

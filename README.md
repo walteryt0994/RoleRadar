@@ -366,6 +366,22 @@ Completed:
 - Confirmed all 59 backend tests pass and the real database remains unchanged
 - Did not add profile persistence, profile API endpoints, or a profile editing UI
 
+### Day 23
+
+Completed:
+
+- Added a `StudentProfileRecord` SQLAlchemy model storing a full `StudentProfile` as a JSON snapshot, plus a confirmation flag and timestamps
+- Reused `from_attributes` validation so `ProfileResponse` converts the stored JSON back into a validated `StudentProfile`
+- Added a Profile service layer for reading, creating-or-replacing, and confirming the saved Profile
+- Added `GET /profile`, `PUT /profile`, and `PATCH /profile/confirmation` endpoints
+- Reset Profile confirmation to unconfirmed whenever the content is replaced
+- Added 10 isolated Profile persistence tests covering creation, replacement, confirmation, 404s, invalid payloads, cross-session reads, and independence from Application records
+- Added a Streamlit Student Profile section for loading, editing as JSON, and saving a Profile
+- Added Skill Evidence detail display and a Profile confirmation button in the frontend
+- Manually verified save, restart persistence, re-confirmation after edits, and backend-connection error handling using a temporary database
+- Confirmed all 69 backend tests pass and the real database's Application records remain unchanged
+- Did not add authentication, multiple profiles, database IDs for nested models, or an Alignment Score
+
 ## Tech Stack
 
 - Python
@@ -408,7 +424,8 @@ roleradar/
 │   │   ├── test_parser.py
 │   │   ├── test_resumes.py
 │   │   ├── test_student_profile.py
-│   │   └── test_skill_evidence.py
+│   │   ├── test_skill_evidence.py
+│   │   └── test_profile_persistence.py
 │   ├── requirements.txt
 │   └── roleradar.db        # Local SQLite database, gitignored
 ├── frontend/
@@ -468,6 +485,9 @@ An arrow from module A to module B means that A imports or directly uses B. Depe
 | POST | `/applications` | Save an application record |
 | GET | `/applications` | Return all saved application records |
 | PATCH | `/applications/{application_id}` | Update an application status |
+| GET | `/profile` | Return the saved Student Profile |
+| PUT | `/profile` | Create or replace the saved Student Profile |
+| PATCH | `/profile/confirmation` | Confirm the saved Student Profile |
 
 ## Configuration
 
