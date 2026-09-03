@@ -255,6 +255,11 @@ else:
     default_profile_json = EMPTY_PROFILE_JSON
     st.info("No profile saved yet. Fill in the JSON below and save.")
 
+if "_pending_profile_sync" in st.session_state:
+    st.session_state["profile_json_input"] = st.session_state.pop(
+        "_pending_profile_sync"
+    )
+
 profile_json_text = st.text_area(
     "Student Profile (JSON):",
     value=default_profile_json,
@@ -301,6 +306,10 @@ if st.button("Save Profile"):
             )
         else:
             st.session_state.profile_result = saved_profile
+            st.session_state["_pending_profile_sync"] = json.dumps(
+                saved_profile["profile_data"],
+                indent=2,
+            )
             st.success("Profile saved successfully.")
             st.rerun()
 
@@ -328,9 +337,23 @@ if st.session_state.profile_result is not None:
     else:
         st.info("No skill evidence recorded yet.")
 
+    try:
+        edited_profile_data = json.loads(profile_json_text)
+        profile_has_unsaved_changes = edited_profile_data != profile_data
+    except json.JSONDecodeError:
+        profile_has_unsaved_changes = True
+
+    if profile_has_unsaved_changes:
+        st.warning(
+            "Please save your changes before confirming the profile."
+        )
+
     if st.button(
         "Confirm Profile",
-        disabled=st.session_state.profile_result["is_confirmed"],
+        disabled=(
+            st.session_state.profile_result["is_confirmed"]
+            or profile_has_unsaved_changes
+        ),
     ):
         try:
             confirm_response = requests.patch(
@@ -361,9 +384,12 @@ if st.session_state.profile_result is not None:
             )
         else:
             st.session_state.profile_result = confirmed_profile
+            st.session_state["_pending_profile_sync"] = json.dumps(
+                confirmed_profile["profile_data"],
+                indent=2,
+            )
             st.success("Profile confirmed successfully.")
             st.rerun()
-
 st.divider()
 
 # ----------------------------------------
