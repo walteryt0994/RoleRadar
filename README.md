@@ -382,6 +382,26 @@ Completed:
 - Confirmed all 69 backend tests pass and the real database's Application records remain unchanged
 - Did not add authentication, multiple profiles, database IDs for nested models, or an Alignment Score
 
+### Day 24
+
+Completed:
+
+- Started Stage 7: LLM JD Parser
+- Added the official OpenAI Python SDK as a backend dependency
+- Added `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_TIMEOUT_SECONDS`, and `OPENAI_MAX_RETRIES` configuration placeholders
+- Added `backend/app/ai_provider.py` with a vendor-neutral `AIProvider` interface, a frozen `GenerationResult`, and six domain error types
+- Added an `OpenAIProvider` implementation that calls the Responses API and returns the text, the model actually reported by the provider, the measured latency, and token usage
+- Delegated timeout and retry handling to the official SDK instead of adding a second retry loop
+- Translated SDK timeout, connection, rate-limit, and API status errors into RoleRadar domain errors with fixed, secret-free messages
+- Rejected unfinished responses before reading any text so truncated output is never returned as a successful result
+- Centralised configuration validation in `OpenAIProviderConfig.__post_init__` so the environment and explicit-configuration paths share one contract
+- Hid the API key from the configuration `repr` and suppressed SDK exception chaining in tracebacks
+- Added an optional `reasoning_effort` argument that stays omitted unless explicitly provided
+- Added 65 isolated provider tests that mock the SDK and require no API key, no network access, and no cost
+- Verified one approved live call against a fictional job description: 105 input tokens, 37 output tokens, 2.649 s latency, and roughly $0.00007 in cost
+- Confirmed all 134 backend tests pass and the real database remains unchanged
+- Did not add a structured job-description schema, a parsing endpoint, prompt or parser versioning, or a rule-versus-LLM comparison
+
 ## Tech Stack
 
 - Python
@@ -394,12 +414,12 @@ Completed:
 - HTTPX2
 - pypdf
 - python-multipart
+- openai
 
 Planned later:
 
 - PostgreSQL
 - Plotly
-- LLM API integration
 
 ## Project Structure
 
@@ -407,6 +427,7 @@ Planned later:
 roleradar/
 ├── backend/
 │   ├── app/
+│   │   ├── ai_provider.py
 │   │   ├── analyzer.py
 │   │   ├── database.py
 │   │   ├── main.py
@@ -419,6 +440,7 @@ roleradar/
 │   ├── tests/
 │   │   ├── fixtures/
 │   │   │   └── synthetic_resume.pdf
+│   │   ├── test_ai_provider.py
 │   │   ├── test_analyzer.py
 │   │   ├── test_applications.py
 │   │   ├── test_parser.py
@@ -451,6 +473,7 @@ The backend uses a basic responsibility-separated structure:
 | `database.py` | Configure the database engine, sessions, and declarative base |
 | `parser.py` | Extract known skills from job-description text |
 | `analyzer.py` | Calculate matched skills, missing skills, and FitScore |
+| `ai_provider.py` | Call the configured AI provider through the Responses API and translate provider errors, timeouts, and usage metadata |
 
 ```mermaid
 flowchart TD
@@ -468,9 +491,13 @@ flowchart TD
     services --> schemas
     services --> models["models.py"]
     models --> database
+
+    ai_provider["ai_provider.py"]
 ```
 
 An arrow from module A to module B means that A imports or directly uses B. Dependencies flow from the application entry point toward lower-level modules; lower-level modules do not import `main.py` or `routers.py`.
+
+`ai_provider.py` currently has no incoming arrows because no other module imports it yet. It is a standalone provider client verified by its own tests; wiring it into a parsing endpoint is Day 25 work.
 
 ## API Overview
 
@@ -491,12 +518,16 @@ An arrow from module A to module B means that A imports or directly uses B. Depe
 
 ## Configuration
 
-RoleRadar provides local development defaults for all current configuration values.
+RoleRadar provides local development defaults for most configuration values. `OPENAI_API_KEY` and `OPENAI_MODEL` have no defaults on purpose: a missing key must fail loudly, and a guessed model would silently send billable requests to the wrong place.
 
 | Environment variable | Used by | Default |
 | --- | --- | --- |
 | `DATABASE_URL` | FastAPI backend | `sqlite:///./roleradar.db` |
 | `API_BASE_URL` | Streamlit frontend | `http://127.0.0.1:8000` |
+| `OPENAI_API_KEY` | FastAPI backend | none, required for AI calls |
+| `OPENAI_MODEL` | FastAPI backend | none, required for AI calls |
+| `OPENAI_TIMEOUT_SECONDS` | FastAPI backend | `30.0` |
+| `OPENAI_MAX_RETRIES` | FastAPI backend | `2` |
 
 Environment variables are read when each service starts. Restart the corresponding service after changing a value.
 
@@ -514,7 +545,22 @@ cd frontend
 API_BASE_URL=http://127.0.0.1:8000 streamlit run streamlit_app.py
 ```
 
-See `.env.example` for the available configuration names. The application currently reads process environment variables with `os.getenv()` and does not automatically load a local `.env` file.
+### Loading a local `.env` file
+
+See `.env.example` for the available configuration names. The application reads process environment variables with `os.getenv()` and **does not** load a `.env` file automatically, so creating `.env` alone has no effect.
+
+`.env` is listed in `.gitignore` and must never be committed. Copy `.env.example` to `.env` and edit it in a text editor rather than typing secrets on the command line, which would record them in your shell history.
+
+Load it into the current shell before starting a service:
+
+```bash
+cd /Users/hug0_/roleradar
+set -a && . ./.env && set +a
+```
+
+This command contains no secret, so the key never reaches your shell history. The variables stay in that shell session only; open a new terminal and you will need to load them again.
+
+The automated tests never read `.env` and never contact the network, so running the test suite requires no API key and costs nothing.
 
 ## Run Tests
 
