@@ -1,5 +1,6 @@
 import math
 import os
+import re
 import time
 
 from abc import ABC, abstractmethod
@@ -43,6 +44,10 @@ class AIProviderEmptyResponseError(AIProviderError):
     pass
 
 
+class AIProviderRefusalError(AIProviderError):
+    pass
+
+
 @dataclass(frozen=True)
 class GenerationResult:
     text: str
@@ -53,6 +58,29 @@ class GenerationResult:
     total_tokens: int | None = None
 
 
+SCHEMA_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+@dataclass(frozen=True)
+class JsonSchemaFormat:
+    name: str
+    schema: dict[str, object]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not SCHEMA_NAME_PATTERN.match(
+            self.name
+        ):
+            raise AIProviderConfigError(
+                "Schema name must be 1-64 characters of letters, digits, "
+                "underscores, or hyphens."
+            )
+
+        if not isinstance(self.schema, dict) or not self.schema:
+            raise AIProviderConfigError(
+                "Schema must be a non-empty JSON Schema object."
+            )
+
+
 class AIProvider(ABC):
     @abstractmethod
     def generate_text(
@@ -60,6 +88,7 @@ class AIProvider(ABC):
         prompt: str,
         max_output_tokens: int | None = None,
         reasoning_effort: str | None = None,
+        json_schema_format: JsonSchemaFormat | None = None,
     ) -> GenerationResult:
         pass
 
@@ -140,6 +169,18 @@ def load_openai_config() -> OpenAIProviderConfig:
     )
 
 
+def _has_refusal(response: object) -> bool:
+    for item in getattr(response, "output", None) or []:
+        if getattr(item, "type", None) == "refusal":
+            return True
+
+        for part in getattr(item, "content", None) or []:
+            if getattr(part, "type", None) == "refusal":
+                return True
+
+    return False
+
+
 class OpenAIProvider(AIProvider):
     def __init__(self, config: OpenAIProviderConfig | None = None) -> None:
         if config is None:
@@ -157,6 +198,7 @@ class OpenAIProvider(AIProvider):
         prompt: str,
         max_output_tokens: int | None = None,
         reasoning_effort: str | None = None,
+        json_schema_format: JsonSchemaFormat | None = None,
     ) -> GenerationResult:
         request = {
             "model": self._config.model,
@@ -169,6 +211,16 @@ class OpenAIProvider(AIProvider):
 
         if reasoning_effort is not None:
             request["reasoning"] = {"effort": reasoning_effort}
+
+        if json_schema_format is not None:
+            request["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": json_schema_format.name,
+                    "schema": json_schema_format.schema,
+                    "strict": True,
+                }
+            }
 
         started_at = time.perf_counter()
         try:
@@ -201,6 +253,11 @@ class OpenAIProvider(AIProvider):
         if status != "completed":
             raise AIProviderResponseError(
                 "The provider returned an unfinished response."
+            )
+
+        if _has_refusal(response):
+            raise AIProviderRefusalError(
+                "The provider refused to generate text."
             )
 
         text = (response.output_text or "").strip()

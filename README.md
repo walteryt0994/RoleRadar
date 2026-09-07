@@ -402,6 +402,24 @@ Completed:
 - Confirmed all 134 backend tests pass and the real database remains unchanged
 - Did not add a structured job-description schema, a parsing endpoint, prompt or parser versioning, or a rule-versus-LLM comparison
 
+### Day 25
+
+Completed:
+
+- Added a `StructuredJobDescription` Pydantic schema with a dedicated `JobDescriptionBaseModel` base, a JD-specific `JobWorkMode` enum, and a reusable `JobRequirement` model that binds each requirement to its supporting job-posting phrase
+- Made every job-description field required in the schema and expressed unknown facts as `null` or an empty list, so the generated JSON Schema satisfies strict Structured Outputs
+- Kept the schema separate from `StudentProfile`, because a candidate's own status and preferences are not the same contract as a posting's requirements
+- Added an optional `JsonSchemaFormat` argument to the provider so callers can request strict Structured Outputs without the provider importing any business model
+- Added `AIProviderRefusalError` and refusal detection so a refused response is no longer reported as missing text
+- Added `backend/app/jd_service.py` with fixed extraction instructions, delimiter-wrapped postings, one provider call, JSON decoding, Pydantic validation, and verbatim evidence verification
+- Treated the job posting as untrusted data and instructed the parser never to follow instructions found inside it
+- Returned provider metadata alongside the parsed result so later reproducibility work has the model, latency, and token usage available
+- Added 101 isolated schema, provider, and service tests that mock the SDK and require no API key, no network access, and no cost
+- Verified two approved live calls against a fictional job posting; the first exposed education and work-authorization requirements being filed as skills, and the second confirmed the corrected instructions produce skills-only `required_skills` and populated `hard_constraints`
+- Recorded the live measurements: 668/271 tokens at 5.43 s and 735/260 tokens at 3.703 s, for roughly $0.00092 in total cost
+- Confirmed all 235 backend tests pass and the real database remains unchanged
+- Did not add a parsing endpoint or UI control, prompt or parser versioning, a rule-versus-LLM comparison, or any match scoring
+
 ## Tech Stack
 
 - Python
@@ -430,6 +448,7 @@ roleradar/
 │   │   ├── ai_provider.py
 │   │   ├── analyzer.py
 │   │   ├── database.py
+│   │   ├── jd_service.py
 │   │   ├── main.py
 │   │   ├── models.py
 │   │   ├── parser.py
@@ -441,6 +460,8 @@ roleradar/
 │   │   ├── fixtures/
 │   │   │   └── synthetic_resume.pdf
 │   │   ├── test_ai_provider.py
+│   │   ├── test_jd_service.py
+│   │   ├── test_structured_jd.py
 │   │   ├── test_analyzer.py
 │   │   ├── test_applications.py
 │   │   ├── test_parser.py
@@ -474,6 +495,7 @@ The backend uses a basic responsibility-separated structure:
 | `parser.py` | Extract known skills from job-description text |
 | `analyzer.py` | Calculate matched skills, missing skills, and FitScore |
 | `ai_provider.py` | Call the configured AI provider through the Responses API and translate provider errors, timeouts, and usage metadata |
+| `jd_service.py` | Turn a job posting into a validated `StructuredJobDescription` and reject requirements whose evidence is not in the posting |
 
 ```mermaid
 flowchart TD
@@ -492,12 +514,13 @@ flowchart TD
     services --> models["models.py"]
     models --> database
 
-    ai_provider["ai_provider.py"]
+    jd_service["jd_service.py"] --> ai_provider["ai_provider.py"]
+    jd_service --> schemas
 ```
 
 An arrow from module A to module B means that A imports or directly uses B. Dependencies flow from the application entry point toward lower-level modules; lower-level modules do not import `main.py` or `routers.py`.
 
-`ai_provider.py` currently has no incoming arrows because no other module imports it yet. It is a standalone provider client verified by its own tests; wiring it into a parsing endpoint is Day 25 work.
+`jd_service.py` has no incoming arrows because nothing imports it yet: job-description parsing is exercised directly through its own tests rather than through an HTTP endpoint. Adding a public endpoint or UI control is deliberately out of scope until there is a concrete user flow that needs one.
 
 ## API Overview
 

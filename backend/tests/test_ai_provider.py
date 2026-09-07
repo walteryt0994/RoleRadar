@@ -19,8 +19,10 @@ from app.ai_provider import (
     AIProviderEmptyResponseError,
     AIProviderError,
     AIProviderRateLimitError,
+    AIProviderRefusalError,
     AIProviderResponseError,
     AIProviderTimeoutError,
+    JsonSchemaFormat,
     OpenAIProvider,
     OpenAIProviderConfig,
     load_openai_config,
@@ -44,11 +46,13 @@ def _fake_response(
     output_text="Python, SQL",
     status="completed",
     incomplete_reason=None,
+    output=None,
 ):
     response = MagicMock()
     response.output_text = output_text
     response.model = "test-model-2026-01-01"
     response.status = status
+    response.output = output if output is not None else []
     response.usage = types.SimpleNamespace(
         input_tokens=42,
         output_tokens=7,
@@ -619,3 +623,149 @@ def test_generate_text_sends_live_call_parameters(provider):
     assert request["store"] is False
     assert request["max_output_tokens"] == 300
     assert request["reasoning"] == {"effort": "none"}
+
+
+TEST_SCHEMA = {
+    "type": "object",
+    "properties": {"job_title": {"type": "string"}},
+    "required": ["job_title"],
+    "additionalProperties": False,
+}
+
+TEST_SCHEMA_FORMAT = JsonSchemaFormat(
+    name="test_job_schema",
+    schema=TEST_SCHEMA,
+)
+
+
+def _refusal_response(refusal_text="I cannot help with that."):
+    refusal_part = types.SimpleNamespace(
+        type="refusal",
+        refusal=refusal_text,
+    )
+    message_item = types.SimpleNamespace(
+        type="message",
+        content=[refusal_part],
+    )
+
+    return _fake_response(output_text="", output=[message_item])
+
+
+def test_generate_text_omits_text_format_by_default(provider):
+    provider._client.responses.create.return_value = _fake_response()
+
+    provider.generate_text("Parse this job description.")
+
+    request = provider._client.responses.create.call_args.kwargs
+
+    assert "text" not in request
+
+
+def test_generate_text_sends_strict_json_schema_format(provider):
+    provider._client.responses.create.return_value = _fake_response()
+
+    provider.generate_text(
+        "Parse this job description.",
+        json_schema_format=TEST_SCHEMA_FORMAT,
+    )
+
+    request = provider._client.responses.create.call_args.kwargs
+    text_format = request["text"]["format"]
+
+    assert text_format["type"] == "json_schema"
+    assert text_format["name"] == "test_job_schema"
+    assert text_format["strict"] is True
+
+
+def test_generate_text_sends_the_schema_unchanged(provider):
+    provider._client.responses.create.return_value = _fake_response()
+
+    provider.generate_text(
+        "Parse this job description.",
+        json_schema_format=TEST_SCHEMA_FORMAT,
+    )
+
+    request = provider._client.responses.create.call_args.kwargs
+
+    assert request["text"]["format"]["schema"] == TEST_SCHEMA
+
+
+def test_generate_text_combines_schema_with_other_options(provider):
+    provider._client.responses.create.return_value = _fake_response()
+
+    provider.generate_text(
+        "Parse this job description.",
+        max_output_tokens=1500,
+        reasoning_effort="none",
+        json_schema_format=TEST_SCHEMA_FORMAT,
+    )
+
+    request = provider._client.responses.create.call_args.kwargs
+
+    assert request["max_output_tokens"] == 1500
+    assert request["reasoning"] == {"effort": "none"}
+    assert request["store"] is False
+    assert request["text"]["format"]["strict"] is True
+
+
+def test_generate_text_rejects_a_refusal_output_item(provider):
+    refusal_item = types.SimpleNamespace(type="refusal", content=None)
+    provider._client.responses.create.return_value = _fake_response(
+        output_text="",
+        output=[refusal_item],
+    )
+
+    with pytest.raises(AIProviderRefusalError):
+        provider.generate_text("Parse this job description.")
+
+
+def test_generate_text_rejects_a_refusal_content_part(provider):
+    provider._client.responses.create.return_value = _refusal_response()
+
+    with pytest.raises(AIProviderRefusalError):
+        provider.generate_text("Parse this job description.")
+
+
+def test_refusal_error_does_not_leak_provider_text(provider):
+    provider._client.responses.create.return_value = _refusal_response(
+        refusal_text="Refused because of " + LEAK_CANARY,
+    )
+
+    with pytest.raises(AIProviderRefusalError) as error_info:
+        provider.generate_text("Parse this job description.")
+
+    assert LEAK_CANARY not in str(error_info.value)
+    assert LEAK_CANARY not in _formatted_traceback(error_info.value)
+
+
+def test_empty_output_without_a_refusal_is_not_a_refusal(provider):
+    provider._client.responses.create.return_value = _fake_response(
+        output_text="",
+        output=[],
+    )
+
+    with pytest.raises(AIProviderError) as error_info:
+        provider.generate_text("Parse this job description.")
+
+    assert isinstance(error_info.value, AIProviderEmptyResponseError)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["", "   ", "has space", "has.dot", "a" * 65],
+)
+def test_json_schema_format_rejects_invalid_names(name):
+    with pytest.raises(AIProviderConfigError):
+        JsonSchemaFormat(name=name, schema=TEST_SCHEMA)
+
+
+@pytest.mark.parametrize("schema", [{}, None, "not a dict", [], 5])
+def test_json_schema_format_rejects_invalid_schemas(schema):
+    with pytest.raises(AIProviderConfigError):
+        JsonSchemaFormat(name="test_job_schema", schema=schema)
+
+
+def test_json_schema_format_accepts_a_64_character_name():
+    schema_format = JsonSchemaFormat(name="a" * 64, schema=TEST_SCHEMA)
+
+    assert len(schema_format.name) == 64

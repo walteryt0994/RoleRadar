@@ -164,3 +164,34 @@ class ProfileResponse(BaseModel):
     is_confirmed: bool
     created_at: datetime
     updated_at: datetime
+
+
+class JobDescriptionBaseModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class JobWorkMode(str, Enum):
+    ONSITE = "onsite"
+    HYBRID = "hybrid"
+    REMOTE = "remote"
+
+
+class JobRequirement(JobDescriptionBaseModel):
+    text: NonEmptyStr
+    evidence_text: NonEmptyStr
+
+
+class StructuredJobDescription(JobDescriptionBaseModel):
+    job_title: str | None
+    company: str | None
+    location: str | None
+    work_mode: JobWorkMode | None
+    seniority: str | None
+    minimum_experience: str | None
+    education_requirement: str | None
+    work_authorization: str | None
+    responsibilities: list[str]
+    required_skills: list[JobRequirement]
+    preferred_skills: list[JobRequirement]
+    hard_constraints: list[JobRequirement]
+    uncertain_requirements: list[JobRequirement]
