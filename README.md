@@ -430,12 +430,12 @@ Completed:
 - Extended `GenerationResult` so the provider reports its own identity, the model it actually requested, and the output limit and reasoning effort it actually sent, with omitted options recorded as unknown rather than guessed
 - Added `backend/app/jd_record.py` with a `ParseMetadata` contract, a SHA-256 fingerprint of the stripped job posting, a UTC timestamp, and an explicit allow list of the fields that may be written to disk
 - Returned a `JobDescriptionRecord` from the parser that carries the validated job description, the traceability metadata, and the in-memory generation result
-- Kept the raw provider response out of exported files: the allow list never serialises `generation`, so the model's echo of the posting never reaches disk
+- Kept the raw provider response out of exported files: the allow list never serialises `generation`, so `generation.text` never reaches disk; the validated record still stores `evidence_text` quotes, which are excerpts of the posting by design
 - Added explicit local JSON export that refuses to overwrite an existing file, and a read-back path that rejects unsupported record or schema versions, missing fields, unexpected fields, and content that no longer matches the schema
 - Left parsing itself free of disk writes; exporting is always an explicit call by the caller
-- Ignored `backend/records/` in Git because a record contains real posting content, while the fingerprint alone is safe to keep
-- Added 45 isolated schema, provider, record, and service tests that mock the SDK and require no API key, no network access, and no cost
-- Confirmed all 284 backend tests pass and the real database remains unchanged
+- Ignored `backend/records/` in Git because a record contains real posting content; the fingerprint is only there to link results from the same input and offers no anonymisation, so exported records stay local business data
+- Added 104 isolated tests that mock the SDK and require no API key, no network access, and no cost: 80 record tests, 18 more service tests, and 6 more provider tests covering the new call-identity fields
+- Confirmed all 339 backend tests pass and the real database remains unchanged
 - Did not add database tables, a version registry, a logging platform, a failure audit trail, an endpoint or UI control, a rule-versus-LLM comparison, or any match scoring
 
 ## Tech Stack
@@ -539,6 +539,7 @@ flowchart TD
     jd_service --> schemas
     jd_service --> jd_record["jd_record.py"]
     jd_record --> schemas
+    jd_record --> ai_provider
 ```
 
 An arrow from module A to module B means that A imports or directly uses B. Dependencies flow from the application entry point toward lower-level modules; lower-level modules do not import `main.py` or `routers.py`.
@@ -546,6 +547,30 @@ An arrow from module A to module B means that A imports or directly uses B. Depe
 `jd_service.py` has no incoming arrows because nothing imports it yet: job-description parsing is exercised directly through its own tests rather than through an HTTP endpoint. Adding a public endpoint or UI control is deliberately out of scope until there is a concrete user flow that needs one.
 
 Parsing never writes to disk. A caller can export a parse result with `export_record`, which writes one JSON file and refuses to overwrite an existing path; `load_record` reads it back and rejects unsupported record or schema versions. Exported records live under `backend/records/`, which is gitignored because a record contains the posting's actual requirements, while the SHA-256 fingerprint it stores identifies the same input without keeping the original text.
+
+### Record versions and local files
+
+Four version labels travel with every record, and each one lives in the module that owns what it versions:
+
+| Label | Lives in | Bump it when |
+| --- | --- | --- |
+| `PROMPT_VERSION` | `jd_service.py` | any sentence in `PARSER_INSTRUCTIONS` changes |
+| `PARSER_VERSION` | `jd_service.py` | the parse pipeline changes |
+| `SCHEMA_VERSION` | `schemas.py` | a `StructuredJobDescription` field name, type, or nullability changes |
+| `RECORD_VERSION` | `jd_record.py` | the record file's outer structure changes |
+
+Reading a record back requires `record_version` and `schema_version` to match the current code, because both decide how the stored content can be interpreted. `prompt_version` and `parser_version` are kept exactly as stored, so historical records stay comparable.
+
+```python
+from app.jd_record import export_record, load_record
+
+record = parse_job_description(provider, job_posting_text)
+export_record(record, "backend/records/parse-001.json")
+
+reloaded = load_record("backend/records/parse-001.json")
+```
+
+`backend/records/` is a convention, not a requirement: `export_record` writes wherever the caller points it, and only that directory is gitignored.
 
 ## API Overview
 

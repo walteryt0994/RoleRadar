@@ -1,9 +1,9 @@
-import dataclasses
 import json
 import re
 import traceback
 
 import pytest
+from pydantic import ValidationError
 
 from app.ai_provider import GenerationResult
 from app.jd_record import (
@@ -133,10 +133,8 @@ def test_utc_timestamp_uses_the_expected_utc_format():
     )
 
 
-def test_metadata_fields_match_the_metadata_dataclass():
-    declared = {field.name for field in dataclasses.fields(ParseMetadata)}
-
-    assert set(METADATA_FIELDS) == declared
+def test_metadata_fields_match_the_metadata_model():
+    assert set(METADATA_FIELDS) == set(ParseMetadata.model_fields)
 
 
 def test_payload_has_only_the_expected_top_level_keys():
@@ -331,4 +329,160 @@ def test_record_errors_do_not_leak_file_contents(tmp_path):
     )
 
     assert RAW_TEXT_CANARY not in message
+    assert RAW_TEXT_CANARY not in trace
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"provider": ""},
+        {"provider": "   "},
+        {"provider": None},
+        {"provider": {"not": "a provider"}},
+        {"requested_model": {"not": "a model"}},
+        {"returned_model": None},
+        {"prompt_version": None},
+        {"parser_version": ""},
+        {"schema_version": None},
+        {"generated_at": "not-a-date"},
+        {"generated_at": "2026-09-09 21:00:00"},
+        {"generated_at": "2026-09-09T21:00:00+02:00"},
+        {"generated_at": None},
+        {"job_posting_sha256": "invalid"},
+        {"job_posting_sha256": "A" * 64},
+        {"job_posting_sha256": "a" * 63},
+        {"input_tokens": -10},
+        {"input_tokens": True},
+        {"input_tokens": 1.5},
+        {"output_tokens": "100"},
+        {"total_tokens": -1},
+        {"requested_max_output_tokens": 0},
+        {"requested_max_output_tokens": -5},
+        {"requested_max_output_tokens": True},
+        {"requested_reasoning_effort": ""},
+        {"requested_reasoning_effort": 3},
+        {"latency_seconds": float("nan")},
+        {"latency_seconds": float("inf")},
+        {"latency_seconds": -1.0},
+        {"latency_seconds": True},
+        {"latency_seconds": "1.5"},
+    ],
+)
+def test_metadata_rejects_invalid_values(overrides):
+    with pytest.raises(ValidationError):
+        _metadata(**overrides)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"input_tokens": None, "output_tokens": None, "total_tokens": None},
+        {
+            "requested_max_output_tokens": None,
+            "requested_reasoning_effort": None,
+        },
+        {"latency_seconds": 0.0},
+        {"latency_seconds": 3},
+        {"prompt_version": "0.9"},
+        {"parser_version": "2026-08-01"},
+        {"requested_reasoning_effort": "medium"},
+        {"generated_at": utc_timestamp()},
+    ],
+)
+def test_metadata_accepts_valid_values(overrides):
+    assert _metadata(**overrides) is not None
+
+
+def test_metadata_rejects_unexpected_fields():
+    with pytest.raises(ValidationError):
+        _metadata(experiment_id="extra")
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"latency_seconds": float("nan")},
+        {"job_posting_sha256": "invalid"},
+        {"input_tokens": -10},
+    ],
+)
+def test_load_record_rejects_invalid_metadata_values(tmp_path, overrides):
+    payload = record_to_payload(_record())
+    payload["metadata"].update(overrides)
+    target = tmp_path / "parse-001.json"
+    target.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(JobDescriptionRecordFormatError):
+        load_record(target)
+
+
+def test_load_record_rejects_unexpected_top_level_keys(tmp_path):
+    payload = record_to_payload(_record())
+    payload["experiment_id"] = "extra"
+    target = tmp_path / "parse-001.json"
+    target.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(JobDescriptionRecordFormatError):
+        load_record(target)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"prompt_version": "0.9"},
+        {"parser_version": "2026-08-01"},
+    ],
+)
+def test_load_record_keeps_historical_behaviour_versions(
+    tmp_path, overrides
+):
+    payload = record_to_payload(_record())
+    payload["metadata"].update(overrides)
+    target = tmp_path / "parse-001.json"
+    target.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = load_record(target)
+
+    for name, value in overrides.items():
+        assert getattr(loaded.metadata, name) == value
+
+
+def test_export_record_rejects_invalid_metadata_before_writing(tmp_path):
+    broken = ParseMetadata.model_construct(
+        **{
+            **_metadata().model_dump(),
+            "latency_seconds": float("nan"),
+        }
+    )
+    record = JobDescriptionRecord(
+        job_description=_job_description(),
+        metadata=broken,
+    )
+    target = tmp_path / "parse-001.json"
+
+    with pytest.raises(JobDescriptionRecordFormatError):
+        export_record(record, target)
+
+    assert not target.exists()
+
+
+def test_metadata_errors_do_not_leak_the_broken_value(tmp_path):
+    payload = record_to_payload(_record())
+    payload["metadata"]["provider"] = RAW_TEXT_CANARY + "-broken"
+    payload["metadata"]["job_posting_sha256"] = "invalid"
+    target = tmp_path / "parse-001.json"
+    target.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(JobDescriptionRecordFormatError) as error_info:
+        load_record(target)
+
+    trace = "".join(
+        traceback.format_exception(
+            type(error_info.value),
+            error_info.value,
+            error_info.value.__traceback__,
+        )
+    )
+
+    assert RAW_TEXT_CANARY not in str(error_info.value)
     assert RAW_TEXT_CANARY not in trace

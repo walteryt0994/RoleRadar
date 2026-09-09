@@ -1,6 +1,8 @@
 import json
 import re
 import traceback
+import types
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -13,8 +15,14 @@ from app.ai_provider import (
     AIProviderResponseError,
     AIProviderTimeoutError,
     GenerationResult,
+    OpenAIProvider,
+    OpenAIProviderConfig,
 )
-from app.jd_record import fingerprint_job_posting
+from app.jd_record import (
+    export_record,
+    fingerprint_job_posting,
+    load_record,
+)
 from app.jd_service import (
     JOB_POSTING_END,
     JOB_POSTING_START,
@@ -570,3 +578,62 @@ def test_parse_job_description_records_missing_usage_as_unknown():
     assert metadata.input_tokens is None
     assert metadata.output_tokens is None
     assert metadata.total_tokens is None
+
+
+def _sdk_response(output_text):
+    response = MagicMock()
+    response.output_text = output_text
+    response.model = "test-model-2026-01-01"
+    response.status = "completed"
+    response.output = []
+    response.incomplete_details = None
+    response.usage = types.SimpleNamespace(
+        input_tokens=735,
+        output_tokens=260,
+        total_tokens=995,
+    )
+
+    return response
+
+
+def test_real_provider_metadata_survives_export_and_reload(tmp_path):
+    config = OpenAIProviderConfig(
+        api_key="test-key-not-real",
+        model="chain-test-model",
+    )
+
+    with patch("app.ai_provider.OpenAI"):
+        provider = OpenAIProvider(config=config)
+
+    provider._client.responses.create.return_value = _sdk_response(
+        _model_output()
+    )
+
+    record = parse_job_description(
+        provider,
+        JOB_POSTING,
+        max_output_tokens=1500,
+        reasoning_effort="none",
+    )
+    sent = provider._client.responses.create.call_args.kwargs
+    metadata = record.metadata
+
+    assert sent["store"] is False
+    assert sent["text"]["format"]["strict"] is True
+
+    assert metadata.provider == "openai"
+    assert metadata.requested_model == sent["model"] == "chain-test-model"
+    assert metadata.returned_model == "test-model-2026-01-01"
+    assert metadata.requested_max_output_tokens == 1500
+    assert metadata.requested_reasoning_effort == "none"
+    assert metadata.input_tokens == 735
+    assert metadata.total_tokens == 995
+
+    target = tmp_path / "chain.json"
+    export_record(record, target)
+    loaded = load_record(target)
+
+    assert loaded.metadata == metadata
+    assert loaded.job_description == record.job_description
+    assert loaded.generation is None
+    assert "generation" not in target.read_text(encoding="utf-8")

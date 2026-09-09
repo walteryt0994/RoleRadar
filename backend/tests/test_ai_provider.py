@@ -769,3 +769,71 @@ def test_json_schema_format_accepts_a_64_character_name():
     schema_format = JsonSchemaFormat(name="a" * 64, schema=TEST_SCHEMA)
 
     assert len(schema_format.name) == 64
+
+
+def test_generate_text_reports_the_declared_provider_identity(provider):
+    provider._client.responses.create.return_value = _fake_response()
+
+    result = provider.generate_text("Parse this job description.")
+
+    assert result.provider == OpenAIProvider.PROVIDER_NAME
+
+
+def test_generate_text_does_not_hardcode_the_provider_identity():
+    class RenamedProvider(OpenAIProvider):
+        PROVIDER_NAME = "renamed-provider"
+
+    with patch("app.ai_provider.OpenAI"):
+        renamed = RenamedProvider(config=TEST_CONFIG)
+
+    renamed._client.responses.create.return_value = _fake_response()
+
+    result = renamed.generate_text("Parse this job description.")
+
+    assert result.provider == "renamed-provider"
+
+
+def test_generate_text_reports_the_model_it_actually_requested(provider):
+    provider._client.responses.create.return_value = _fake_response()
+
+    result = provider.generate_text("Parse this job description.")
+    sent = provider._client.responses.create.call_args.kwargs
+
+    assert result.requested_model == sent["model"]
+    assert result.requested_model == TEST_CONFIG.model
+
+
+def test_generate_text_separates_requested_and_returned_model(provider):
+    provider._client.responses.create.return_value = _fake_response()
+
+    result = provider.generate_text("Parse this job description.")
+
+    assert result.requested_model == "test-model"
+    assert result.model == "test-model-2026-01-01"
+    assert result.requested_model != result.model
+
+
+def test_generate_text_reports_the_options_it_actually_sent(provider):
+    provider._client.responses.create.return_value = _fake_response()
+
+    result = provider.generate_text(
+        "Parse this job description.",
+        max_output_tokens=1500,
+        reasoning_effort="none",
+    )
+    sent = provider._client.responses.create.call_args.kwargs
+
+    assert result.requested_max_output_tokens == sent["max_output_tokens"]
+    assert result.requested_reasoning_effort == sent["reasoning"]["effort"]
+
+
+def test_generate_text_reports_omitted_options_as_unknown(provider):
+    provider._client.responses.create.return_value = _fake_response()
+
+    result = provider.generate_text("Parse this job description.")
+    sent = provider._client.responses.create.call_args.kwargs
+
+    assert "max_output_tokens" not in sent
+    assert "reasoning" not in sent
+    assert result.requested_max_output_tokens is None
+    assert result.requested_reasoning_effort is None
