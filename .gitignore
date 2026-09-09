@@ -17,3 +17,6 @@ __pycache__/
 
 # Local SQLite database
 backend/roleradar.db
+
+# Local job description parse records
+backend/records/

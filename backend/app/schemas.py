@@ -166,6 +166,9 @@ class ProfileResponse(BaseModel):
     updated_at: datetime
 
 
+SCHEMA_VERSION = "1"
+
+
 class JobDescriptionBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

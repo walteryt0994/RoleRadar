@@ -420,6 +420,24 @@ Completed:
 - Confirmed all 235 backend tests pass and the real database remains unchanged
 - Did not add a parsing endpoint or UI control, prompt or parser versioning, a rule-versus-LLM comparison, or any match scoring
 
+### Day 26
+
+Completed:
+
+- Clarified the extraction instructions so an education or work-authorization requirement is recorded in its own field, is never filed as a skill, and also appears in `hard_constraints` when the posting states it as mandatory
+- Stated explicitly that preferred, optional, alternative, vague, or contradictory wording must never be promoted to a hard constraint, and that `hard_constraints` records what a posting demands rather than a judgement about a candidate
+- Added independent `PROMPT_VERSION`, `PARSER_VERSION`, and `SCHEMA_VERSION` constants, each living in the module that owns the thing it versions
+- Extended `GenerationResult` so the provider reports its own identity, the model it actually requested, and the output limit and reasoning effort it actually sent, with omitted options recorded as unknown rather than guessed
+- Added `backend/app/jd_record.py` with a `ParseMetadata` contract, a SHA-256 fingerprint of the stripped job posting, a UTC timestamp, and an explicit allow list of the fields that may be written to disk
+- Returned a `JobDescriptionRecord` from the parser that carries the validated job description, the traceability metadata, and the in-memory generation result
+- Kept the raw provider response out of exported files: the allow list never serialises `generation`, so the model's echo of the posting never reaches disk
+- Added explicit local JSON export that refuses to overwrite an existing file, and a read-back path that rejects unsupported record or schema versions, missing fields, unexpected fields, and content that no longer matches the schema
+- Left parsing itself free of disk writes; exporting is always an explicit call by the caller
+- Ignored `backend/records/` in Git because a record contains real posting content, while the fingerprint alone is safe to keep
+- Added 45 isolated schema, provider, record, and service tests that mock the SDK and require no API key, no network access, and no cost
+- Confirmed all 284 backend tests pass and the real database remains unchanged
+- Did not add database tables, a version registry, a logging platform, a failure audit trail, an endpoint or UI control, a rule-versus-LLM comparison, or any match scoring
+
 ## Tech Stack
 
 - Python
@@ -448,6 +466,7 @@ roleradar/
 │   │   ├── ai_provider.py
 │   │   ├── analyzer.py
 │   │   ├── database.py
+│   │   ├── jd_record.py
 │   │   ├── jd_service.py
 │   │   ├── main.py
 │   │   ├── models.py
@@ -460,6 +479,7 @@ roleradar/
 │   │   ├── fixtures/
 │   │   │   └── synthetic_resume.pdf
 │   │   ├── test_ai_provider.py
+│   │   ├── test_jd_record.py
 │   │   ├── test_jd_service.py
 │   │   ├── test_structured_jd.py
 │   │   ├── test_analyzer.py
@@ -496,6 +516,7 @@ The backend uses a basic responsibility-separated structure:
 | `analyzer.py` | Calculate matched skills, missing skills, and FitScore |
 | `ai_provider.py` | Call the configured AI provider through the Responses API and translate provider errors, timeouts, and usage metadata |
 | `jd_service.py` | Turn a job posting into a validated `StructuredJobDescription` and reject requirements whose evidence is not in the posting |
+| `jd_record.py` | Attach traceability metadata to a parse result and export or reload it as a local JSON record without ever writing the raw provider response |
 
 ```mermaid
 flowchart TD
@@ -516,11 +537,15 @@ flowchart TD
 
     jd_service["jd_service.py"] --> ai_provider["ai_provider.py"]
     jd_service --> schemas
+    jd_service --> jd_record["jd_record.py"]
+    jd_record --> schemas
 ```
 
 An arrow from module A to module B means that A imports or directly uses B. Dependencies flow from the application entry point toward lower-level modules; lower-level modules do not import `main.py` or `routers.py`.
 
 `jd_service.py` has no incoming arrows because nothing imports it yet: job-description parsing is exercised directly through its own tests rather than through an HTTP endpoint. Adding a public endpoint or UI control is deliberately out of scope until there is a concrete user flow that needs one.
+
+Parsing never writes to disk. A caller can export a parse result with `export_record`, which writes one JSON file and refuses to overwrite an existing path; `load_record` reads it back and rejects unsupported record or schema versions. Exported records live under `backend/records/`, which is gitignored because a record contains the posting's actual requirements, while the SHA-256 fingerprint it stores identifies the same input without keeping the original text.
 
 ## API Overview
 

@@ -1,10 +1,18 @@
 import json
-from dataclasses import dataclass
 
 from pydantic import ValidationError
 
-from app.ai_provider import AIProvider, GenerationResult, JsonSchemaFormat
-from app.schemas import StructuredJobDescription
+from app.ai_provider import AIProvider, JsonSchemaFormat
+from app.jd_record import (
+    JobDescriptionRecord,
+    ParseMetadata,
+    fingerprint_job_posting,
+    utc_timestamp,
+)
+from app.schemas import SCHEMA_VERSION, StructuredJobDescription
+
+PROMPT_VERSION = "1"
+PARSER_VERSION = "1"
 
 SCHEMA_NAME = "structured_job_description"
 
@@ -21,11 +29,17 @@ PARSER_INSTRUCTIONS = (
     "Never move a preferred item into required_skills. "
     "required_skills and preferred_skills are only for skills, tools, "
     "and technologies. "
-    "Record an education requirement only in education_requirement, "
-    "and a work authorization or visa requirement only in "
-    "work_authorization; do not repeat them in required_skills. "
-    "Put every requirement that disqualifies a candidate outright, "
-    "such as a work authorization requirement, in hard_constraints. "
+    "Record an education requirement in education_requirement, and a "
+    "work authorization or visa requirement in work_authorization. "
+    "Never put either of them in required_skills or preferred_skills. "
+    "When the posting states such a requirement as mandatory, also "
+    "list it in hard_constraints together with its evidence. "
+    "hard_constraints is only for requirements the posting states as "
+    "mandatory. "
+    "Never treat a preferred, optional, alternative, vague, or "
+    "contradictory statement as a hard constraint. "
+    "hard_constraints records what the posting demands, not a "
+    "judgement about any candidate. "
     "Do not turn a responsibility into a required skill. "
     "Put vague, conditional, or contradictory requirements in "
     "uncertain_requirements. "
@@ -96,18 +110,12 @@ def verify_evidence(
                 )
 
 
-@dataclass(frozen=True)
-class JobDescriptionParseResult:
-    job_description: StructuredJobDescription
-    generation: GenerationResult
-
-
 def parse_job_description(
     provider: AIProvider,
     job_description_text: str,
     max_output_tokens: int | None = None,
     reasoning_effort: str | None = None,
-) -> JobDescriptionParseResult:
+) -> JobDescriptionRecord:
     source_text = job_description_text.strip()
 
     if not source_text:
@@ -139,7 +147,25 @@ def parse_job_description(
 
     verify_evidence(source_text, job_description)
 
-    return JobDescriptionParseResult(
+    metadata = ParseMetadata(
+        generated_at=utc_timestamp(),
+        prompt_version=PROMPT_VERSION,
+        parser_version=PARSER_VERSION,
+        schema_version=SCHEMA_VERSION,
+        provider=generation.provider,
+        requested_model=generation.requested_model,
+        returned_model=generation.model,
+        requested_max_output_tokens=generation.requested_max_output_tokens,
+        requested_reasoning_effort=generation.requested_reasoning_effort,
+        job_posting_sha256=fingerprint_job_posting(source_text),
+        latency_seconds=generation.latency_seconds,
+        input_tokens=generation.input_tokens,
+        output_tokens=generation.output_tokens,
+        total_tokens=generation.total_tokens,
+    )
+
+    return JobDescriptionRecord(
         job_description=job_description,
+        metadata=metadata,
         generation=generation,
     )

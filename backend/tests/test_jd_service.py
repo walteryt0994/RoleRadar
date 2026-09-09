@@ -1,4 +1,5 @@
 import json
+import re
 import traceback
 
 import pytest
@@ -13,16 +14,20 @@ from app.ai_provider import (
     AIProviderTimeoutError,
     GenerationResult,
 )
+from app.jd_record import fingerprint_job_posting
 from app.jd_service import (
     JOB_POSTING_END,
     JOB_POSTING_START,
     PARSER_INSTRUCTIONS,
+    PARSER_VERSION,
+    PROMPT_VERSION,
     JobDescriptionEvidenceError,
     JobDescriptionInvalidJsonError,
     JobDescriptionParseError,
     JobDescriptionSchemaError,
     parse_job_description,
 )
+from app.schemas import SCHEMA_VERSION
 
 JOB_POSTING = """Backend Engineer Intern
 Northwind Robotics - Boston, MA (hybrid, 3 days onsite)
@@ -115,8 +120,12 @@ class FakeProvider(AIProvider):
 
         return GenerationResult(
             text=self.text,
+            provider="fake-provider",
+            requested_model="test-model",
             model="test-model-2026-01-01",
             latency_seconds=1.5,
+            requested_max_output_tokens=max_output_tokens,
+            requested_reasoning_effort=reasoning_effort,
             input_tokens=100,
             output_tokens=50,
             total_tokens=150,
@@ -400,11 +409,15 @@ INSTRUCTION_RULES = [
     "marks as preferred or nice to have in preferred_skills",
     "Never move a preferred item into required_skills",
     "required_skills and preferred_skills are only for skills",
-    "Record an education requirement only in education_requirement",
-    "a work authorization or visa requirement only in",
-    "do not repeat them in required_skills",
-    "disqualifies a candidate outright",
-    "in hard_constraints",
+    "Record an education requirement in education_requirement",
+    "work authorization or visa requirement in work_authorization",
+    "Never put either of them in required_skills or preferred_skills",
+    "also list it in hard_constraints together with its evidence",
+    "hard_constraints is only for requirements the posting states as",
+    "Never treat a preferred, optional, alternative, vague, or",
+    "contradictory statement as a hard constraint",
+    "hard_constraints records what the posting demands, not a",
+    "judgement about any candidate",
     "Do not turn a responsibility into a required skill",
     "Put vague, conditional, or contradictory requirements in",
     "uncertain_requirements",
@@ -417,3 +430,143 @@ INSTRUCTION_RULES = [
 @pytest.mark.parametrize("rule", INSTRUCTION_RULES)
 def test_parser_instructions_state_every_extraction_rule(rule):
     assert rule in PARSER_INSTRUCTIONS
+
+
+def test_parse_job_description_records_the_version_labels(provider):
+    metadata = parse_job_description(provider, JOB_POSTING).metadata
+
+    assert metadata.prompt_version == PROMPT_VERSION
+    assert metadata.parser_version == PARSER_VERSION
+    assert metadata.schema_version == SCHEMA_VERSION
+
+
+def test_parse_job_description_records_the_provider_identity(provider):
+    record = parse_job_description(provider, JOB_POSTING)
+
+    assert record.metadata.provider == record.generation.provider
+    assert record.metadata.requested_model == (
+        record.generation.requested_model
+    )
+    assert record.metadata.returned_model == record.generation.model
+
+
+def test_parse_job_description_separates_requested_and_returned_model(
+    provider,
+):
+    metadata = parse_job_description(provider, JOB_POSTING).metadata
+
+    assert metadata.requested_model == "test-model"
+    assert metadata.returned_model == "test-model-2026-01-01"
+
+
+def test_parse_job_description_records_the_requested_call_options(
+    provider,
+):
+    metadata = parse_job_description(
+        provider,
+        JOB_POSTING,
+        max_output_tokens=1500,
+        reasoning_effort="none",
+    ).metadata
+
+    assert metadata.requested_max_output_tokens == 1500
+    assert metadata.requested_reasoning_effort == "none"
+
+
+def test_parse_job_description_records_omitted_options_as_unknown(
+    provider,
+):
+    metadata = parse_job_description(provider, JOB_POSTING).metadata
+
+    assert metadata.requested_max_output_tokens is None
+    assert metadata.requested_reasoning_effort is None
+
+
+def test_parse_job_description_records_the_posting_fingerprint(provider):
+    metadata = parse_job_description(provider, JOB_POSTING).metadata
+
+    assert metadata.job_posting_sha256 == fingerprint_job_posting(
+        JOB_POSTING.strip()
+    )
+
+
+def test_parse_job_description_fingerprints_padded_input_the_same():
+    first = parse_job_description(
+        FakeProvider(text=_model_output()),
+        JOB_POSTING,
+    ).metadata
+    second = parse_job_description(
+        FakeProvider(text=_model_output()),
+        "\n\n  " + JOB_POSTING + "  \n\n",
+    ).metadata
+
+    assert first.job_posting_sha256 == second.job_posting_sha256
+
+
+def test_parse_job_description_records_a_utc_timestamp(provider):
+    metadata = parse_job_description(provider, JOB_POSTING).metadata
+
+    assert re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
+        metadata.generated_at,
+    )
+
+
+def test_parse_job_description_copies_usage_from_the_generation(provider):
+    record = parse_job_description(provider, JOB_POSTING)
+
+    assert record.metadata.latency_seconds == (
+        record.generation.latency_seconds
+    )
+    assert record.metadata.input_tokens == record.generation.input_tokens
+    assert record.metadata.output_tokens == record.generation.output_tokens
+    assert record.metadata.total_tokens == record.generation.total_tokens
+
+
+def test_parse_job_description_keeps_the_generation_in_memory(provider):
+    record = parse_job_description(provider, JOB_POSTING)
+
+    assert record.generation is not None
+    assert record.generation.text == _model_output()
+
+
+def test_parse_job_description_does_not_write_to_disk(
+    provider, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+
+    parse_job_description(provider, JOB_POSTING)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_recorded_versions_are_not_rewritten_by_later_changes(
+    provider, monkeypatch,
+):
+    metadata = parse_job_description(provider, JOB_POSTING).metadata
+    recorded_prompt_version = metadata.prompt_version
+
+    monkeypatch.setattr("app.jd_service.PROMPT_VERSION", "99")
+
+    assert metadata.prompt_version == recorded_prompt_version
+    assert metadata.prompt_version != "99"
+
+
+def test_parse_job_description_records_missing_usage_as_unknown():
+    class NoUsageProvider(FakeProvider):
+        def generate_text(self, prompt, **kwargs):
+            return GenerationResult(
+                text=self.text,
+                provider="fake-provider",
+                requested_model="test-model",
+                model="test-model-2026-01-01",
+                latency_seconds=1.5,
+            )
+
+    provider = NoUsageProvider(text=_model_output())
+
+    metadata = parse_job_description(provider, JOB_POSTING).metadata
+
+    assert metadata.input_tokens is None
+    assert metadata.output_tokens is None
+    assert metadata.total_tokens is None

@@ -51,8 +51,12 @@ class AIProviderRefusalError(AIProviderError):
 @dataclass(frozen=True)
 class GenerationResult:
     text: str
+    provider: str
+    requested_model: str
     model: str
     latency_seconds: float
+    requested_max_output_tokens: int | None = None
+    requested_reasoning_effort: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
     total_tokens: int | None = None
@@ -182,6 +186,8 @@ def _has_refusal(response: object) -> bool:
 
 
 class OpenAIProvider(AIProvider):
+    PROVIDER_NAME = "openai"
+
     def __init__(self, config: OpenAIProviderConfig | None = None) -> None:
         if config is None:
             config = load_openai_config()
@@ -271,8 +277,12 @@ class OpenAIProvider(AIProvider):
 
         return GenerationResult(
             text=text,
+            provider=self.PROVIDER_NAME,
+            requested_model=request["model"],
             model=response.model,
             latency_seconds=latency_seconds,
+            requested_max_output_tokens=request.get("max_output_tokens"),
+            requested_reasoning_effort=reasoning_effort,
             input_tokens=getattr(usage, "input_tokens", None),
             output_tokens=getattr(usage, "output_tokens", None),
             total_tokens=getattr(usage, "total_tokens", None),
