@@ -438,6 +438,25 @@ Completed:
 - Confirmed all 339 backend tests pass and the real database remains unchanged
 - Did not add database tables, a version registry, a logging platform, a failure audit trail, an endpoint or UI control, a rule-versus-LLM comparison, or any match scoring
 
+### Day 27
+
+Completed:
+
+- Froze six short synthetic job postings with manual expectations in `backend/evaluation/jd_cases.py`, written before any model output was collected and versioned by `CASE_SET_VERSION`
+- Covered clear required and preferred skills, mandatory degree and work-authorization gates, unstated fields that must stay null, a negated skill, an alternative branch with a conflicting seniority claim, and technologies outside `KNOWN_SKILLS` combined with an instruction injected into the posting
+- Marked cells the prompt does not decide as not graded with a recorded reason, so prompt ambiguity is never counted as a model error
+- Added `backend/app/jd_outcome.py`, a small application level entry point that returns either an `llm` outcome carrying a validated record or a `rule_fallback` outcome carrying only the V1 skill list and a fixed failure category
+- Mapped nine known failure types one to one onto the existing exception classes instead of parsing error message text, and kept configuration errors, an empty posting, and unexpected errors propagating rather than becoming a silent fallback
+- Forced the fallback to make no second AI request, never label rule skills as required, and never fabricate an empty but complete `StructuredJobDescription`
+- Added `backend/evaluation/compare_jd.py`, an offline comparison that replays saved records and never contacts a provider, pairing a record to a case only when the posting fingerprint and the prompt, parser, and schema versions all match
+- Reported an unmatched case as not measured, a stale version as a named skip, duplicate matches as ambiguous, and missing token counts as unknown rather than zero
+- Added `backend/evaluation/collect_jd.py`, which is a dry run by default, refuses to run unless the configured model matches the approved one, refuses when a target file already exists, forces `max_retries` to zero, and stops the remaining cases after the first failure
+- Collected six real responses across eight user-run requests under two separately approved budgets, estimated at $0.0019656 from reported usage
+- Recorded 100 of 104 graded checks passing on all six cases, with the two evidence failures, their successful retries, and a per-term counting caveat written up in `backend/evaluation/day27_report.md`
+- Kept the whole test suite offline: 92 new tests mock the SDK and need no API key, no network access, and no cost
+- Confirmed all 431 backend tests pass and the real database remains unchanged
+- Did not change the prompt, the schema, the provider, or `KNOWN_SKILLS`, and did not add match scoring, an endpoint, or a UI control
+
 ## Tech Stack
 
 - Python
@@ -466,6 +485,7 @@ roleradar/
 │   │   ├── ai_provider.py
 │   │   ├── analyzer.py
 │   │   ├── database.py
+│   │   ├── jd_outcome.py
 │   │   ├── jd_record.py
 │   │   ├── jd_service.py
 │   │   ├── main.py
@@ -475,10 +495,19 @@ roleradar/
 │   │   ├── routers.py
 │   │   ├── schemas.py
 │   │   └── services.py
+│   ├── evaluation/
+│   │   ├── collect_jd.py
+│   │   ├── compare_jd.py
+│   │   ├── day27_report.md
+│   │   └── jd_cases.py
+│   ├── records/          # Saved parse records, gitignored
 │   ├── tests/
 │   │   ├── fixtures/
 │   │   │   └── synthetic_resume.pdf
 │   │   ├── test_ai_provider.py
+│   │   ├── test_collect_jd.py
+│   │   ├── test_compare_jd.py
+│   │   ├── test_jd_outcome.py
 │   │   ├── test_jd_record.py
 │   │   ├── test_jd_service.py
 │   │   ├── test_structured_jd.py
@@ -517,6 +546,7 @@ The backend uses a basic responsibility-separated structure:
 | `ai_provider.py` | Call the configured AI provider through the Responses API and translate provider errors, timeouts, and usage metadata |
 | `jd_service.py` | Turn a job posting into a validated `StructuredJobDescription` and reject requirements whose evidence is not in the posting |
 | `jd_record.py` | Attach traceability metadata to a parse result and export or reload it as a local JSON record without ever writing the raw provider response |
+| `jd_outcome.py` | Wrap the parser in one application level entry point that reports either a validated LLM record or a clearly labelled V1 rule fallback with a fixed failure category |
 
 ```mermaid
 flowchart TD
@@ -540,6 +570,11 @@ flowchart TD
     jd_service --> jd_record["jd_record.py"]
     jd_record --> schemas
     jd_record --> ai_provider
+
+    jd_outcome["jd_outcome.py"] --> jd_service
+    jd_outcome --> ai_provider
+    jd_outcome --> jd_record
+    jd_outcome --> parser
 ```
 
 An arrow from module A to module B means that A imports or directly uses B. Dependencies flow from the application entry point toward lower-level modules; lower-level modules do not import `main.py` or `routers.py`.
@@ -571,6 +606,23 @@ reloaded = load_record("backend/records/parse-001.json")
 ```
 
 `backend/records/` is a convention, not a requirement: `export_record` writes wherever the caller points it, and only that directory is gitignored.
+
+### Rule baseline versus LLM comparison
+
+`backend/evaluation/jd_cases.py` freezes six short synthetic postings with manual expectations written before any model output was collected, together with the rule baseline output each posting produces. Cells the prompt does not decide are listed as not graded with a reason, so prompt ambiguity is never scored as a model error. Changing a posting or an expectation requires bumping `CASE_SET_VERSION` and recording why.
+
+`backend/evaluation/compare_jd.py` replays saved records offline and never contacts a provider:
+
+```bash
+cd backend
+../.venv/bin/python -m evaluation.compare_jd
+```
+
+A record is paired with a case only when the posting fingerprint and the prompt, parser, and schema versions all match. An unmatched case is reported as not measured, a stale version as a named skip, two matching records as ambiguous, and a missing token count as unknown rather than zero. With no saved records the script reports six unmeasured cases, which is the correct answer rather than a failure.
+
+`backend/evaluation/collect_jd.py` is the only script that spends money. It is a dry run unless `--send` is passed, refuses to run when the configured model is not the approved one or when a target file already exists, forces `max_retries` to zero, skips cases that already have a matching record, and stops the remaining cases after the first failure.
+
+`backend/evaluation/day27_report.md` records the per-case differences, the error analysis, the cost estimate, and the limits. Its counts describe that fixed six-case set only and are not an accuracy rate.
 
 ## API Overview
 
