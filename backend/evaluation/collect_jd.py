@@ -1,3 +1,4 @@
+import argparse
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -8,22 +9,47 @@ from app.jd_outcome import (
     parse_job_description_with_fallback,
 )
 from app.jd_record import export_record
+from evaluation.batch_contract import (
+    BATCH_BUDGET_USD,
+    BATCH_ID,
+    BATCH_MAX_OUTPUT_TOKENS,
+    BATCH_MAX_REQUESTS,
+    BATCH_REASONING_EFFORT,
+    BATCH_REQUESTED_MODEL,
+    PRICE_NOTE,
+    estimated_cost,
+    record_mismatch,
+    request_cost_upper_bound,
+    running_code_mismatch,
+)
 from evaluation.compare_jd import load_records, mismatch_reason
 from evaluation.jd_cases import CASES
 
-APPROVED_MODEL = "gpt-5.6-luna"
-APPROVED_MAX_OUTPUT_TOKENS = 900
-APPROVED_REASONING_EFFORT = "none"
-APPROVED_MAX_REQUESTS = 6
-APPROVED_BUDGET_USD = 0.01
-
-INPUT_USD_PER_TOKEN = 0.20 / 1_000_000
-OUTPUT_USD_PER_TOKEN = 1.20 / 1_000_000
-PRICE_NOTE = (
-    "prices as reported on 2026-09-08, an estimate from usage, not a bill"
-)
-
 RECORDS_DIR = Path("records")
+
+CASE_IDS = tuple(case["case_id"] for case in CASES)
+
+
+def parse_arguments(arguments):
+    parser = argparse.ArgumentParser(
+        prog="collect_jd",
+        description="Collect the frozen Day 27 cases from the provider.",
+    )
+    parser.add_argument(
+        "--send",
+        action="store_true",
+        help="actually send requests; without it this is a dry run",
+    )
+    parser.add_argument(
+        "--only",
+        action="append",
+        default=[],
+        metavar="CASE_ID",
+        choices=CASE_IDS,
+        help="restrict the batch to one case; may be repeated",
+    )
+
+    return parser.parse_args(arguments)
 
 
 def pending_cases(loaded, lines):
@@ -48,14 +74,48 @@ def pending_cases(loaded, lines):
     return pending
 
 
-def preflight(argv, lines):
+def spent_so_far(loaded, lines):
+    spent = 0.0
+
+    for path, record in loaded:
+        metadata = record.metadata
+
+        if record_mismatch(metadata) is not None:
+            continue
+
+        if metadata.input_tokens is None or metadata.output_tokens is None:
+            lines.append(
+                f"warning: {path.name} belongs to this batch but reports "
+                f"no token counts, so its cost is not in the total"
+            )
+            continue
+
+        spent += estimated_cost(
+            metadata.input_tokens,
+            metadata.output_tokens,
+        )
+
+    return spent
+
+
+def preflight(arguments, lines):
+    options = parse_arguments(arguments)
+
+    running = running_code_mismatch()
+
+    if running is not None:
+        lines.append(f"refusing to run: {running}")
+
+        return None, None
+
     config = load_openai_config()
 
-    if config.model != APPROVED_MODEL:
+    if config.model != BATCH_REQUESTED_MODEL:
         lines.append(
-            f"refusing to run: OPENAI_MODEL is {config.model!r} but the "
-            f"approved batch uses {APPROVED_MODEL!r}"
+            f"refusing to run: OPENAI_MODEL is {config.model!r} but batch "
+            f"{BATCH_ID} uses {BATCH_REQUESTED_MODEL!r}"
         )
+
         return None, None
 
     loaded, unreadable = load_records(RECORDS_DIR)
@@ -65,36 +125,44 @@ def preflight(argv, lines):
 
     cases = pending_cases(loaded, lines)
 
-    only = tuple(
-        argv[index + 1]
-        for index, value in enumerate(argv)
-        if value == "--only" and index + 1 < len(argv)
+    if options.only:
+        cases = [case for case in cases if case["case_id"] in options.only]
+        lines.append(f"limited to {', '.join(options.only)} by --only")
+
+    spent = spent_so_far(loaded, lines)
+    remaining = BATCH_BUDGET_USD - spent
+    upper_bound = sum(
+        request_cost_upper_bound(case["job_posting"]) for case in cases
     )
 
-    if only:
-        known = {case["case_id"] for case in CASES}
-        unknown = [case_id for case_id in only if case_id not in known]
-
-        if unknown:
-            lines.append(f"refusing to run: unknown case id {unknown}")
-            return None, None
-
-        cases = [case for case in cases if case["case_id"] in only]
-        lines.append(f"limited to {', '.join(only)} by --only")
-
     lines.append(
-        f"model {APPROVED_MODEL}, reasoning {APPROVED_REASONING_EFFORT}, "
-        f"max_output_tokens {APPROVED_MAX_OUTPUT_TOKENS}, max_retries 0, "
-        f"store false"
+        f"batch {BATCH_ID}: model {BATCH_REQUESTED_MODEL}, reasoning "
+        f"{BATCH_REASONING_EFFORT}, max_output_tokens "
+        f"{BATCH_MAX_OUTPUT_TOKENS}, max_retries 0, store false"
     )
     lines.append(
-        f"cases to collect: {len(cases)} of {len(CASES)}, approved limit "
-        f"{APPROVED_MAX_REQUESTS} requests and {APPROVED_BUDGET_USD} USD"
+        f"cases to collect: {len(cases)} of {len(CASES)}, batch limit "
+        f"{BATCH_MAX_REQUESTS} requests"
+    )
+    lines.append(
+        f"budget ${BATCH_BUDGET_USD:.6f}, already spent ${spent:.6f}, "
+        f"remaining ${remaining:.6f}"
+    )
+    lines.append(
+        f"worst case for the pending cases ${upper_bound:.6f}, counted as "
+        f"the full prompt, job posting and schema at "
+        f"{BATCH_MAX_OUTPUT_TOKENS} output tokens"
     )
     lines.append(PRICE_NOTE)
 
-    if len(cases) > APPROVED_MAX_REQUESTS:
-        lines.append("refusing to run: more cases than the approved limit")
+    if len(cases) > BATCH_MAX_REQUESTS:
+        lines.append("refusing to run: more cases than the batch limit")
+
+        return None, None
+
+    if cases and remaining <= 0:
+        lines.append("refusing to run: the batch budget is already used up")
+
         return None, None
 
     for case in cases:
@@ -102,98 +170,110 @@ def preflight(argv, lines):
 
         if target.exists():
             lines.append(
-                f"refusing to run: {target} exists but does not match the "
-                f"current posting and versions; move it aside first"
+                f"refusing to run: {target} exists but does not match batch "
+                f"{BATCH_ID}; move it aside first"
             )
+
             return None, None
 
-    return config, cases
+    return config, (cases, remaining)
 
 
-def collect(config, cases, lines):
+def collect(config, plan, lines):
+    cases, remaining = plan
     provider = OpenAIProvider(replace(config, max_retries=0))
 
     sent = 0
-    input_tokens = 0
-    output_tokens = 0
-    unknown_usage = False
 
     for case in cases:
-        if sent >= APPROVED_MAX_REQUESTS:
-            lines.append("stopping: reached the approved request limit")
+        if sent >= BATCH_MAX_REQUESTS:
+            lines.append("stopping: reached the batch request limit")
+            break
+
+        reserved = request_cost_upper_bound(case["job_posting"])
+
+        if reserved > remaining:
+            lines.append(
+                f"stopping before {case['case_id']}: the remaining "
+                f"${remaining:.6f} does not cover its worst case "
+                f"${reserved:.6f}"
+            )
             break
 
         sent += 1
         outcome = parse_job_description_with_fallback(
             provider,
             case["job_posting"],
-            max_output_tokens=APPROVED_MAX_OUTPUT_TOKENS,
-            reasoning_effort=APPROVED_REASONING_EFFORT,
+            max_output_tokens=BATCH_MAX_OUTPUT_TOKENS,
+            reasoning_effort=BATCH_REASONING_EFFORT,
         )
 
         if outcome.source is ParseOutcomeSource.RULE_FALLBACK:
-            unknown_usage = True
+            remaining -= reserved
             lines.append(
                 f"{case['case_id']}: failed as "
                 f"{outcome.failure_category.value}; this request may still "
-                f"have consumed tokens, usage unknown"
+                f"have consumed tokens, usage unknown, so its worst case "
+                f"${reserved:.6f} is charged against the budget"
             )
             lines.append("stopping the remaining cases for diagnosis")
             break
 
+        metadata = outcome.record.metadata
+
+        if metadata.input_tokens is None or metadata.output_tokens is None:
+            remaining -= reserved
+            export_record(
+                outcome.record,
+                RECORDS_DIR / f"{case['case_id']}.json",
+            )
+            lines.append(
+                f"{case['case_id']}: saved but usage is unknown, charging "
+                f"its worst case ${reserved:.6f} and stopping"
+            )
+            break
+
+        actual = estimated_cost(
+            metadata.input_tokens,
+            metadata.output_tokens,
+        )
+        remaining -= actual
         path = export_record(
             outcome.record,
             RECORDS_DIR / f"{case['case_id']}.json",
         )
-        metadata = outcome.record.metadata
-
-        if metadata.input_tokens is None or metadata.output_tokens is None:
-            unknown_usage = True
-            usage = "usage unknown"
-        else:
-            input_tokens += metadata.input_tokens
-            output_tokens += metadata.output_tokens
-            usage = (
-                f"{metadata.input_tokens} in, "
-                f"{metadata.output_tokens} out"
-            )
-
         lines.append(
-            f"{case['case_id']}: saved {path.name}, {usage}, "
-            f"{metadata.latency_seconds:.2f}s, "
+            f"{case['case_id']}: saved {path.name}, "
+            f"{metadata.input_tokens} in, {metadata.output_tokens} out, "
+            f"${actual:.6f}, {metadata.latency_seconds:.2f}s, "
             f"returned model {metadata.returned_model}"
         )
 
-    cost = (
-        input_tokens * INPUT_USD_PER_TOKEN
-        + output_tokens * OUTPUT_USD_PER_TOKEN
-    )
+        if actual > reserved:
+            lines.append(
+                f"stopping: {case['case_id']} cost ${actual:.6f}, more than "
+                f"its reserved ${reserved:.6f}"
+            )
+            break
 
     lines.append(f"requests sent: {sent}")
-    lines.append(f"counted tokens: {input_tokens} in, {output_tokens} out")
-    lines.append(f"estimated cost of counted tokens: ${cost:.6f}")
+    lines.append(f"budget remaining: ${remaining:.6f}")
     lines.append(PRICE_NOTE)
-
-    if unknown_usage:
-        lines.append(
-            "some usage is unknown and is not included in the estimate"
-        )
-
-    if cost > APPROVED_BUDGET_USD:
-        lines.append("warning: the estimate exceeds the approved budget")
 
     return sent
 
 
 def main(argv):
     lines = []
-    config, cases = preflight(argv, lines)
+    config, plan = preflight(argv[1:], lines)
 
     if config is None:
         for line in lines:
             print(line)
 
         return 1
+
+    cases, _ = plan
 
     if "--send" not in argv[1:]:
         for case in cases:
@@ -209,7 +289,7 @@ def main(argv):
 
         return 0
 
-    collect(config, cases, lines)
+    collect(config, plan, lines)
 
     for line in lines:
         print(line)

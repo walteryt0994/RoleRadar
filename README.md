@@ -448,13 +448,15 @@ Completed:
 - Added `backend/app/jd_outcome.py`, a small application level entry point that returns either an `llm` outcome carrying a validated record or a `rule_fallback` outcome carrying only the V1 skill list and a fixed failure category
 - Mapped nine known failure types one to one onto the existing exception classes instead of parsing error message text, and kept configuration errors, an empty posting, and unexpected errors propagating rather than becoming a silent fallback
 - Forced the fallback to make no second AI request, never label rule skills as required, and never fabricate an empty but complete `StructuredJobDescription`
-- Added `backend/evaluation/compare_jd.py`, an offline comparison that replays saved records and never contacts a provider, pairing a record to a case only when the posting fingerprint and the prompt, parser, and schema versions all match
-- Reported an unmatched case as not measured, a stale version as a named skip, duplicate matches as ambiguous, and missing token counts as unknown rather than zero
-- Added `backend/evaluation/collect_jd.py`, which is a dry run by default, refuses to run unless the configured model matches the approved one, refuses when a target file already exists, forces `max_retries` to zero, and stops the remaining cases after the first failure
-- Collected six real responses across eight user-run requests under two separately approved budgets, estimated at $0.0019656 from reported usage
-- Recorded 100 of 104 graded checks passing on all six cases, with the two evidence failures, their successful retries, and a per-term counting caveat written up in `backend/evaluation/day27_report.md`
-- Kept the whole test suite offline: 92 new tests mock the SDK and need no API key, no network access, and no cost
-- Confirmed all 431 backend tests pass and the real database remains unchanged
+- Added `backend/evaluation/batch_contract.py` so the comparison and the collection tool share one definition of the approved batch: the posting fingerprint, the prompt, parser and schema versions, the provider, the requested model, the requested output limit and the requested reasoning effort
+- Added `backend/evaluation/compare_jd.py`, an offline comparison that replays saved records and never contacts a provider, pairing a record to a case only when every field of that contract matches, while the returned model is recorded as observed rather than forced to equal the requested name
+- Reported an unmatched case as not measured, a record from another batch as a named skip, duplicate matches as ambiguous, and missing token counts as unknown rather than zero
+- Added `backend/evaluation/collect_jd.py`, which is a dry run by default, parses its arguments strictly so a missing `--only` value or an unknown flag or case id exits non-zero before any provider is built, refuses when the running prompt, parser or schema version no longer matches the batch, refuses when the configured model is wrong or a target file already exists, and forces `max_retries` to zero
+- Reserved each request's conservative worst case cost before sending it, counted from the full prompt, posting and schema at the full output limit, against the budget left after the usage already stored on disk, so a zero or exhausted budget sends nothing and a failure or an unknown usage charges the worst case and stops the batch
+- Collected six responses across eight user-run requests under two separately approved batches; the known usage is estimated at $0.0019656, plus an unknown amount for the two failed requests
+- Recorded 4 of 6 cases usable on the first attempt and 6 of 6 after one retry each for JD-05 and JD-06, with 100 of 104 graded checks passing against the stored records; the retries did not diagnose the original evidence failures, whose cause stays unconfirmed
+- Kept the whole test suite offline: 117 new tests mock the SDK and need no API key, no network access, and no cost
+- Confirmed all 456 backend tests pass and the real database remains unchanged
 - Did not change the prompt, the schema, the provider, or `KNOWN_SKILLS`, and did not add match scoring, an endpoint, or a UI control
 
 ## Tech Stack
@@ -496,6 +498,7 @@ roleradar/
 │   │   ├── schemas.py
 │   │   └── services.py
 │   ├── evaluation/
+│   │   ├── batch_contract.py
 │   │   ├── collect_jd.py
 │   │   ├── compare_jd.py
 │   │   ├── day27_report.md
@@ -618,9 +621,13 @@ cd backend
 ../.venv/bin/python -m evaluation.compare_jd
 ```
 
-A record is paired with a case only when the posting fingerprint and the prompt, parser, and schema versions all match. An unmatched case is reported as not measured, a stale version as a named skip, two matching records as ambiguous, and a missing token count as unknown rather than zero. With no saved records the script reports six unmeasured cases, which is the correct answer rather than a failure.
+A record is paired with a case only when every field of the batch contract in `backend/evaluation/batch_contract.py` matches: the posting fingerprint, the prompt, parser and schema versions, the provider, the requested model, the requested output limit and the requested reasoning effort. The returned model is recorded as observed and is deliberately excluded, because a provider may answer with a dated snapshot alias. An unmatched case is reported as not measured, a record from another batch as a named skip, two matching records as ambiguous, and a missing token count as unknown rather than zero. With no saved records the script reports six unmeasured cases, which is the correct answer rather than a failure.
 
-`backend/evaluation/collect_jd.py` is the only script that spends money. It is a dry run unless `--send` is passed, refuses to run when the configured model is not the approved one or when a target file already exists, forces `max_retries` to zero, skips cases that already have a matching record, and stops the remaining cases after the first failure.
+`backend/evaluation/collect_jd.py` is the only script that spends money. It is a dry run unless `--send` is passed, and it parses its arguments strictly, so a missing `--only` value, an unknown flag or an unknown case id exits non-zero before any provider is built. It refuses to run when the running prompt, parser or schema version no longer matches the batch, when the configured model is wrong, or when a target file already exists, and it forces `max_retries` to zero.
+
+Before each request it reserves that request's conservative worst case cost, counted from the full prompt, posting and schema at the full output limit, against the budget left after the usage already stored on disk. A request is only sent when the remaining budget covers that worst case, so a zero or exhausted budget sends nothing; a failure or an unknown usage charges the worst case and stops the batch.
+
+The batch constants describe one batch the user approved once and that has already been consumed. They are not a standing authorisation: any further real request needs a new approval and is run by the user.
 
 `backend/evaluation/day27_report.md` records the per-case differences, the error analysis, the cost estimate, and the limits. Its counts describe that fixed six-case set only and are not an accuracy rate.
 

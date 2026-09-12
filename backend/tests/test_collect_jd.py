@@ -14,25 +14,30 @@ from app.jd_record import (
     fingerprint_job_posting,
 )
 from app.schemas import StructuredJobDescription
-from evaluation import collect_jd
+from evaluation import batch_contract, collect_jd
+from evaluation.batch_contract import (
+    BATCH_BUDGET_USD,
+    BATCH_MAX_OUTPUT_TOKENS,
+    BATCH_MAX_REQUESTS,
+    BATCH_REASONING_EFFORT,
+    BATCH_REQUESTED_MODEL,
+    RECORD_CONTRACT,
+    estimated_cost,
+    request_cost_upper_bound,
+)
 from evaluation.collect_jd import (
-    APPROVED_MAX_OUTPUT_TOKENS,
-    APPROVED_MAX_REQUESTS,
-    APPROVED_MODEL,
-    APPROVED_REASONING_EFFORT,
     collect,
     main,
+    parse_arguments,
     pending_cases,
     preflight,
+    spent_so_far,
 )
-from evaluation.jd_cases import (
-    CASES,
-    EXPECTED_PARSER_VERSION,
-    EXPECTED_PROMPT_VERSION,
-    EXPECTED_SCHEMA_VERSION,
-)
+from evaluation.jd_cases import CASES
 
 CASE_01 = CASES[0]
+
+CHEAP_USAGE = (700, 150)
 
 
 def _empty_answer():
@@ -56,9 +61,10 @@ def _empty_answer():
 
 
 class FakeProvider(AIProvider):
-    def __init__(self, fail_on=None):
+    def __init__(self, fail_on=None, usage=CHEAP_USAGE):
         self.calls = []
         self.fail_on = fail_on
+        self.usage = usage
 
     def generate_text(
         self,
@@ -77,66 +83,147 @@ class FakeProvider(AIProvider):
         if self.fail_on is not None and len(self.calls) == self.fail_on:
             raise AIProviderTimeoutError("too slow")
 
+        input_tokens, output_tokens = self.usage
+
         return GenerationResult(
             text=_empty_answer(),
             provider="openai",
-            requested_model=APPROVED_MODEL,
-            model=APPROVED_MODEL,
+            requested_model=BATCH_REQUESTED_MODEL,
+            model=BATCH_REQUESTED_MODEL,
             latency_seconds=2.0,
             requested_max_output_tokens=max_output_tokens,
             requested_reasoning_effort=reasoning_effort,
-            input_tokens=700,
-            output_tokens=150,
-            total_tokens=850,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=None,
         )
 
 
+class ExplodingProvider:
+    def __init__(self, config):
+        raise AssertionError("no provider may be built on this path")
+
+
 @pytest.fixture
-def approved_env(monkeypatch, tmp_path):
+def batch_env(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key-not-real")
-    monkeypatch.setenv("OPENAI_MODEL", APPROVED_MODEL)
+    monkeypatch.setenv("OPENAI_MODEL", BATCH_REQUESTED_MODEL)
     monkeypatch.setattr(collect_jd, "RECORDS_DIR", tmp_path)
 
     return tmp_path
 
 
-def _saved_record(case, path):
-    metadata = ParseMetadata(
-        generated_at="2026-09-10T12:00:00Z",
-        prompt_version=EXPECTED_PROMPT_VERSION,
-        parser_version=EXPECTED_PARSER_VERSION,
-        schema_version=EXPECTED_SCHEMA_VERSION,
-        provider="openai",
-        requested_model=APPROVED_MODEL,
-        returned_model=APPROVED_MODEL,
-        requested_max_output_tokens=APPROVED_MAX_OUTPUT_TOKENS,
-        requested_reasoning_effort=APPROVED_REASONING_EFFORT,
-        job_posting_sha256=fingerprint_job_posting(case["job_posting"]),
-        latency_seconds=2.0,
-        input_tokens=700,
-        output_tokens=150,
-        total_tokens=850,
-    )
+@pytest.fixture
+def provider(monkeypatch):
+    fake = FakeProvider()
+    monkeypatch.setattr(collect_jd, "OpenAIProvider", lambda config: fake)
+
+    return fake
+
+
+def _saved_record(case, path, **metadata_overrides):
+    values = {
+        "generated_at": "2026-09-10T12:00:00Z",
+        "returned_model": BATCH_REQUESTED_MODEL,
+        "job_posting_sha256": fingerprint_job_posting(case["job_posting"]),
+        "latency_seconds": 2.0,
+        "input_tokens": CHEAP_USAGE[0],
+        "output_tokens": CHEAP_USAGE[1],
+        "total_tokens": None,
+    }
+    values.update(dict(RECORD_CONTRACT))
+    values.update(metadata_overrides)
     record = JobDescriptionRecord(
         job_description=StructuredJobDescription.model_validate(
             json.loads(_empty_answer())
         ),
-        metadata=metadata,
+        metadata=ParseMetadata(**values),
     )
 
     return export_record(record, path)
 
 
-def test_the_approved_limits_are_unchanged():
-    assert APPROVED_MODEL == "gpt-5.6-luna"
-    assert APPROVED_MAX_OUTPUT_TOKENS == 900
-    assert APPROVED_REASONING_EFFORT == "none"
-    assert APPROVED_MAX_REQUESTS == 6
+def test_the_batch_contract_is_unchanged():
+    assert BATCH_REQUESTED_MODEL == "gpt-5.6-luna"
+    assert BATCH_MAX_OUTPUT_TOKENS == 900
+    assert BATCH_REASONING_EFFORT == "none"
+    assert BATCH_MAX_REQUESTS == 6
+    assert BATCH_BUDGET_USD == 0.01
 
 
-def test_a_collected_case_is_skipped(approved_env):
-    _saved_record(CASE_01, approved_env / "JD-01.json")
-    loaded, _ = collect_jd.load_records(approved_env)
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--send", "--only"],
+        ["--send", "--onyl", "JD-01"],
+        ["--send", "--only", "JD-99"],
+        ["--send", "--extra"],
+    ],
+)
+def test_invalid_arguments_exit_before_any_request(
+    arguments,
+    batch_env,
+    monkeypatch,
+):
+    monkeypatch.setattr(collect_jd, "OpenAIProvider", ExplodingProvider)
+
+    with pytest.raises(SystemExit) as error:
+        main(["collect_jd"] + arguments)
+
+    assert error.value.code != 0
+    assert list(batch_env.glob("*.json")) == []
+
+
+def test_valid_arguments_are_parsed():
+    options = parse_arguments(["--send", "--only", "JD-01", "--only", "JD-02"])
+
+    assert options.send is True
+    assert options.only == ["JD-01", "JD-02"]
+
+
+def test_only_narrows_the_batch(batch_env, provider):
+    main(["collect_jd", "--only", "JD-06", "--send"])
+
+    assert len(provider.calls) == 1
+    assert (batch_env / "JD-06.json").exists()
+
+
+def test_a_dry_run_never_builds_a_provider(batch_env, monkeypatch):
+    monkeypatch.setattr(collect_jd, "OpenAIProvider", ExplodingProvider)
+
+    assert main(["collect_jd"]) == 0
+    assert list(batch_env.glob("*.json")) == []
+
+
+def test_an_unapproved_model_refuses_to_run(batch_env, monkeypatch):
+    monkeypatch.setenv("OPENAI_MODEL", "another-model")
+    monkeypatch.setattr(collect_jd, "OpenAIProvider", ExplodingProvider)
+    lines = []
+
+    config, plan = preflight(["--send"], lines)
+
+    assert config is None
+    assert any("refusing to run" in line for line in lines)
+
+
+def test_changed_running_versions_refuse_to_run(batch_env, monkeypatch):
+    monkeypatch.setattr(
+        batch_contract,
+        "RUNNING_CODE_VERSIONS",
+        (("prompt_version", "2", "1"),),
+    )
+    monkeypatch.setattr(collect_jd, "OpenAIProvider", ExplodingProvider)
+    lines = []
+
+    config, plan = preflight(["--send"], lines)
+
+    assert config is None
+    assert any("prompt_version" in line for line in lines)
+
+
+def test_a_collected_case_is_skipped(batch_env):
+    _saved_record(CASE_01, batch_env / "JD-01.json")
+    loaded, _ = collect_jd.load_records(batch_env)
 
     remaining = pending_cases(loaded, [])
 
@@ -144,137 +231,194 @@ def test_a_collected_case_is_skipped(approved_env):
     assert len(remaining) == len(CASES) - 1
 
 
-def test_every_case_is_pending_without_records(approved_env):
-    assert pending_cases([], []) == list(CASES)
+def test_a_record_from_another_batch_is_still_pending(batch_env):
+    _saved_record(
+        CASE_01,
+        batch_env / "other.json",
+        requested_model="another-model",
+    )
+    loaded, _ = collect_jd.load_records(batch_env)
+
+    assert CASE_01 in pending_cases(loaded, [])
 
 
-def test_an_unapproved_model_refuses_to_run(approved_env, monkeypatch):
-    monkeypatch.setenv("OPENAI_MODEL", "some-other-model")
+def test_spent_so_far_adds_up_this_batch_only(batch_env):
+    _saved_record(CASE_01, batch_env / "JD-01.json")
+    _saved_record(
+        CASES[1],
+        batch_env / "other.json",
+        requested_model="another-model",
+    )
+    loaded, _ = collect_jd.load_records(batch_env)
+
+    spent = spent_so_far(loaded, [])
+
+    assert spent == pytest.approx(estimated_cost(*CHEAP_USAGE))
+
+
+def test_unknown_usage_is_not_counted_as_spent(batch_env):
+    _saved_record(CASE_01, batch_env / "JD-01.json", output_tokens=None)
+    loaded, _ = collect_jd.load_records(batch_env)
     lines = []
 
-    config, cases = preflight(["collect_jd"], lines)
+    spent = spent_so_far(loaded, lines)
 
-    assert config is None
-    assert cases is None
-    assert any("refusing to run" in line for line in lines)
-
-
-def test_the_approved_model_passes_preflight(approved_env):
-    config, cases = preflight(["collect_jd"], [])
-
-    assert config.model == APPROVED_MODEL
-    assert len(cases) == len(CASES)
+    assert spent == 0.0
+    assert any("no token counts" in line for line in lines)
 
 
-def test_only_narrows_the_batch(approved_env):
-    lines = []
-
-    _, cases = preflight(["collect_jd", "--only", "JD-06"], lines)
-
-    assert [case["case_id"] for case in cases] == ["JD-06"]
-    assert any("limited to JD-06" in line for line in lines)
-
-
-def test_an_unknown_case_id_refuses_to_run(approved_env):
-    lines = []
-
-    config, cases = preflight(["collect_jd", "--only", "JD-99"], lines)
-
-    assert config is None
-    assert any("unknown case id" in line for line in lines)
-
-
-def test_a_leftover_file_refuses_to_run(approved_env):
-    (approved_env / "JD-01.json").write_text("{}", encoding="utf-8")
-    lines = []
-
-    config, cases = preflight(["collect_jd"], lines)
-
-    assert config is None
-    assert any("move it aside" in line for line in lines)
-
-
-def test_a_dry_run_never_builds_a_provider(approved_env, monkeypatch):
-    def explode(config):
-        raise AssertionError("a dry run must not build a provider")
-
-    monkeypatch.setattr(collect_jd, "OpenAIProvider", explode)
-
-    assert main(["collect_jd"]) == 0
-    assert list(approved_env.glob("*.json")) == []
-
-
-def test_sending_forces_no_sdk_retry(approved_env, monkeypatch):
+def test_sending_forces_no_sdk_retry(batch_env, monkeypatch):
     captured = {}
-    provider = FakeProvider()
+    fake = FakeProvider()
 
     def build(config):
         captured["config"] = config
 
-        return provider
+        return fake
 
     monkeypatch.setattr(collect_jd, "OpenAIProvider", build)
 
     main(["collect_jd", "--only", "JD-01", "--send"])
 
     assert captured["config"].max_retries == 0
-    assert captured["config"].model == APPROVED_MODEL
+    assert captured["config"].model == BATCH_REQUESTED_MODEL
 
 
-def test_sending_uses_the_approved_call_options(approved_env, monkeypatch):
-    provider = FakeProvider()
-    monkeypatch.setattr(collect_jd, "OpenAIProvider", lambda config: provider)
-
+def test_sending_uses_the_batch_call_options(batch_env, provider):
     main(["collect_jd", "--only", "JD-01", "--send"])
 
-    assert len(provider.calls) == 1
-    assert provider.calls[0]["max_output_tokens"] == APPROVED_MAX_OUTPUT_TOKENS
-    assert provider.calls[0]["reasoning_effort"] == APPROVED_REASONING_EFFORT
-    assert (approved_env / "JD-01.json").exists()
+    assert provider.calls[0]["max_output_tokens"] == BATCH_MAX_OUTPUT_TOKENS
+    assert provider.calls[0]["reasoning_effort"] == BATCH_REASONING_EFFORT
 
 
-def test_a_failure_stops_the_remaining_cases(approved_env, monkeypatch):
-    provider = FakeProvider(fail_on=2)
-    monkeypatch.setattr(collect_jd, "OpenAIProvider", lambda config: provider)
+def test_a_zero_budget_sends_nothing(batch_env, monkeypatch):
+    monkeypatch.setattr(collect_jd, "BATCH_BUDGET_USD", 0.0)
+    monkeypatch.setattr(collect_jd, "OpenAIProvider", ExplodingProvider)
+
+    assert main(["collect_jd", "--send"]) == 1
+    assert list(batch_env.glob("*.json")) == []
+
+
+def test_a_budget_below_one_request_sends_nothing(batch_env, provider):
+    cheapest = min(
+        request_cost_upper_bound(case["job_posting"]) for case in CASES
+    )
+    collect_jd.BATCH_BUDGET_USD = cheapest / 2
+
+    try:
+        lines = []
+        config, plan = preflight(["--send"], lines)
+        sent = collect(config, plan, lines)
+    finally:
+        collect_jd.BATCH_BUDGET_USD = BATCH_BUDGET_USD
+
+    assert sent == 0
+    assert provider.calls == []
+    assert any("does not cover its worst case" in line for line in lines)
+
+
+def test_the_batch_stops_when_the_budget_runs_out(batch_env, provider):
+    collect_jd.BATCH_BUDGET_USD = 0.0020
+
+    try:
+        lines = []
+        config, plan = preflight(["--send"], lines)
+        sent = collect(config, plan, lines)
+    finally:
+        collect_jd.BATCH_BUDGET_USD = BATCH_BUDGET_USD
+
+    assert 0 < sent < len(CASES)
+    assert len(provider.calls) == sent
+    assert any("stopping before" in line for line in lines)
+
+
+def test_a_full_budget_collects_every_case(batch_env, provider):
+    main(["collect_jd", "--send"])
+
+    assert len(provider.calls) == len(CASES)
+    assert len(list(batch_env.glob("*.json"))) == len(CASES)
+
+
+def test_unknown_usage_stops_the_batch(batch_env, monkeypatch):
+    fake = FakeProvider(usage=(700, None))
+    monkeypatch.setattr(collect_jd, "OpenAIProvider", lambda config: fake)
     lines = []
 
-    config, cases = preflight(["collect_jd"], lines)
-    sent = collect(config, cases, lines)
+    config, plan = preflight(["--send"], lines)
+    sent = collect(config, plan, lines)
+
+    assert sent == 1
+    assert any("usage is unknown" in line for line in lines)
+
+
+def test_a_failure_stops_the_remaining_cases(batch_env, monkeypatch):
+    fake = FakeProvider(fail_on=2)
+    monkeypatch.setattr(collect_jd, "OpenAIProvider", lambda config: fake)
+    lines = []
+
+    config, plan = preflight(["--send"], lines)
+    sent = collect(config, plan, lines)
 
     assert sent == 2
-    assert len(provider.calls) == 2
-    assert sorted(p.name for p in approved_env.glob("*.json")) == [
-        "JD-01.json"
-    ]
+    assert len(fake.calls) == 2
     assert any("usage unknown" in line for line in lines)
+    assert any("charged against the budget" in line for line in lines)
 
 
-def test_more_cases_than_the_limit_refuse_to_run(
-    approved_env,
+def test_a_failure_charges_its_worst_case_to_the_budget(
+    batch_env,
     monkeypatch,
 ):
-    def explode(config):
-        raise AssertionError("preflight must refuse before this")
-
-    monkeypatch.setattr(collect_jd, "OpenAIProvider", explode)
-    monkeypatch.setattr(collect_jd, "APPROVED_MAX_REQUESTS", 2)
+    fake = FakeProvider(fail_on=2)
+    monkeypatch.setattr(collect_jd, "OpenAIProvider", lambda config: fake)
     lines = []
 
-    config, cases = preflight(["collect_jd"], lines)
+    config, plan = preflight(["--send"], lines)
+    collect(config, plan, lines)
+
+    expected = (
+        BATCH_BUDGET_USD
+        - estimated_cost(*CHEAP_USAGE)
+        - request_cost_upper_bound(CASES[1]["job_posting"])
+    )
+    reported = [
+        line for line in lines if line.startswith("budget remaining: ")
+    ]
+
+    assert reported == [f"budget remaining: ${expected:.6f}"]
+
+
+def test_a_leftover_file_refuses_to_run(batch_env, monkeypatch):
+    (batch_env / "JD-01.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(collect_jd, "OpenAIProvider", ExplodingProvider)
+    lines = []
+
+    config, plan = preflight(["--send"], lines)
 
     assert config is None
-    assert any("more cases than the approved limit" in l for l in lines)
+    assert any("move it aside" in line for line in lines)
 
 
-def test_collect_stops_at_the_request_limit(approved_env, monkeypatch):
-    provider = FakeProvider()
-    monkeypatch.setattr(collect_jd, "OpenAIProvider", lambda config: provider)
+def test_more_cases_than_the_limit_refuse_to_run(batch_env, monkeypatch):
+    monkeypatch.setattr(collect_jd, "BATCH_MAX_REQUESTS", 2)
+    monkeypatch.setattr(collect_jd, "OpenAIProvider", ExplodingProvider)
     lines = []
-    config, cases = preflight(["collect_jd"], lines)
 
-    monkeypatch.setattr(collect_jd, "APPROVED_MAX_REQUESTS", 2)
-    sent = collect(config, cases, lines)
+    config, plan = preflight(["--send"], lines)
+
+    assert config is None
+    assert any("more cases than the batch limit" in line for line in lines)
+
+
+def test_collect_stops_at_the_request_limit(batch_env, provider):
+    lines = []
+    config, plan = preflight(["--send"], lines)
+    collect_jd.BATCH_MAX_REQUESTS = 2
+
+    try:
+        sent = collect(config, plan, lines)
+    finally:
+        collect_jd.BATCH_MAX_REQUESTS = BATCH_MAX_REQUESTS
 
     assert sent == 2
-    assert len(provider.calls) == 2
-    assert any("reached the approved request limit" in l for l in lines)
+    assert any("reached the batch request limit" in line for line in lines)

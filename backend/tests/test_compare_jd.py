@@ -7,6 +7,7 @@ from app.jd_record import (
     fingerprint_job_posting,
 )
 from app.schemas import StructuredJobDescription
+from evaluation.batch_contract import RECORD_CONTRACT
 from evaluation.compare_jd import (
     build_report,
     check_case,
@@ -16,16 +17,25 @@ from evaluation.compare_jd import (
     select_records,
     _usage,
 )
-from evaluation.jd_cases import (
-    CASES,
-    EXPECTED_PARSER_VERSION,
-    EXPECTED_PROMPT_VERSION,
-    EXPECTED_SCHEMA_VERSION,
-)
+from evaluation.jd_cases import CASES
 
 CASE_01, CASE_02, CASE_03, CASE_04, CASE_05, CASE_06 = CASES
 
 FROZEN_GRADED_TOTAL = 104
+
+CONTRACT_DIMENSIONS = (
+    ("provider", "another-provider"),
+    ("requested_model", "another-model"),
+    ("requested_max_output_tokens", 1),
+    ("requested_reasoning_effort", "high"),
+    ("prompt_version", "0"),
+    ("parser_version", "0"),
+    ("schema_version", "0"),
+)
+
+SKIPPED_DIMENSIONS = tuple(
+    pair for pair in CONTRACT_DIMENSIONS if pair[0] != "schema_version"
+)
 
 
 def _answer(**overrides):
@@ -98,20 +108,14 @@ def _answer_06(**overrides):
 def _metadata(posting, **overrides):
     values = {
         "generated_at": "2026-09-10T12:00:00Z",
-        "prompt_version": EXPECTED_PROMPT_VERSION,
-        "parser_version": EXPECTED_PARSER_VERSION,
-        "schema_version": EXPECTED_SCHEMA_VERSION,
-        "provider": "fake-provider",
-        "requested_model": "test-model",
-        "returned_model": "test-model-2026-01-01",
-        "requested_max_output_tokens": 1200,
-        "requested_reasoning_effort": None,
+        "returned_model": "gpt-5.6-luna-2026-01-01",
         "job_posting_sha256": fingerprint_job_posting(posting),
         "latency_seconds": 2.5,
         "input_tokens": 420,
         "output_tokens": None,
         "total_tokens": None,
     }
+    values.update(dict(RECORD_CONTRACT))
     values.update(overrides)
 
     return ParseMetadata(**values)
@@ -195,22 +199,67 @@ def test_a_record_for_another_posting_is_a_different_posting():
     assert mismatch_reason(record, CASE_01) == "different posting"
 
 
-def test_a_record_with_a_stale_prompt_version_is_rejected():
-    record = _record(CASE_01, _answer_01(), prompt_version="0")
+@pytest.mark.parametrize(
+    (
+        "field",
+        "wrong_value",
+    ),
+    CONTRACT_DIMENSIONS,
+)
+def test_a_record_outside_the_batch_contract_is_rejected(field, wrong_value):
+    record = _record(CASE_01, _answer_01(), **{field: wrong_value})
 
     reason = mismatch_reason(record, CASE_01)
 
     assert reason is not None
-    assert "prompt_version" in reason
+    assert field in reason
 
 
-def test_a_record_with_a_stale_schema_version_is_rejected():
-    record = _record(CASE_01, _answer_01(), schema_version="0")
+@pytest.mark.parametrize(
+    (
+        "field",
+        "wrong_value",
+    ),
+    SKIPPED_DIMENSIONS,
+)
+def test_a_record_outside_the_batch_contract_is_not_measured(
+    field,
+    wrong_value,
+    tmp_path,
+):
+    export_record(
+        _record(CASE_01, _answer_01(), **{field: wrong_value}),
+        tmp_path / "outside.json",
+    )
 
-    reason = mismatch_reason(record, CASE_01)
+    lines = build_report(tmp_path)
 
-    assert reason is not None
-    assert "schema_version" in reason
+    assert any("skipped outside.json" in line for line in lines)
+    assert "  cases measured: 0 of 6" in lines
+
+
+def test_a_stale_schema_version_is_unreadable_rather_than_skipped(tmp_path):
+    export_record(
+        _record(CASE_01, _answer_01(), schema_version="0"),
+        tmp_path / "outside.json",
+    )
+
+    lines = build_report(tmp_path)
+
+    assert any(
+        line.startswith("unreadable: outside.json") for line in lines
+    )
+    assert "  cases measured: 0 of 6" in lines
+
+
+def test_a_different_returned_model_still_matches():
+    record = _record(
+        CASE_01,
+        _answer_01(),
+        returned_model="gpt-5.6-luna-2099-12-31",
+    )
+
+    assert mismatch_reason(record, CASE_01) is None
 
 
 def test_a_matching_record_has_no_mismatch_reason():
@@ -219,7 +268,7 @@ def test_a_matching_record_has_no_mismatch_reason():
     assert mismatch_reason(record, CASE_01) is None
 
 
-def test_only_same_version_records_are_selected(tmp_path):
+def test_only_contract_matching_records_are_selected(tmp_path):
     loaded = [
         (tmp_path / "stale.json", _record(CASE_01, _answer_01(),
                                           prompt_version="0")),

@@ -7,14 +7,12 @@ from app.jd_record import (
     load_record,
 )
 from app.parser import extract_skills
-from evaluation.jd_cases import (
-    CASE_SET_VERSION,
-    CASES,
-    EXPECTED_PARSER_VERSION,
-    EXPECTED_PROMPT_VERSION,
-    EXPECTED_SCHEMA_VERSION,
-    FROZEN_ON,
+from evaluation.batch_contract import (
+    BATCH_ID,
+    RECORD_CONTRACT,
+    record_mismatch,
 )
+from evaluation.jd_cases import CASE_SET_VERSION, CASES, FROZEN_ON
 
 DEFAULT_RECORDS_DIR = Path("records")
 
@@ -23,12 +21,6 @@ REQUIREMENT_FIELDS = (
     "preferred_skills",
     "hard_constraints",
     "uncertain_requirements",
-)
-
-EXPECTED_VERSIONS = (
-    ("prompt_version", EXPECTED_PROMPT_VERSION),
-    ("parser_version", EXPECTED_PARSER_VERSION),
-    ("schema_version", EXPECTED_SCHEMA_VERSION),
 )
 
 
@@ -54,13 +46,7 @@ def mismatch_reason(record, case):
     if record.metadata.job_posting_sha256 != fingerprint:
         return "different posting"
 
-    for name, expected in EXPECTED_VERSIONS:
-        actual = getattr(record.metadata, name)
-
-        if actual != expected:
-            return f"{name} is {actual}, the case set expects {expected}"
-
-    return None
+    return record_mismatch(record.metadata)
 
 
 def select_records(case, loaded):
@@ -201,7 +187,7 @@ def report_case(case, loaded, lines):
 
     if not matched:
         lines.append("  ai    : NOT MEASURED, no saved record for this "
-                     "posting at the expected versions")
+                     "posting under this batch contract")
         measured = False
         passed = failed = 0
     elif len(matched) > 1:
@@ -242,9 +228,9 @@ def build_report(records_dir):
     lines = [
         "RoleRadar Day 27 offline rule-vs-LLM comparison",
         f"case set {CASE_SET_VERSION} frozen on {FROZEN_ON}",
-        f"expected versions: prompt {EXPECTED_PROMPT_VERSION}, "
-        f"parser {EXPECTED_PARSER_VERSION}, "
-        f"schema {EXPECTED_SCHEMA_VERSION}",
+        f"batch {BATCH_ID} requires " + ", ".join(
+            f"{name} {expected}" for name, expected in RECORD_CONTRACT
+        ),
         f"records directory: {records_dir} "
         f"({len(loaded)} readable, {len(unreadable)} unreadable)",
         "this script never contacts a provider",

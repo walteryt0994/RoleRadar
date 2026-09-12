@@ -34,7 +34,16 @@ model behaviour.
 | JD-05 | alternative branch and conflict | `Python, Excel, Data Analysis` | 14 / 18 |
 | JD-06 | unknown tech, duties, injection | `(empty)` | 20 / 20 |
 
-Total: **100 of 104 graded checks passed on 6 of 6 cases.**
+Two counts describe this run and both are reported:
+
+- **First attempt: 4 of 6 cases produced a usable record.** JD-05 and JD-06
+  failed the evidence check.
+- **Final state: 6 of 6 cases have a stored successful record**, because
+  JD-05 and JD-06 were retried once each under a separate approval.
+
+Against the stored six records, **100 of 104 graded checks passed**. The
+four failed checks correspond to **two** expectation deviations; see the
+counting note in 4.1.
 
 These counts cover this fixed six-case set only. They are not an accuracy
 rate and must not be extrapolated. No precision or recall is claimed; the
@@ -57,14 +66,21 @@ follow-up diagnostic batch, each separately approved.
 | JD-05 | `evidence` failure | success |
 | JD-06 | `evidence` failure | success |
 
-Two of eight calls, 25 percent, were discarded by the evidence check and
-degraded to the rule fallback. Both recovered on one retry, so the failures
-were **run-to-run variation, not a property of those two cases**.
+Two of eight calls in this run were discarded by the evidence check and
+degraded to the rule fallback. Both succeeded on one retry, which shows the
+failures are **not deterministic for these two cases**. It does **not**
+show the cause is random: the input, the prompt, the exact-match rule and
+the varying output could still interact systematically. **The failure cause
+is unconfirmed.**
 
-The specific failing quote could not be identified. Failed responses are
-not persisted by design, so no offline diagnosis was possible; the only way
-anything was learned was by paying for two more calls. This is a capability
-gap for an evaluation day, recorded here for a scope ruling.
+The 2 of 8 figure is an observation from this run, which included selective
+retries of the two failing cases. It is not a stable failure rate.
+
+The specific failing quote could not be identified because failed responses
+are not persisted by design. Paying for two more calls produced a different
+outcome; it did not diagnose the original failures, and it is not the only
+possible way to investigate them. Retaining a minimal failure record is one
+option for a future batch, recorded here for a scope ruling.
 
 One verified property of the current code: `verify_evidence` compares
 whitespace-normalised strings **case sensitively**. `mentor junior
@@ -87,15 +103,21 @@ degree requirement carrying an explicit alternative is not an
 unconditional gate, so this violates an instruction the prompt already
 gives.
 
-Downstream effect: in Stage 8 a candidate with three years of practical
-experience and no statistics degree would be blocked by a gate the posting
-itself does not impose.
+Scope of this finding: the failure is against the frozen v1 expectation,
+which asks for an alternative branch to stay out of `hard_constraints`. The
+saved entry does keep the full `degree OR equivalent practical experience`
+wording and does not split the OR into two independent gates. The risk is
+therefore that a later matching implementation reads a hard constraint as a
+gate; there is no matching code yet, so no candidate is blocked today.
 
-Second error in the same case: `uncertain_requirements` recorded only
+Second deviation in the same case: `uncertain_requirements` recorded only
 `Entry-level position`, while `At least 3 years of hands-on Python
-experience` was promoted to `hard_constraints`. The model noticed that
-entry-level was odd but did not record that the two statements contradict
-each other. The conflict was read only half way.
+experience` was promoted to `hard_constraints`. The frozen expectation for
+this case asks the tension between the two statements to be surfaced as
+uncertain. That is a business assumption of this experiment, not a universal
+logical contradiction; a posting may legitimately use both phrasings. The
+failure count follows the frozen standard and the assumption is stated here
+so the count can be judged.
 
 **Counting note.** The comparison script reports 4 failed checks for
 JD-05, but these are **2 distinct errors**. The single wrong
@@ -104,12 +126,13 @@ JD-05, but these are **2 distinct errors**. The single wrong
 term rather than per entry. The raw count overstates the number of
 mistakes.
 
-### 4.2 No misclassification or wrong generalisation observed
+### 4.2 No further misclassification or wrong generalisation observed
 
-The other two error types requested for Day 27 were not observed on this
-set. Every requirement in the six records sat in a column consistent with
-the posting, and no requirement generalised beyond what the posting said.
-With six cases this is weak evidence of absence.
+Apart from the JD-05 hard constraint deviation in 4.1, which is itself a
+column choice, no other requirement sat in a column inconsistent with its
+posting, and no requirement generalised beyond what the posting said. This
+is "no other case observed", not "no misclassification". With six cases it
+is weak evidence of absence.
 
 ### 4.3 Evidence semantics, checked by hand
 
@@ -122,18 +145,23 @@ appear here.
 Every successful quote begins at a sentence start or a bullet item. No
 mid-sentence fragment had to be quoted in the successful runs.
 
-### 4.4 Rule baseline errors
+### 4.4 Rule baseline limits
 
-The rule parser is a keyword search and cannot express required versus
-preferred, negation, gates, or conflicts. Those columns are reported as
-not supported rather than scored as wrong. Within its own capability,
-skill mention, three identifiable errors remain:
+The rule parser detects whether a known skill term is **mentioned**. It
+cannot express required versus preferred, negation, gates, or conflicts,
+so those columns are reported as not supported rather than scored as wrong.
 
-| Case | Rule output | Problem |
+Under its own contract the JD-02 and JD-04 hits are correct: both terms do
+appear in the posting. They are listed here as limits that mislead when a
+mention list is consumed as a list of required skills, not as wrong hits.
+The JD-06 result is a separate kind of limit, vocabulary coverage. The
+three are not one error rate:
+
+| Case | Rule output | Limit |
 |---|---|---|
-| JD-02 | `Machine Learning` | comes from a duty sentence, not a required skill |
-| JD-04 | `Java` | the posting says Java is **not** required |
-| JD-06 | `(empty)` | `Rust` and `Terraform` are outside `KNOWN_SKILLS` |
+| JD-02 | `Machine Learning` | the term comes from a duty sentence, so reading it as a required skill is a consumer error |
+| JD-04 | `Java` | the posting says Java is **not** required, and a mention list cannot carry that |
+| JD-06 | `(empty)` | `Rust` and `Terraform` are outside `KNOWN_SKILLS`, a coverage limit |
 
 An empty rule result means the vocabulary found nothing. It does not mean
 the posting has no requirements. JD-06 in fact requires two technologies.
@@ -159,7 +187,28 @@ no trace of it: `required_skills` holds only `Rust` and `Terraform`,
 mentions a match verdict. One observation on one posting is not a
 security assessment.
 
-## 5. Fallback behaviour
+## 5. Batch contract enforcement
+
+A record only counts for this batch when the posting fingerprint, the
+prompt, parser and schema versions, the provider, the requested model, the
+requested output limit and the requested reasoning effort all match
+`evaluation/batch_contract.py`. The comparison and the collection tool read
+the same definition, so a record collected under other settings is reported
+as a named skip and the case stays unmeasured rather than being silently
+counted or silently skipped as already collected. The returned model is
+recorded as observed and is deliberately not part of the contract.
+
+The collection tool parses its arguments strictly: a missing `--only`
+value, an unknown flag or an unknown case id exits non-zero before any
+provider is built. It reserves each request's conservative worst case cost,
+counted from the full prompt, posting and schema at the full output limit,
+against the budget remaining after the usage already stored on disk. A
+request is only sent when the remaining budget covers that worst case, and
+a failure or an unknown usage charges the worst case and stops the batch.
+These limits describe one approved batch that has been consumed; they are
+not a standing authorisation.
+
+## 6. Fallback behaviour
 
 `parse_job_description_with_fallback` keeps the existing contract and adds
 one application level entry point returning either an `llm` outcome with a
@@ -177,29 +226,38 @@ Rule skills are never labelled required, and no empty-but-complete
 `StructuredJobDescription` is fabricated. Export is not part of the
 fallback path, so an export failure cannot trigger a re-parse.
 
-## 6. Cost and latency
+## 7. Cost and latency
 
 | | |
 |---|---|
-| Requests sent | 8, all user run and separately approved |
+| Requests sent | 8, all user run under two separately approved batches |
 | Successful, with usage | 6 - 4,296 input and 922 output tokens |
 | Failed, usage unknown | 2 - may still have been billed |
-| Estimated cost | **$0.0019656** |
+| Estimated cost of the known usage | **$0.0019656, plus an unknown amount for two failed requests** |
+
+These eight requests are approved synthetic verification against fixed
+fictional postings, not production traffic.
 
 Estimated from reported usage at input $0.20 and output $1.20 per million
-tokens, the prices quoted on 2026-09-08. **This is an estimate from usage,
-not a verified bill.** Two failed requests are excluded because their usage
-is unknown; unknown usage is never recorded as zero.
+tokens, the prices published on the official model page on 2026-09-11.
+**This is an estimate from usage, not a verified bill.** Two failed requests
+are excluded because their usage is unknown; unknown usage is never recorded
+as zero. The project total is likewise "an estimate of $0.0029488 for the
+known usage, plus an unknown amount", not a complete cost.
 
 Observed latency ranged from 1.68 s to 3.76 s across six successful calls.
 This is a small-sample observation. No performance claim, percentile, or
 SLA follows from it.
 
-## 7. Limits
+## 8. Limits
 
 - Six synthetic cases. Nothing here generalises to real postings.
-- JD-05 and JD-06 are second-attempt results.
-- The evidence failure cause is unconfirmed; failed responses are not kept.
+- JD-05 and JD-06 are second-attempt results, so the final 6 of 6 is not a
+  first-attempt figure.
+- The evidence failure cause is unconfirmed; failed responses are not kept,
+  and the retries did not diagnose the original failures.
+- The cost figures cover the known usage only; two requests have unknown
+  usage and are excluded rather than counted as zero.
 - Exclusion checks are counted per term, so one bad entry can produce
   several failed checks.
 - `required_skills[].text` holds posting phrases such as `Strong SQL
