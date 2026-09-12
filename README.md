@@ -1,10 +1,21 @@
 # RoleRadar
 
-RoleRadar is a Job Intelligence & Skill-Gap Analysis Platform for students.
+RoleRadar is an evidence-grounded AI job analysis platform for students and early-career candidates.
 
-The goal of this project is to help users parse job descriptions, identify required skills, analyze skill gaps, and track job applications.
+The project is evolving from a rule-based full-stack baseline into a tested AI workflow that structures job descriptions, connects requirements to real candidate evidence, explains skill gaps and uncertainty, and tracks job applications.
 
-## V1 Features
+## Current Status
+
+- V1 / Stages 1-4 / Days 1-14: complete
+- V2 / Stage 5 / Days 15-19: engineering credibility foundation complete
+- V2 / Stage 6 / Days 20-23: Resume intake and evidence-backed Student Profile complete
+- V2 / Stage 7 / Days 24-27: structured LLM JD parser complete
+- Current next step: V2 / Stage 8 / Day 28, evidence-grounded matching
+- Latest independently verified committed implementation baseline: commit `e338441`, 461 tests passing, 6 Application rows and 0 Student Profile rows in the real local database
+
+V2 is not complete yet. It closes only after Stage 8 / Day 30 passes evaluation, regression, documentation, and the end-to-end Streamlit demo review.
+
+## V1 Baseline Features
 
 - Extract required skills from job descriptions
 - Compare detected job skills with user skills
@@ -28,6 +39,37 @@ The goal of this project is to help users parse job descriptions, identify requi
 7. The Dashboard loads saved records through `GET /applications`.
 8. The user can update an application status through `PATCH /applications/{application_id}`.
 9. Dashboard metrics, charts, and application history refresh from the updated records.
+
+## V2 Capabilities Delivered Through Stage 7
+
+- Validate pasted Resume text and extract text from a controlled single-PDF upload
+- Model education, experience, projects, courses, certifications, skills, preferences, work authorization, and skill evidence in a nested `StudentProfile`
+- Save, replace, reload, edit, and explicitly confirm a Profile while resetting confirmation after content changes
+- Call an OpenAI provider through a vendor-neutral `AIProvider` interface
+- Convert an unstructured JD into a fixed 13-field `StructuredJobDescription` with strict JSON Schema and Pydantic validation
+- Separate required skills, preferred skills, hard constraints, and uncertain requirements
+- Bind extracted requirements to exact evidence excerpts and verify that each excerpt occurs in the source JD
+- Record provider, requested and returned model, prompt/parser/schema versions, latency, token usage, request options, timestamp, and a JD fingerprint
+- Export and read validated local parsing records without persisting the raw provider response
+- Fall back once to the frozen V1 rule parser for known LLM failures and label that outcome as `rule_fallback`
+- Replay six frozen synthetic JD records offline for rule-versus-LLM comparison without network access or API cost
+
+Current V2 boundary:
+
+- Resume intake does not automatically turn Resume text into a Student Profile; the user creates, corrects, saves, and confirms the Profile
+- The Stage 7 LLM parser is currently a tested backend service and evaluation capability, not a FastAPI endpoint or Streamlit control
+- Profile-to-JD matching, matched/missing/uncertain results, deterministic Alignment Score, the 30-50-case Stage 8 evaluation set, and the final V2 UI demo remain for Days 28-30
+
+The planned V2 product flow is:
+
+```text
+confirmed StudentProfile
++ validated LLM JobDescriptionRecord
+→ evidence-grounded matched / missing / uncertain results
+→ separately reported hard constraints
+→ deterministic, reproducible Alignment Score
+→ evaluation and user-facing Streamlit demo
+```
 
 ## Progress
 
@@ -451,13 +493,13 @@ Completed:
 - Added `backend/evaluation/batch_contract.py` so the comparison and the collection tool share one definition of the approved batch: the posting fingerprint, the prompt, parser and schema versions, the provider, the requested model, the requested output limit and the requested reasoning effort
 - Added `backend/evaluation/compare_jd.py`, an offline comparison that replays saved records and never contacts a provider, pairing a record to a case only when every field of that contract matches, while the returned model is recorded as observed rather than forced to equal the requested name
 - Reported an unmatched case as not measured, a record from another batch as a named skip, duplicate matches as ambiguous, and missing token counts as unknown rather than zero
-- Added `backend/evaluation/collect_jd.py`, which parses its arguments strictly so a missing `--only` value, an unknown flag or an unknown case id exits non-zero, and which checked a per-request cost estimate before sending while the batch was running
+- Added `backend/evaluation/collect_jd.py` for the historical user-approved collection batch, with strict argument parsing so a missing `--only` value, an unknown flag or an unknown case id exits non-zero
 - Sealed that live entry point once the batch was complete: the module no longer imports a provider, never loads an API key, and has no collection loop, so `--send` is refused with a non-zero exit and no send path is left to call; it now only previews which cases have a record and the subtotal of the usage those records report
-- Described the batch-time cost check as a character-ratio heuristic rather than a proven upper bound, because a failed request saved no record and its reservation did not survive a restart, and stopped deriving any remaining approved balance
+- After collection, an offline repair attempted a character-ratio cost-reservation heuristic; no new live collection used it, it was never proven to be a reliable upper bound, and the heuristic was removed when the live entry point was sealed
 - Collected six responses across eight user-run requests under two separately approved batches; the known usage is estimated at $0.0019656, plus an unknown amount for the two failed requests
 - Recorded 4 of 6 cases usable on the first attempt and 6 of 6 after one retry each for JD-05 and JD-06, with 100 of 104 graded checks passing against the stored records; the retries did not diagnose the original evidence failures, whose cause stays unconfirmed
-- Kept the whole test suite offline: 117 new tests mock the SDK and need no API key, no network access, and no cost
-- Confirmed all 456 backend tests pass and the real database remains unchanged
+- Kept the whole test suite offline: 122 net-new tests relative to Day 26 mock the SDK and need no API key, no network access, and no cost
+- Confirmed all 461 backend tests pass and the real database remains unchanged
 - Did not change the prompt, the schema, the provider, or `KNOWN_SKILLS`, and did not add match scoring, an endpoint, or a UI control
 
 ## Tech Stack
@@ -742,7 +784,7 @@ Frontend URL:
 http://localhost:8501
 ```
 
-## Demo Flow
+## V1 Demo Flow
 
 Use the following example:
 
@@ -772,6 +814,29 @@ Demo steps:
 8. Update its application status
 9. Confirm that the Dashboard and status chart refresh
 10. Restart the application and confirm that the record persists
+
+## V2 Status and Remaining Work
+
+V2 is an evidence-grounded AI workflow, not yet an autonomous Agent. Stages 5-7 are complete; Stage 8 / Days 28-30 remains.
+
+Before V2 can be marked complete, RoleRadar must:
+
+- Match a confirmed Student Profile against a validated structured JD
+- Return evidence-backed `matched`, `missing`, and `uncertain` conclusions
+- Keep education, experience, work authorization, and other hard constraints separate from the skill score
+- Calculate an explainable Alignment Score in deterministic Python code
+- Evaluate the matching behavior on 30-50 frozen, manually labelled cases
+- Report important errors, trade-offs, known cost, and observed latency without presenting the score as an offer probability
+- Add the minimal Streamlit flow for a user to submit a JD, trigger parsing explicitly, and review the matching evidence
+- Complete the final regression, README, demo, and V2 handoff
+
+Known Stage 7 limitations:
+
+- Evidence verification proves that a quoted excerpt occurs in the JD; it does not by itself prove that the model interpreted the excerpt correctly
+- The six-JD comparison is a small engineering check, not a general accuracy claim
+- The ignored local parsing records are not included in a new clone
+- Two failed live requests did not save diagnostic response artifacts, so their exact failure cause remains unconfirmed
+- The sealed Day 27 collection command cannot send new requests; this does not disable the reusable AI provider or parser service
 
 ## V1 Status
 
