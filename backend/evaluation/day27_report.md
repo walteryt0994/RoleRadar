@@ -204,14 +204,19 @@ point has since been **sealed**: the module no longer imports a provider,
 never loads an API key, and has no collection loop, so `--send` is refused
 with a non-zero exit and there is no send path left to call directly.
 
-While the batch was running, the tool checked a per-request cost estimate
-before sending and stopped on a failure or an unknown usage. That estimate
-was a character-ratio heuristic, not a proven upper bound, and its running
-balance lived only in one process: a failed request saved no record, so a
-restart did not know it had happened. It is therefore described here as a
-heuristic that was in force during the batch, never as a guaranteed cost
-ceiling. The tool now reports only the subtotal of the usage the stored
-records report, and derives no remaining balance.
+The cost controls that actually governed the eight real requests were:
+`max_retries` set to zero, one request per case, and a stop after the first
+known failure. The budget constant was only printed, and compared against
+the total after the loop had finished, so it never gated a request.
+
+A later offline fix round added a per-request estimate that was checked
+before sending. **That reservation never governed a real request**: no
+request was sent after it was added, and it has since been removed with the
+live entry point. It was a character-ratio heuristic, never a proven upper
+bound, and its running balance lived in one process only, so a failed
+request left no record for a restart to see. The tool now reports only the
+subtotal of the usage the stored records report, and derives no remaining
+balance.
 
 ## 6. Fallback behaviour
 
