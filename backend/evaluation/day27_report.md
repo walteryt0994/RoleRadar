@@ -187,7 +187,7 @@ no trace of it: `required_skills` holds only `Rust` and `Terraform`,
 mentions a match verdict. One observation on one posting is not a
 security assessment.
 
-## 5. Batch contract enforcement
+## 5. Batch contract and the sealed live entry
 
 A record only counts for this batch when the posting fingerprint, the
 prompt, parser and schema versions, the provider, the requested model, the
@@ -198,15 +198,20 @@ as a named skip and the case stays unmeasured rather than being silently
 counted or silently skipped as already collected. The returned model is
 recorded as observed and is deliberately not part of the contract.
 
-The collection tool parses its arguments strictly: a missing `--only`
-value, an unknown flag or an unknown case id exits non-zero before any
-provider is built. It reserves each request's conservative worst case cost,
-counted from the full prompt, posting and schema at the full output limit,
-against the budget remaining after the usage already stored on disk. A
-request is only sent when the remaining budget covers that worst case, and
-a failure or an unknown usage charges the worst case and stops the batch.
-These limits describe one approved batch that has been consumed; they are
-not a standing authorisation.
+The collection tool still parses its arguments strictly: a missing `--only`
+value, an unknown flag or an unknown case id exits non-zero. Its live entry
+point has since been **sealed**: the module no longer imports a provider,
+never loads an API key, and has no collection loop, so `--send` is refused
+with a non-zero exit and there is no send path left to call directly.
+
+While the batch was running, the tool checked a per-request cost estimate
+before sending and stopped on a failure or an unknown usage. That estimate
+was a character-ratio heuristic, not a proven upper bound, and its running
+balance lived only in one process: a failed request saved no record, so a
+restart did not know it had happened. It is therefore described here as a
+heuristic that was in force during the batch, never as a guaranteed cost
+ceiling. The tool now reports only the subtotal of the usage the stored
+records report, and derives no remaining balance.
 
 ## 6. Fallback behaviour
 
@@ -215,7 +220,7 @@ one application level entry point returning either an `llm` outcome with a
 validated record, or a `rule_fallback` outcome carrying only the V1 skill
 list and a fixed failure category.
 
-Observed in production during this collection: both evidence failures
+Observed during this approved synthetic collection: both evidence failures
 produced a `rule_fallback`, the collection stopped the remaining cases, and
 no automatic second AI request was made.
 
@@ -266,3 +271,6 @@ SLA follows from it.
 - Scalar fields and `responsibilities` still carry no per-item evidence.
 - Only successful parses are recorded; there is no failure audit trail.
 - Manual semantic review was done by one reader without a second opinion.
+- The live collection entry point is sealed, so this batch cannot be
+  re-run or extended from this code; a further batch needs a new approval
+  and a live entry point built for it.
