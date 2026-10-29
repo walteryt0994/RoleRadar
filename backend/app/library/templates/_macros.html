@@ -1,0 +1,46 @@
+{% macro csrf() %}<input type="hidden" name="csrf_token" value="{{ user.csrf_token }}">{% endmacro %}
+
+{% macro state_badge(item) %}<span class="badge state-{{ item.state }}">{{ state_label(item) }}</span>{% endmacro %}
+
+{% macro field_value(field, value) %}
+{% if not value %}
+<p class="empty">{{ NOT_FILLED }}</p>
+{% elif field.name == "links" %}
+<ul class="links">
+  {% for text, href in link_lines(value) %}
+  <li>{% if href %}<a href="{{ href }}" rel="noopener noreferrer">{{ text }}</a>{% else %}{{ text }} <span class="muted small">（不是 http/https 链接，没有生成可点击的链接）</span>{% endif %}</li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="text">{{ value }}</p>
+{% endif %}
+{% endmacro %}
+
+{% macro content_block(content) %}
+<dl class="fields">
+  {% for field in FIELDS %}
+  <dt>{{ field.label }}</dt>
+  <dd>{{ field_value(field, content.get(field.name, "")) }}</dd>
+  {% endfor %}
+</dl>
+{% endmacro %}
+
+{% macro note_block(title, note) %}
+<section class="private">
+  <h2>{{ title }}</h2>
+  {{ caller() }}
+  {% if note %}<p class="text">{{ note }}</p>{% else %}<p class="empty">{{ NOT_FILLED }}</p>{% endif %}
+</section>
+{% endmacro %}
+
+{% macro leave_dialog() %}
+<dialog id="leave-dialog" aria-labelledby="leave-title">
+  <h2 id="leave-title">有还没保存的修改</h2>
+  <p>离开这个页面之前，要怎么处理这些修改？</p>
+  <div class="dialog-actions">
+    <button type="button" data-leave-choice="save">保存草稿</button>
+    <button type="button" data-leave-choice="stay" class="secondary">继续编辑</button>
+    <button type="button" data-leave-choice="discard" class="danger">放弃修改</button>
+  </div>
+</dialog>
+{% endmacro %}

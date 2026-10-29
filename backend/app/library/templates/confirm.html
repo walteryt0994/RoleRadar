@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+{% if error %}
+<p class="error" role="alert">{{ error }}</p>
+{% endif %}
+<ul class="points">
+  {% for point in points %}
+  <li>{{ point }}</li>
+  {% endfor %}
+</ul>
+<form method="post" action="{{ action }}">
+  <input type="hidden" name="csrf_token" value="{{ user.csrf_token }}">
+  {% for name, value in hidden.items() %}
+  <input type="hidden" name="{{ name }}" value="{{ value }}">
+  {% endfor %}
+  {% if acknowledge %}
+  <label class="ack"><input type="checkbox" name="acknowledge" value="yes" required> {{ acknowledge }}</label>
+  {% endif %}
+  <div class="form-actions">
+    <button type="submit" class="danger">{{ button }}</button>
+    <a href="{{ cancel }}">取消</a>
+  </div>
+</form>
+{% endblock %}

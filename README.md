@@ -515,6 +515,7 @@ Completed:
 - pypdf
 - python-multipart
 - openai
+- Jinja2 (server-rendered pages of the experience library)
 
 Planned later:
 
@@ -533,13 +534,15 @@ roleradar/
 │   │   ├── jd_outcome.py
 │   │   ├── jd_record.py
 │   │   ├── jd_service.py
+│   │   ├── library/        # v0.1 U1-A experience library: own database and pages
 │   │   ├── main.py
 │   │   ├── models.py
 │   │   ├── parser.py
 │   │   ├── resume_service.py
 │   │   ├── routers.py
 │   │   ├── schemas.py
-│   │   └── services.py
+│   │   ├── services.py
+│   │   └── web_main.py     # entry point of the experience library web app
 │   ├── evaluation/
 │   │   ├── batch_contract.py
 │   │   ├── collect_jd.py
@@ -550,6 +553,7 @@ roleradar/
 │   ├── tests/
 │   │   ├── fixtures/
 │   │   │   └── synthetic_resume.pdf
+│   │   ├── library/        # library tests and the isolated test launcher
 │   │   ├── test_ai_provider.py
 │   │   ├── test_collect_jd.py
 │   │   ├── test_compare_jd.py
@@ -705,6 +709,8 @@ RoleRadar provides local development defaults for most configuration values. `OP
 | `OPENAI_MODEL` | FastAPI backend | none, required for AI calls |
 | `OPENAI_TIMEOUT_SECONDS` | FastAPI backend | `30.0` |
 | `OPENAI_MAX_RETRIES` | FastAPI backend | `2` |
+| `ROLERADAR_LIBRARY_DB_PATH` | Experience library (`app.web_main`) | none: an absolute path outside the repository must be given (or `--db`) |
+| `ROLERADAR_LIBRARY_DEV_LOGIN` | Experience library | off; `1` (or `--dev-login`) enables the synthetic users A and B |
 
 Environment variables are read when each service starts. Restart the corresponding service after changing a value.
 
@@ -741,12 +747,20 @@ The automated tests never read `.env` and never contact the network, so running 
 
 ## Run Tests
 
-From the project root:
+Run the suite through the isolated launcher, from the project root:
 
 ```bash
 cd backend
-python -m pytest -v
+../.venv/bin/python tests/library/run_isolated.py -q
 ```
+
+The launcher sets up isolation before pytest starts, so it is already in force while tests are collected and modules are first imported:
+
+- It creates a new temporary root outside the repository and points `DATABASE_URL`, `ROLERADAR_LIBRARY_DB_PATH`, `TMPDIR` and pytest's `--basetemp` into it.
+- It removes `OPENAI_*` and proxy variables, turns plugin auto-loading off and writes no `.pyc` or `.pytest_cache` files.
+- It loads an audit plugin that blocks network access and records SQLite connections and file writes; the run fails if any of them left the temporary root. The audit covers the pytest process only.
+
+Extra arguments go to pytest, for example `tests/library -q`. The temporary root is kept and its path printed. The experience library tests refuse to run without the launcher. Four failures in `tests/test_match_service.py` (Day 28 match-input validation) are known and left for U2.
 
 ## Run Backend
 
@@ -785,6 +799,28 @@ Frontend URL:
 ```txt
 http://localhost:8501
 ```
+
+## Run the Experience Library (v0.1 U1-A)
+
+A separate Chinese web app for recording, confirming, deleting, restoring and exporting project/portfolio experiences. It is a local development build for synthetic data only:
+
+- It keeps its own SQLite file and never imports or opens the legacy `roleradar.db`.
+- The dev login lets anyone who can reach the page act as synthetic user A or B. It is not authentication, so the app only accepts connections from this machine and must not be opened to anyone else.
+- Do not enter real personal information.
+
+Start it through the controlled entry point, from the project root:
+
+```bash
+cd backend
+../.venv/bin/python -m app.web_main --db /tmp/roleradar-u1a-demo/library.db --dev-login
+```
+
+Then open http://127.0.0.1:8765 and stop the app with Ctrl+C.
+
+- `--db` must be an absolute path outside the repository. Start-up is refused if it is the legacy database (also through a symlink or hard link), lies inside `backend/records/`, or belongs to another program.
+- The entry point only binds to 127.0.0.1 and turns proxy headers off; any other `--host` is refused.
+- While the app runs, expired recycle-bin content is cleaned up every 10 minutes, and once at every start-up.
+- `--dev-clock-offset-days N` moves the app's clock forward to check the 7-day restore window locally; a red banner shows the offset. Use a separate database for it, because sessions and timestamps created under the shifted clock stay in that file.
 
 ## V1 Demo Flow
 

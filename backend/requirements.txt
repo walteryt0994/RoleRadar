@@ -6,3 +6,4 @@ httpx2
 python-multipart
 pypdf
 openai
+jinja2==3.1.6

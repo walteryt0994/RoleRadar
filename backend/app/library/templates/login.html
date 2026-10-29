@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}进入{% endblock %}
+{% block content %}
+<h1>进入本地经历库</h1>
+{% if login_token %}
+<p>这是本地开发版。选择一个合成用户进入；两个合成用户的资料互相隔离，看不到对方的内容。</p>
+<p class="warning">这不是真实登录：能打开这个页面的人都可以选择任意一个合成用户，所以它只接受本机访问，也不能用来保存真实资料。</p>
+<div class="actions">
+  {% for u in users %}
+  <form method="post" action="/login/dev" class="inline">
+    <input type="hidden" name="login_token" value="{{ login_token }}">
+    <input type="hidden" name="user_id" value="{{ u.id }}">
+    <button type="submit">以{{ u.display_label }}进入</button>
+  </form>
+  {% endfor %}
+</div>
+{% else %}
+<p>现在没有可用的进入方式：真实登录还没有建设（在后续阶段完成），开发登录也没有启用。</p>
+<p class="muted">本地验证时，用 <code>--dev-login</code> 启动。</p>
+{% endif %}
+{% endblock %}

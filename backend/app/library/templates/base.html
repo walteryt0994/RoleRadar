@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}经历库{% endblock %} · RoleRadar 本地开发版</title>
+  <link rel="stylesheet" href="/static/library.css">
+</head>
+<body>
+  <div class="dev-banner">本地开发模式：只用合成资料。这里的“进入”不是真实登录，请不要填写真实个人信息。</div>
+  {% if clock_note %}
+  <div class="dev-banner clock">{{ clock_note }}</div>
+  {% endif %}
+  <header class="topbar">
+    <a class="brand" href="/experiences">RoleRadar 经历库</a>
+    {% if user %}
+    <nav class="nav">
+      <a href="/experiences">我的经历</a>
+      <a href="/experiences?tab=trash">回收站</a>
+      <a href="/export/all.zip" download>导出全部</a>
+    </nav>
+    <div class="who">
+      <span>当前：{{ user.label }}</span>
+      <form method="post" action="/logout" class="inline" data-logout>
+        <input type="hidden" name="csrf_token" value="{{ user.csrf_token }}">
+        <button type="submit" class="link-button">退出</button>
+      </form>
+    </div>
+    {% endif %}
+  </header>
+  <main>
+    {% if notice %}
+    <p class="notice" role="status">{{ notice }}</p>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
