@@ -9,9 +9,17 @@ ids and status only. A job re-checks its target right before removing
 anything, so a job left over from a deletion that was later restored can
 never remove the restored data. A failed attempt is recorded and retried on
 the next run.
+
+Attachments follow the same rules with two additions. Deleting an experience
+takes its attachments into the recycle bin under the experience's own
+deletion, and restoring it brings back exactly those; attachments deleted
+on their own before keep their own deadline. And a purge removes the files
+of the attachments it covers before their rows: a job is only done once the
+files are really gone, and a job that failed after removing some files finds
+them gone on its next try and finishes.
 """
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from sqlalchemy import delete, func, select
@@ -19,8 +27,11 @@ from sqlalchemy.orm import Session
 
 from app.library.content import DOCUMENT_KINDS, EXPERIENCE_CATEGORIES, PREFERENCES, PROFILE
 from app.library.db import Database
-from app.library.errors import NotAllowed, NotFound, VersionConflict
+from app.library.errors import AttachmentConflict, FileStoreError, NotAllowed, NotFound, VersionConflict
+from app.library.files import FileStore
 from app.library.models import (
+    Attachment,
+    AttachmentState,
     ExperienceItem,
     ExperienceVersion,
     JobStatus,
@@ -97,6 +108,16 @@ def delete_experience(
     item = active_item(db, owner_id, item_id, kinds)
     check_revision(item, expected_revision)
     _start_deletion(db, owner_id, TargetType.EXPERIENCE, item, item, now)
+
+    # Kept attachments go with it, under its deletion, so restoring it can
+    # tell them from attachments deleted on their own before.
+    for attachment in _attachments(db, item, Attachment.deleted_at.is_(None)):
+        attachment.deleted_at = now
+        attachment.purge_after = item.purge_after
+        attachment.deletion_id = item.deletion_id
+        attachment.revision += 1
+        attachment.updated_at = now
+
     item.revision += 1
     record_event(db, owner_id, item.id, TargetType.EXPERIENCE, item.id, "deleted", now)
 
@@ -121,6 +142,13 @@ def restore_experience(
     if item.category in DOCUMENT_KINDS and current_document(db, owner_id, item.category):
         raise NotAllowed(RESTORE_BLOCKED_REASONS[item.category])
 
+    for attachment in _attachments(db, item, Attachment.deletion_id == item.deletion_id):
+        attachment.deleted_at = None
+        attachment.purge_after = None
+        attachment.deletion_id = None
+        attachment.revision += 1
+        attachment.updated_at = now
+
     _cancel_deletion(db, item, now)
     item.revision += 1
     record_event(db, owner_id, item.id, TargetType.EXPERIENCE, item.id, "restored", now)
@@ -139,6 +167,12 @@ def request_experience_purge(
     """Make a binned record unrestorable now; return its purge job id."""
     item = trashed_item(db, owner_id, item_id, now, kinds)
     check_revision(item, expected_revision)
+
+    for attachment in _attachments(db, item, Attachment.deletion_id == item.deletion_id):
+        attachment.purge_after = now
+        attachment.revision += 1
+        attachment.updated_at = now
+
     job_id = _expire_now(db, item, now)
     item.revision += 1
     record_event(db, owner_id, item.id, TargetType.EXPERIENCE, item.id, "purge_requested", now)
@@ -269,6 +303,114 @@ def request_version_purge(
     return job_id
 
 
+def _attachments(db: Session, item: ExperienceItem, *conditions) -> list[Attachment]:
+    """Ready attachments of an experience that meet the conditions."""
+    return list(
+        db.scalars(
+            select(Attachment).where(
+                Attachment.item_id == item.id,
+                Attachment.state == AttachmentState.READY,
+                *conditions,
+            )
+        )
+    )
+
+
+def attachment_of(
+    db: Session,
+    owner_id: str,
+    item_id: str,
+    attachment_id: str,
+    now: datetime,
+    *,
+    in_bin: bool,
+) -> tuple[ExperienceItem, Attachment]:
+    """A ready attachment of an experience that is in use: kept, or (in_bin)
+    deleted on its own and still restorable.
+
+    While the experience itself is in the recycle bin, none of its
+    attachments can be reached on its own: restoring the experience comes
+    first.
+    """
+    item = active_item(db, owner_id, item_id)
+    attachment = db.scalar(
+        select(Attachment).where(
+            Attachment.id == attachment_id,
+            Attachment.item_id == item.id,
+            Attachment.owner_id == owner_id,
+            Attachment.state == AttachmentState.READY,
+            Attachment.deleted_at.is_not(None) if in_bin else Attachment.deleted_at.is_(None),
+        )
+    )
+
+    if attachment is None or is_expired(attachment, now):
+        raise NotFound()
+
+    return item, attachment
+
+
+def check_attachment_revision(attachment: Attachment, expected_revision: int) -> None:
+    if attachment.revision != expected_revision:
+        raise AttachmentConflict(attachment.item_id)
+
+
+def delete_attachment(
+    db: Session,
+    owner_id: str,
+    item_id: str,
+    attachment_id: str,
+    expected_revision: int,
+    now: datetime,
+) -> Attachment:
+    item, attachment = attachment_of(db, owner_id, item_id, attachment_id, now, in_bin=False)
+    check_attachment_revision(attachment, expected_revision)
+    _start_deletion(db, owner_id, TargetType.ATTACHMENT, attachment, item, now)
+    attachment.revision += 1
+    attachment.updated_at = now
+    record_event(db, owner_id, item.id, TargetType.ATTACHMENT, attachment.id, "attachment_deleted", now)
+
+    return attachment
+
+
+def restore_attachment(
+    db: Session,
+    owner_id: str,
+    item_id: str,
+    attachment_id: str,
+    expected_revision: int,
+    now: datetime,
+) -> Attachment:
+    item, attachment = attachment_of(db, owner_id, item_id, attachment_id, now, in_bin=True)
+    check_attachment_revision(attachment, expected_revision)
+    _cancel_deletion(db, attachment, now)
+    attachment.revision += 1
+    attachment.updated_at = now
+    record_event(db, owner_id, item.id, TargetType.ATTACHMENT, attachment.id, "attachment_restored", now)
+
+    return attachment
+
+
+def request_attachment_purge(
+    db: Session,
+    owner_id: str,
+    item_id: str,
+    attachment_id: str,
+    expected_revision: int,
+    now: datetime,
+) -> str:
+    """Make an attachment in the bin unrestorable now; return its purge job id."""
+    item, attachment = attachment_of(db, owner_id, item_id, attachment_id, now, in_bin=True)
+    check_attachment_revision(attachment, expected_revision)
+    job_id = _expire_now(db, attachment, now)
+    attachment.revision += 1
+    attachment.updated_at = now
+    record_event(
+        db, owner_id, item.id, TargetType.ATTACHMENT, attachment.id, "attachment_purge_requested", now
+    )
+
+    return job_id
+
+
 def _start_deletion(
     db: Session,
     owner_id: str,
@@ -356,6 +498,10 @@ class DeletionScope:
     kept_versions: int
     versions_already_in_bin: int
     restore_deadline: datetime
+    # Kept attachments, which go to the bin with the record, and attachments
+    # deleted on their own before, which keep their own deadlines.
+    kept_attachments: int = 0
+    attachments_already_in_bin: int = 0
 
 
 def deletion_scope(
@@ -369,13 +515,23 @@ def deletion_scope(
     item = active_item(db, owner_id, item_id, kinds)
     versions = item_versions(db, owner_id, item, now)
     in_bin = sum(1 for version in versions if version.deleted_at is not None)
+    attachments = _attachments(db, item)
 
     return DeletionScope(
         item=item,
         kept_versions=len(versions) - in_bin,
         versions_already_in_bin=in_bin,
         restore_deadline=now + RESTORE_WINDOW,
+        kept_attachments=sum(1 for row in attachments if row.deleted_at is None),
+        attachments_already_in_bin=sum(
+            1 for row in attachments if row.deleted_at is not None and not is_expired(row, now)
+        ),
     )
+
+
+def attachment_count(db: Session, item: ExperienceItem) -> int:
+    """Every ready attachment of a record, wherever it is: what purging the record removes."""
+    return len(_attachments(db, item))
 
 
 @dataclass
@@ -383,6 +539,8 @@ class TrashView:
     items: list[ExperienceItem]
     waiting_cleanups: list[PurgeJob]
     finished_cleanups: list[PurgeJob]
+    # How many attachments went to the bin with each record (restored with it).
+    attachments_with: dict[str, int] = field(default_factory=dict)
 
 
 def trash_view(db: Session, owner_id: str, now: datetime) -> TrashView:
@@ -397,11 +555,16 @@ def trash_view(db: Session, owner_id: str, now: datetime) -> TrashView:
     waiting, finished = _cleanups(
         db, owner_id, now, PurgeJob.target_type == TargetType.EXPERIENCE
     )
+    items = [item for item in binned if not is_expired(item, now)]
 
     return TrashView(
-        items=[item for item in binned if not is_expired(item, now)],
+        items=items,
         waiting_cleanups=waiting,
         finished_cleanups=finished,
+        attachments_with={
+            item.id: len(_attachments(db, item, Attachment.deletion_id == item.deletion_id))
+            for item in items
+        },
     )
 
 
@@ -449,8 +612,12 @@ class PurgeReport:
     failed: int = 0
 
 
-def purge_due(database: Database, now: datetime) -> PurgeReport:
-    """Run every purge job whose due time has passed."""
+def purge_due(database: Database, now: datetime, files: FileStore | None = None) -> PurgeReport:
+    """Run every purge job whose due time has passed.
+
+    files is the attachment store; without it, a job that has attachment
+    files to remove fails (and is retried) rather than leave them behind.
+    """
     with database.transaction() as db:
         job_ids = list(
             db.scalars(
@@ -463,13 +630,18 @@ def purge_due(database: Database, now: datetime) -> PurgeReport:
     report = PurgeReport()
 
     for job_id in job_ids:
-        outcome = run_purge_job(database, job_id, now)
+        outcome = run_purge_job(database, job_id, now, files)
         setattr(report, outcome, getattr(report, outcome) + 1)
 
     return report
 
 
-def run_purge_job(database: Database, job_id: str, now: datetime) -> str:
+def run_purge_job(
+    database: Database,
+    job_id: str,
+    now: datetime,
+    files: FileStore | None = None,
+) -> str:
     """Try one job; return "done", "cancelled", "skipped" or "failed"."""
     try:
         with database.transaction() as db:
@@ -491,6 +663,9 @@ def run_purge_job(database: Database, job_id: str, now: datetime) -> str:
                 if now < target.purge_after:
                     return "skipped"
 
+                # Files first: if removing the rows fails after this, the
+                # rows stay unrestorable and the retry finds the files gone.
+                _remove_files(db, job, target, files)
                 _remove(db, job, target, now)
 
             job.attempts += 1
@@ -515,33 +690,62 @@ def run_purge_job(database: Database, job_id: str, now: datetime) -> str:
         return "failed"
 
 
+TARGET_MODELS = {
+    TargetType.EXPERIENCE: ExperienceItem,
+    TargetType.VERSION: ExperienceVersion,
+    TargetType.ATTACHMENT: Attachment,
+}
+
+
 def _target_of(db: Session, job: PurgeJob):
-    model = ExperienceItem if job.target_type == TargetType.EXPERIENCE else ExperienceVersion
+    model = TARGET_MODELS[job.target_type]
 
     return db.scalar(
         select(model).where(model.id == job.target_id, model.owner_id == job.owner_id)
     )
 
 
+def _remove_files(db: Session, job: PurgeJob, target, files: FileStore | None) -> None:
+    """Remove the attachment files of the rows that _remove is about to delete.
+
+    Each file goes under both its names, so a staging name that an upload
+    left behind is gone too before the job can count as done.
+    """
+    if job.target_type == TargetType.EXPERIENCE:
+        rows = db.scalars(select(Attachment).where(Attachment.item_id == target.id))
+        keys = [(row.owner_id, row.storage_key) for row in rows]
+    elif job.target_type == TargetType.ATTACHMENT:
+        keys = [(target.owner_id, target.storage_key)]
+    else:
+        return
+
+    if keys and files is None:
+        raise FileStoreError("no attachment store to remove the files from")
+
+    for owner_id, key in keys:
+        files.remove_file(owner_id, key)
+
+
 def _remove(db: Session, job: PurgeJob, target, now: datetime) -> None:
     """Physically delete the target's rows (tests replace this to simulate failure)."""
     if job.target_type == TargetType.EXPERIENCE:
-        # The experience takes all its versions with it, including versions
-        # that were waiting in the bin on their own.
-        version_jobs = db.scalars(
+        # The experience takes all its versions and attachments with it,
+        # including those that were waiting in the bin on their own.
+        own_jobs = db.scalars(
             select(PurgeJob).where(
                 PurgeJob.item_id == target.id,
-                PurgeJob.target_type == TargetType.VERSION,
+                PurgeJob.target_type.in_((TargetType.VERSION, TargetType.ATTACHMENT)),
                 PurgeJob.status.in_(OPEN_STATUSES),
             )
         )
 
-        for version_job in version_jobs:
-            version_job.status = JobStatus.DONE
-            version_job.completed_at = now
-            version_job.updated_at = now
+        for own_job in own_jobs:
+            own_job.status = JobStatus.DONE
+            own_job.completed_at = now
+            own_job.updated_at = now
 
         db.execute(delete(ExperienceVersion).where(ExperienceVersion.item_id == target.id))
+        db.execute(delete(Attachment).where(Attachment.item_id == target.id))
 
     db.delete(target)
     db.flush()

@@ -533,12 +533,15 @@ def test_a_new_file_gets_every_table_and_the_version_at_once(tmp_path):
     tables = set(inspect(engine).get_table_names())
 
     with engine.connect() as connection:
-        version = connection.exec_driver_sql("SELECT value FROM library_meta").scalar_one()
+        meta = dict(connection.exec_driver_sql("SELECT key, value FROM library_meta").all())
 
     engine.dispose()
 
     assert tables == set(LibraryBase.metadata.tables)
-    assert version == SCHEMA_VERSION == "2"
+    assert meta["schema_version"] == SCHEMA_VERSION == "3"
+    # The id that ties the file to its attachment folder.
+    assert set(meta) == {"schema_version", "library_id"}
+    assert len(meta["library_id"]) == 36
 
 
 def test_a_file_without_its_version_is_refused(tmp_path):
@@ -616,12 +619,14 @@ def test_processes_opening_one_new_file_together_all_start(tmp_path, monkeypatch
     engine = make_engine(path)
 
     with engine.connect() as connection:
-        rows = connection.exec_driver_sql("SELECT value FROM library_meta").all()
+        rows = connection.exec_driver_sql("SELECT key, value FROM library_meta ORDER BY key").all()
 
     engine.dispose()
 
     assert errors == []
-    assert rows == [("2",)]
+    # Created once: one version and one library id, not one of each per start.
+    assert [key for key, _ in rows] == ["library_id", "schema_version"]
+    assert rows[1][1] == "3"
 
 
 def test_a_file_that_is_not_sqlite_is_refused_and_left_untouched(tmp_path):

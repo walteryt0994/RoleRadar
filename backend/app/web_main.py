@@ -1,10 +1,10 @@
-"""Entry point of the RoleRadar experience library web app (v0.1 U1-A).
+"""Entry point of the RoleRadar experience library web app (v0.1 U1).
 
 This is a separate app from app.main: it mounts only the library pages,
-stores data in its own SQLite file, and never imports the legacy database,
-models or routers. Importing this module has no side effects; create_app()
-does the work. Run it with `python -m app.web_main`, which only binds to
-127.0.0.1 (see main()).
+stores data in its own SQLite file and attachment folder, and never imports
+the legacy database, models or routers. Importing this module has no side
+effects; create_app() does the work. Run it with `python -m app.web_main`,
+which only binds to 127.0.0.1 (see main()).
 """
 import argparse
 import asyncio
@@ -16,11 +16,12 @@ import uvicorn
 from fastapi import FastAPI
 
 from app.library.clock import Clock, SystemClock
-from app.library.config import LibraryConfig, check_storage_path, load_config_from_env
+from app.library.config import LibraryConfig, check_files_path, check_storage_path, load_config_from_env
 from app.library.db import Database, make_engine
 from app.library.errors import ConfigError
+from app.library.files import FileStore
 from app.library.identity import ensure_dev_users
-from app.library.models import create_schema
+from app.library.models import create_schema, read_library_id
 from app.library.web import LibraryRuntime, build_templates, install_web
 
 LOCAL_HOST = "127.0.0.1"
@@ -30,14 +31,25 @@ logger = logging.getLogger("roleradar.library")
 
 
 def create_app(config: LibraryConfig | None = None, *, clock: Clock | None = None) -> FastAPI:
-    """Build the app; checks the data path before anything is created or opened."""
+    """Build the app; checks the data paths before anything is created or opened.
+
+    The attachment folder belongs to one database. A folder that already
+    belongs to a database can only be used with that database, so it is
+    refused before a new database file would be created next to it.
+    """
     config = config or load_config_from_env()
     db_path = check_storage_path(config.db_path, test_root=config.test_root)
+    files = FileStore(check_files_path(config.files_dir, db_path=db_path, test_root=config.test_root))
+
+    if files.claimed_by() is not None and not db_path.exists():
+        raise ConfigError("这个附件目录已经属于另一个经历库数据库；请为新的数据库指定一个新的空目录。")
+
     db_path.parent.mkdir(parents=True, exist_ok=True)
     engine = make_engine(db_path)
 
     try:
         create_schema(engine)
+        files.claim(read_library_id(engine))
     except ConfigError:
         engine.dispose()
         raise
@@ -61,6 +73,7 @@ def create_app(config: LibraryConfig | None = None, *, clock: Clock | None = Non
         database=database,
         clock=clock,
         templates=build_templates(config),
+        files=files,
     )
     install_web(app, config)
 
@@ -120,6 +133,11 @@ def main(argv: list[str] | None = None) -> None:
         help="经历库 SQLite 文件的绝对路径（必须在仓库外，不能是旧数据库）；"
         "也可以用环境变量 ROLERADAR_LIBRARY_DB_PATH 指定",
     )
+    parser.add_argument(
+        "--files",
+        help="私有附件目录的绝对路径（一个新的空目录，必须在仓库外；它会和这个数据库绑定）；"
+        "也可以用环境变量 ROLERADAR_LIBRARY_FILES_DIR 指定",
+    )
     parser.add_argument("--host", default=LOCAL_HOST, help="只允许 127.0.0.1")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument(
@@ -140,6 +158,7 @@ def main(argv: list[str] | None = None) -> None:
         check_bind_host(args.host)
         config = load_config_from_env(
             db_path=args.db,
+            files_dir=args.files,
             dev_login=True if args.dev_login else None,
             dev_clock_offset=timedelta(days=args.dev_clock_offset_days),
         )

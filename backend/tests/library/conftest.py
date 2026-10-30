@@ -47,6 +47,7 @@ def make_config(tmp_path, test_root):
     def build(**overrides) -> LibraryConfig:
         values = {
             "db_path": tmp_path / "library.db",
+            "files_dir": tmp_path / "files",
             "dev_login": True,
             "test_root": test_root,
             "purge_interval_seconds": None,

@@ -3,6 +3,8 @@
 ManualClock moves time by hand; forms_in() reads the forms of a rendered page
 the way a browser would submit them; Browser is one user's cookie jar on a
 shared app, so two Browser objects behave like two separate people.
+Browser.upload() sends a file through a reading page's upload form; the
+sample files are synthetic bytes that only start the way their type must.
 """
 import re
 from dataclasses import dataclass, field
@@ -12,6 +14,10 @@ from html.parser import HTMLParser
 from fastapi.testclient import TestClient
 
 LOCAL_BASE_URL = "http://127.0.0.1"
+PDF = b"%PDF-1.4\n% synthetic test file, not a real document\n%%EOF\n"
+PNG = b"\x89PNG\r\n\x1a\n" + b"synthetic image body"
+JPEG = b"\xff\xd8\xff\xe0" + b"synthetic image body"
+MEDIA_TYPES = {".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 
 
 class ManualClock:
@@ -160,6 +166,27 @@ class Browser:
         assert response.status_code == 303, response.text
 
         return item_id_from(response.headers["location"])
+
+    def upload(
+        self,
+        item_id: str,
+        filename: str = "证明.pdf",
+        data: bytes = PDF,
+        content_type: str | None = None,
+        **changes,
+    ):
+        """Choose a file in the reading page's upload form and send it, as a browser would.
+
+        The form's own fields (CSRF token, one-time key) go first, then the
+        file; changes replace or add text fields.
+        """
+        action = f"/experiences/{item_id}/attachments"
+        form = self.form(f"/experiences/{item_id}", action)
+        fields = {name: value for name, value in form.fields.items() if name != "file"}
+        fields.update(changes)
+        kind = content_type or MEDIA_TYPES.get(filename[filename.rfind("."):].lower(), "application/octet-stream")
+
+        return self.client.post(action, data=fields, files={"file": (filename, data, kind)})
 
     def revision(self, item_id: str) -> int:
         form = self.form(f"/experiences/{item_id}/edit", f"/experiences/{item_id}/draft")

@@ -60,6 +60,7 @@ def test_importing_and_building_the_app_never_loads_legacy_modules(tmp_path, tes
             "after_import = [name for name in legacy if name in sys.modules]",
             "from app.library.config import LibraryConfig",
             f"config = LibraryConfig(db_path=Path({str(tmp_path / 'child.db')!r}), dev_login=True,",
+            f"    files_dir=Path({str(tmp_path / 'child-files')!r}),",
             f"    test_root=Path({str(test_root)!r}), purge_interval_seconds=None)",
             "app.web_main.create_app(config)",
             "after_create = [name for name in legacy if name in sys.modules]",

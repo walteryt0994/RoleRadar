@@ -316,6 +316,22 @@ code { background: var(--tag); padding: 0 4px; border-radius: 4px; }
 .profile-education h2 { margin-top: 0; }
 .trash-category { font-size: 13px; color: var(--ink-soft); }
 
+/* Attachments on a record's reading page: one quiet row per file. */
+.record-attachments { margin-top: 36px; padding-top: 20px; border-top: 1px solid var(--line); }
+.attachment-list { list-style: none; margin: 0 0 8px; padding: 0; }
+.attachment-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.attachment-name { flex: 1 1 14em; min-width: 0; font-weight: 500; overflow-wrap: anywhere; }
+.attachment-meta { font-size: 13px; color: var(--ink-soft); overflow-wrap: anywhere; }
+.attachment-list .row-actions { gap: 4px 16px; }
+.attachment-problem { font-size: 13px; font-weight: 600; }
+.attachment-upload { display: grid; gap: 6px; margin: 18px 0 0; }
+.attachment-upload label { font-size: 14px; font-weight: 500; }
+.attachment-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; margin-top: 4px; }
+.attachment-picker input[type=file] { min-width: 0; max-width: 100%; font: inherit; font-size: 14px; }
+.upload-status { margin: 0; font-size: 14px; font-weight: 500; }
+.upload-status:empty { display: none; }
+.attachment-bin-title { margin: 28px 0 4px; font-size: 13px; font-weight: 500; color: var(--ink-soft); }
+
 /* --- messages ------------------------------------------------------------- */
 
 .notice, .error, .warning { padding: 10px 14px; border: 1px solid; border-radius: var(--radius-control); }

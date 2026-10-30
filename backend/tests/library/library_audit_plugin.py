@@ -107,6 +107,12 @@ def _hook(event, args):
 
             if path:
                 events.append([event, path])
+        elif event == "os.link":
+            # What a hard link writes is its new name, the second argument.
+            path = _path(args[1])
+
+            if path:
+                events.append([event, path])
         elif event in PROCESS_EVENTS:
             events.append([event, repr(args[0])[:200]])
     finally:

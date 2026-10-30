@@ -7,11 +7,16 @@ first saved text (initial) and every confirmation (confirmed); saving a
 draft only updates the item, so drafts are not recorded keystroke by
 keystroke. The profile and the preferences are never confirmed, so each of
 their saves that changes something is kept as a version (saved).
+
+An Attachment row describes one file kept for an experience in the private
+attachment store (see files.py). The row holds the file's facts (display
+name, type, size, checksum) and its state; the bytes are only on disk.
 """
+import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import JSON, ForeignKey, Index, Integer, String, Text, inspect
+from sqlalchemy import JSON, ForeignKey, Index, Integer, String, Text, UniqueConstraint, inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Mapped, Session, mapped_column
@@ -21,7 +26,8 @@ from app.library.errors import ConfigError
 
 # 2: categories beyond project/portfolio, the profile and preferences,
 # saved versions, and the category on purge jobs.
-SCHEMA_VERSION = "2"
+# 3: attachments, and the library id that ties a database to its attachment folder.
+SCHEMA_VERSION = "3"
 
 
 class ItemState(StrEnum):
@@ -38,6 +44,16 @@ class VersionKind(StrEnum):
 class TargetType(StrEnum):
     EXPERIENCE = "experience"
     VERSION = "experience_version"
+    ATTACHMENT = "attachment"
+
+
+class AttachmentState(StrEnum):
+    # Reserved while its file is put in place; never shown or downloadable.
+    PENDING = "pending"
+    # In place and checked: the only state that is listed, downloaded or exported.
+    READY = "ready"
+    # The upload did not finish; clean-up removes the file (if any) and the row.
+    FAILED = "failed"
 
 
 class JobStatus(StrEnum):
@@ -148,6 +164,42 @@ class PurgeJob(LibraryBase):
     completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
 
+class Attachment(LibraryBase):
+    """One file kept for an experience.
+
+    The file itself is at files/<owner_id>/<storage_key> in the attachment
+    store; storage_key is random and filename is only for display and as the
+    download name. deleted_at, purge_after and deletion_id work as for
+    versions. An attachment deleted on its own has a purge job of its own;
+    one that went to the recycle bin with its experience carries the
+    experience's deletion_id, which is how restoring the experience finds
+    exactly the attachments that went with it.
+    """
+
+    __tablename__ = "attachments"
+    __table_args__ = (UniqueConstraint("owner_id", "upload_key"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    item_id: Mapped[str] = mapped_column(ForeignKey("experience_items.id"), index=True)
+    storage_key: Mapped[str] = mapped_column(String(32), unique=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    media_type: Mapped[str] = mapped_column(String(50))
+    size: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(20))
+    # The one-time key of the upload form, so a repeated post of the same
+    # form finds this row instead of adding the file a second time.
+    upload_key: Mapped[str] = mapped_column(String(64))
+    # Goes up with every delete, restore or purge request; forms carry it.
+    revision: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    deleted_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    purge_after: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    deletion_id: Mapped[str | None] = mapped_column(String(36))
+
+
 class AuditEvent(LibraryBase):
     """What happened to an object and when. No content is stored here."""
 
@@ -194,5 +246,17 @@ def create_schema(engine: Engine) -> None:
 
             LibraryBase.metadata.create_all(connection)
             session.add(LibraryMeta(key="schema_version", value=SCHEMA_VERSION))
+            session.add(LibraryMeta(key="library_id", value=str(uuid.uuid4())))
     except SQLAlchemyError as error:
         raise ConfigError("这个文件不是可用的 SQLite 数据库；请指定一个新文件。") from error
+
+
+def read_library_id(engine: Engine) -> str:
+    """The id this database got when it was created; its attachment folder carries it too."""
+    with Session(engine) as session:
+        meta = session.get(LibraryMeta, "library_id")
+
+    if meta is None:
+        raise ConfigError("经历库数据库缺少编号，无法确认它的附件目录。这个文件没有被修改，请换一个新文件。")
+
+    return meta.value

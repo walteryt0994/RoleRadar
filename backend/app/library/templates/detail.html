@@ -103,4 +103,70 @@
 {% if unfilled %}
 <p class="record-unfilled">尚未填写：{{ unfilled|join("、") }}。</p>
 {% endif %}
+{# The files kept for this record. Only ready ones are listed, and one whose
+   file went missing says so instead of offering a download that fails.
+   Uploading is its own action: it never saves the record's text. The
+   section does not rise in: its error and status lines must never wait. #}
+<section class="record-attachments" id="attachments" aria-labelledby="attachments-title">
+  <h2 class="section-label" id="attachments-title">附件</h2>
+  {% if attachments %}
+  <ul class="attachment-list">
+    {% for attachment in attachments %}
+    {% set state = file_states[attachment.id] %}
+    <li>
+      <span class="attachment-name">{{ attachment.filename }}</span>
+      <span class="attachment-meta">{{ TYPE_LABELS[attachment.media_type] }} · {{ format_size(attachment.size) }} · 上传于 {{ attachment.created_at|shorttime }}</span>
+      <span class="row-actions">
+        {% if state == "present" %}
+        <a href="/experiences/{{ item.id }}/attachments/{{ attachment.id }}/download" download>下载<span class="visually-hidden">：{{ attachment.filename }}</span></a>
+        {% else %}
+        <span class="attachment-problem">{% if state == "missing" %}文件找不到了，不能下载{% else %}文件无法读取，不能下载{% endif %}</span>
+        {% endif %}
+        <a class="danger-link" href="/experiences/{{ item.id }}/attachments/{{ attachment.id }}/delete">删除…<span class="visually-hidden">：{{ attachment.filename }}</span></a>
+      </span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty">还没有附件。</p>
+  {% endif %}
+  {% if upload_error %}
+  <p class="error" role="alert">{{ upload_error }}</p>
+  {% endif %}
+  {% if places_left %}
+  <form class="attachment-upload" method="post" action="/experiences/{{ item.id }}/attachments" enctype="multipart/form-data" data-upload>
+    {{ m.csrf() }}
+    <input type="hidden" name="upload_key" value="{{ upload_key }}">
+    <label for="attachment-file">添加附件</label>
+    <span class="hint" id="attachment-hint">作为补充材料保存，只有你能下载。PDF、PNG 或 JPEG，单个不超过 10 MB；每条经历最多 {{ MAX_ATTACHMENTS }} 个，回收站里还能恢复的也算在内，现在还能添加 {{ places_left }} 个。</span>
+    <div class="attachment-picker">
+      <input type="file" id="attachment-file" name="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" required aria-describedby="attachment-hint">
+      <button type="submit" data-upload-button>上传</button>
+    </div>
+    <p class="upload-status" data-upload-status role="status"></p>
+  </form>
+  {% else %}
+  <p class="hint">已经有 {{ MAX_ATTACHMENTS }} 个附件（包括回收站里还能恢复的），达到上限。删除不需要的附件，并在下方永久删除后，才能再添加。</p>
+  {% endif %}
+  {% if binned_attachments %}
+  <h3 class="attachment-bin-title">已删除的附件</h3>
+  <ul class="attachment-list">
+    {% for attachment in binned_attachments %}
+    <li>
+      <span class="attachment-name">{{ attachment.filename }}</span>
+      <span class="attachment-meta">删除于 {{ attachment.deleted_at|shorttime }}；在 {{ attachment.purge_after|localtime }} 之前可以恢复（{{ format_remaining(attachment.purge_after, now) }}）</span>
+      <span class="row-actions">
+        <form method="post" action="/experiences/{{ item.id }}/attachments/{{ attachment.id }}/restore" class="inline">
+          {{ m.csrf() }}
+          <input type="hidden" name="expected_revision" value="{{ attachment.revision }}">
+          <button type="submit">恢复<span class="visually-hidden">：{{ attachment.filename }}</span></button>
+        </form>
+        <a class="danger-link" href="/experiences/{{ item.id }}/attachments/{{ attachment.id }}/purge">永久删除…<span class="visually-hidden">：{{ attachment.filename }}</span></a>
+      </span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
 {% endblock %}
+{% block scripts %}<script src="/static/upload.js"></script>{% endblock %}

@@ -63,3 +63,27 @@ class ContentError(LibraryError):
         super().__init__(message)
         self.message = message
         self.field_errors = field_errors or {}
+
+
+class AttachmentConflict(LibraryError):
+    """An attachment page was prepared for an earlier delete/restore state."""
+
+    def __init__(self, item_id: str):
+        super().__init__("attachment state conflict")
+        self.item_id = item_id
+
+
+class FileStoreError(LibraryError):
+    """A file of the private attachment store could not be written, read or removed."""
+
+
+class MissingFile(FileStoreError):
+    """The attachment record exists, but its file is not in the store."""
+
+
+class UnreadableFile(FileStoreError):
+    """Something other than a readable regular file is where the file should be."""
+
+
+class ChangedFile(FileStoreError):
+    """The stored bytes no longer match the size and checksum recorded at upload."""

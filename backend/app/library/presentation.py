@@ -215,6 +215,17 @@ def unfilled_labels(content: dict, category: str = PROJECT) -> list[str]:
     ]
 
 
+def format_size(size: int) -> str:
+    """A file size as people read it; the limits on the pages use the same units (1 MB = 1024 KB)."""
+    if size < 1024:
+        return f"{size} 字节"
+
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
 def format_remaining(deadline: datetime, now: datetime) -> str:
     left = deadline - now
 
@@ -264,14 +275,23 @@ EVENT_LABELS = {
     "version_deleted": "删除一个历史版本",
     "version_restored": "恢复一个历史版本",
     "version_purge_requested": "申请永久删除一个历史版本",
+    "attachment_added": "添加一个附件",
+    "attachment_deleted": "删除一个附件",
+    "attachment_restored": "恢复一个附件",
+    "attachment_purge_requested": "申请永久删除一个附件",
+}
+# What finished when a clean-up of something other than the record itself completed.
+PART_CLEANUP_LABELS = {
+    "experience_version": "一个历史版本已清理完成",
+    "attachment": "一个附件已清理完成（文件已删除）",
 }
 # The profile and preferences keep every save; their first save is not an "initial version".
 DOCUMENT_EVENT_LABELS = {**EVENT_LABELS, "created": "第一次保存"}
 
 
 def event_label(event, category: str = PROJECT) -> str:
-    if event.action == "purge_completed" and event.object_type == "experience_version":
-        return "一个历史版本已清理完成"
+    if event.action == "purge_completed" and event.object_type in PART_CLEANUP_LABELS:
+        return PART_CLEANUP_LABELS[event.object_type]
 
     labels = DOCUMENT_EVENT_LABELS if category in DOCUMENT_PAGES else EVENT_LABELS
 

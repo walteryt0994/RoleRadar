@@ -10,6 +10,7 @@ from app.library import lifecycle, web
 from app.library.identity import token_hash
 from app.library.lifecycle import version_state
 from app.library.models import (
+    Attachment,
     ExperienceItem,
     ExperienceVersion,
     LoginSession,
@@ -17,7 +18,7 @@ from app.library.models import (
     User,
 )
 from app.library.web import PACKAGE_DIR
-from library_helpers import Browser, all_routes, form_for, forms_in, item_id_from
+from library_helpers import PNG, Browser, all_routes, form_for, forms_in, item_id_from
 
 PUBLIC_ROUTES = {("GET", "/"), ("GET", "/health"), ("GET", "/login"), ("POST", "/login/dev")}
 # Which prepared resource each path parameter is filled with.
@@ -38,6 +39,9 @@ GET_ROUTES = {
     "/basic-profile/edit": {},
     "/job-preferences": {},
     "/job-preferences/edit": {},
+    "/experiences/{item_id}/attachments/{attachment_id}/download": {"item_id": "item", "attachment_id": "attachment"},
+    "/experiences/{item_id}/attachments/{attachment_id}/delete": {"item_id": "item", "attachment_id": "attachment"},
+    "/experiences/{item_id}/attachments/{attachment_id}/purge": {"item_id": "item", "attachment_id": "binned_attachment"},
 }
 POST_ROUTES = {
     "/logout": {},
@@ -54,7 +58,12 @@ POST_ROUTES = {
     "/basic-profile/{item_id}/save": {"item_id": "profile"},
     "/job-preferences": {},
     "/job-preferences/{item_id}/save": {"item_id": "preferences"},
+    "/experiences/{item_id}/attachments/{attachment_id}/delete": {"item_id": "item", "attachment_id": "attachment"},
+    "/experiences/{item_id}/attachments/{attachment_id}/restore": {"item_id": "item", "attachment_id": "binned_attachment"},
+    "/experiences/{item_id}/attachments/{attachment_id}/purge": {"item_id": "item", "attachment_id": "binned_attachment"},
 }
+# The upload takes a multipart body; test_library_attachments.py checks its access rules.
+UPLOAD_ROUTES = {"/experiences/{item_id}/attachments": {"item_id": "item"}}
 # One field each kind of record accepts, so the same post is valid for every route.
 SOME_CONTENT = {"actions": "", "name": "", "cities_ideal": ""}
 SENTINEL = "哨兵-c41f"
@@ -70,8 +79,9 @@ def database(app):
 
 
 def prepare_resources(app, browser) -> dict:
-    """An active draft with one kept and one binned version, a binned experience,
-    and the user's basic profile and job preferences."""
+    """An active draft with one kept and one binned version, one kept and one
+    binned attachment, a binned experience, and the user's basic profile and
+    job preferences."""
     item = browser.create(title="A 的经历", actions=f"A 的内容{SENTINEL}", private_note=f"A 的备注{SENTINEL}")
     assert browser.submit(f"/experiences/{item}", f"/experiences/{item}/confirm").status_code == 303
     edited = browser.submit(f"/experiences/{item}/edit", f"/experiences/{item}/draft", actions=f"A 改过{SENTINEL}")
@@ -85,6 +95,14 @@ def prepare_resources(app, browser) -> dict:
 
     binned_path = f"/experiences/{item}/versions/{kinds['confirmed']}/delete"
     assert browser.submit(binned_path, binned_path).status_code == 303
+    assert browser.upload(item, f"A 的附件{SENTINEL}.pdf").status_code == 303
+    assert browser.upload(item, f"A 删掉的附件{SENTINEL}.png", PNG).status_code == 303
+
+    with database(app).transaction() as db:
+        attachments = {row.filename[:4]: row.id for row in db.scalars(select(Attachment))}
+
+    binned_attachment = f"/experiences/{item}/attachments/{attachments['A 删掉']}/delete"
+    assert browser.submit(binned_attachment, binned_attachment).status_code == 303
     trashed = browser.create(actions=f"A 回收站里的内容{SENTINEL}")
     assert browser.submit(f"/experiences/{trashed}/delete", f"/experiences/{trashed}/delete").status_code == 303
     assert browser.submit("/basic-profile/edit", "/basic-profile", name=f"A 的名字{SENTINEL}").status_code == 303
@@ -100,6 +118,8 @@ def prepare_resources(app, browser) -> dict:
         "item": item,
         "kept": kinds["initial"],
         "binned": kinds["confirmed"],
+        "attachment": attachments["A 的附"],
+        "binned_attachment": attachments["A 删掉"],
         "trashed": trashed,
         "profile": documents["profile"],
         "preferences": documents["preferences"],
@@ -118,8 +138,12 @@ def snapshot(app):
             for row in db.scalars(select(ExperienceVersion).order_by(ExperienceVersion.id))
         ]
         jobs = [(row.id, row.status) for row in db.scalars(select(PurgeJob).order_by(PurgeJob.id))]
+        attachments = [
+            (row.id, row.state, row.revision, row.deleted_at, row.purge_after)
+            for row in db.scalars(select(Attachment).order_by(Attachment.id))
+        ]
 
-    return items, versions, jobs
+    return items, versions, jobs, attachments
 
 
 def state_of(app, version_id) -> str:
@@ -130,6 +154,11 @@ def state_of(app, version_id) -> str:
 def revision_of(app, item_id) -> int:
     with database(app).transaction() as db:
         return db.get(ExperienceItem, item_id).revision
+
+
+def attachment_revision(app, attachment_id) -> int:
+    with database(app).transaction() as db:
+        return db.get(Attachment, attachment_id).revision
 
 
 def user_id(app, label) -> str:
@@ -155,7 +184,12 @@ def test_every_route_is_either_public_or_listed_as_protected(app):
 
         found |= {(method, route.path) for method in methods - {"HEAD"}}
 
-    expected = PUBLIC_ROUTES | {("GET", path) for path in GET_ROUTES} | {("POST", path) for path in POST_ROUTES}
+    expected = (
+        PUBLIC_ROUTES
+        | {("GET", path) for path in GET_ROUTES}
+        | {("POST", path) for path in POST_ROUTES}
+        | {("POST", path) for path in UPLOAD_ROUTES}
+    )
 
     assert found == expected
 
@@ -164,7 +198,7 @@ def test_static_files_hold_no_user_data_and_are_public(app):
     names = sorted(path.name for path in (PACKAGE_DIR / "static").iterdir())
     anonymous = Browser(app)
 
-    assert names == ["leave_guard.js", "library.css", "motion.js"]
+    assert names == ["leave_guard.js", "library.css", "motion.js", "upload.js"]
 
     for name in names:
         assert anonymous.get(f"/static/{name}").status_code == 200
@@ -242,9 +276,14 @@ def test_the_same_requests_work_for_the_owner(app, browser_a, template):
     """Control for the 404 test above: those requests were well formed."""
     ids = prepare_resources(app, browser_a)
     mapping = POST_ROUTES[template]
+    revision = (
+        attachment_revision(app, ids[mapping["attachment_id"]])
+        if "attachment_id" in mapping
+        else revision_of(app, ids[mapping["item_id"]])
+    )
     data = {
         "csrf_token": browser_a.csrf_token(),
-        "expected_revision": str(revision_of(app, ids[mapping["item_id"]])),
+        "expected_revision": str(revision),
         "expected_state": state_of(app, ids[mapping["version_id"]]) if "version_id" in mapping else "",
         "acknowledge": "yes",
         **{name: "A 自己的修改" for name in SOME_CONTENT},

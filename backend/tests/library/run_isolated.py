@@ -4,8 +4,10 @@ Isolation is set up *before* pytest starts, so it is already in force while
 pytest collects tests and while any application module is first imported:
 
 - a new, empty temporary root outside the repository;
-- DATABASE_URL (legacy app) and ROLERADAR_LIBRARY_DB_PATH (library) both
-  point into that root, and so do TMPDIR and pytest's --basetemp;
+- DATABASE_URL (legacy app), ROLERADAR_LIBRARY_DB_PATH (library) and
+  ROLERADAR_LIBRARY_FILES_DIR (attachments, with their staging and export
+  folders inside it) all point into that root, and so do TMPDIR and
+  pytest's --basetemp;
 - OPENAI_* and proxy variables are removed; plugin auto-loading is off (so
   pytest-cov cannot rewrite backend/.coverage); no .pyc files or
   .pytest_cache are written;
@@ -36,6 +38,7 @@ REMOVED_PREFIXES = ("OPENAI_", "AZURE_OPENAI_")
 REMOVED_NAMES = {
     "DATABASE_URL",
     "ROLERADAR_LIBRARY_DB_PATH",
+    "ROLERADAR_LIBRARY_FILES_DIR",
     "ROLERADAR_LIBRARY_DEV_LOGIN",
     "ROLERADAR_TEST_ROOT",
     "PYTEST_ADDOPTS",
@@ -53,6 +56,7 @@ PROBE_HOST = "isolation-probe.invalid"
 SAFE_DEVICES = {"/dev/null"}
 WRITE_KINDS = {
     "open.write",
+    "os.link",
     "os.mkdir",
     "os.remove",
     "os.rename",
@@ -75,6 +79,7 @@ def isolated_environment(root: Path) -> dict[str, str]:
         {
             "DATABASE_URL": f"sqlite:///{root / 'legacy_default.db'}",
             "ROLERADAR_LIBRARY_DB_PATH": str(root / "library_default.db"),
+            "ROLERADAR_LIBRARY_FILES_DIR": str(root / "library_default_files"),
             "ROLERADAR_TEST_ROOT": str(root),
             "TMPDIR": str(temp_dir),
             "PYTHONPATH": str(HERE),

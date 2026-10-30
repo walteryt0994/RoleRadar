@@ -32,6 +32,9 @@
     {% if item.category not in DOCUMENT_KINDS %}
     <span class="trash-category">{{ CATEGORY_LABELS[item.category] }}</span>
     {% endif %}
+    {% if trash.attachments_with.get(item.id) %}
+    <span class="trash-category">连同 {{ trash.attachments_with[item.id] }} 个附件</span>
+    {% endif %}
     <span class="muted small">删除于 {{ item.deleted_at|localtime }}；在 {{ item.purge_after|localtime }} 之前可以恢复（{{ format_remaining(item.purge_after, now) }}）</span>
     <div class="row-actions">
       <form method="post" action="/experiences/{{ item.id }}/restore" class="inline">
@@ -59,10 +62,10 @@
 <h2>最近完成的清理</h2>
 <ul class="status-list">
   {% for job in trash.finished_cleanups %}
-  <li>{{ CLEANUP_NOUNS[job.category] }}（{% if job.reason == "user_request" %}你申请的永久删除{% else %}超过恢复期限{% endif %}）已于 {{ job.completed_at|localtime }} 清理完成：它的内容和全部历史版本已从经历库数据库中删除。</li>
+  <li>{{ CLEANUP_NOUNS[job.category] }}（{% if job.reason == "user_request" %}你申请的永久删除{% else %}超过恢复期限{% endif %}）已于 {{ job.completed_at|localtime }} 清理完成：它的内容、全部历史版本，以及附件文件（如有），都已经删除。</li>
   {% endfor %}
 </ul>
-<p class="muted small">“清理完成”指经历库数据库里的记录已经删除。已经下载的导出文件，以及电脑备份等经历库之外的副本，不在清理范围内。</p>
+<p class="muted small">“清理完成”指经历库数据库里的记录和附件目录里的文件已经删除。已经下载的导出文件，以及电脑备份等经历库之外的副本，不在清理范围内。</p>
 {% endif %}
 {% endif %}
 {% endblock %}

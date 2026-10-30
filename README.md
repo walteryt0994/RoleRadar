@@ -710,6 +710,7 @@ RoleRadar provides local development defaults for most configuration values. `OP
 | `OPENAI_TIMEOUT_SECONDS` | FastAPI backend | `30.0` |
 | `OPENAI_MAX_RETRIES` | FastAPI backend | `2` |
 | `ROLERADAR_LIBRARY_DB_PATH` | Experience library (`app.web_main`) | none: an absolute path outside the repository must be given (or `--db`) |
+| `ROLERADAR_LIBRARY_FILES_DIR` | Experience library | none: the private attachment folder, an absolute path outside the repository, new and empty on first use (or `--files`) |
 | `ROLERADAR_LIBRARY_DEV_LOGIN` | Experience library | off; `1` (or `--dev-login`) enables the synthetic users A and B |
 
 Environment variables are read when each service starts. Restart the corresponding service after changing a value.
@@ -756,7 +757,7 @@ cd backend
 
 The launcher sets up isolation before pytest starts, so it is already in force while tests are collected and modules are first imported:
 
-- It creates a new temporary root outside the repository and points `DATABASE_URL`, `ROLERADAR_LIBRARY_DB_PATH`, `TMPDIR` and pytest's `--basetemp` into it.
+- It creates a new temporary root outside the repository and points `DATABASE_URL`, `ROLERADAR_LIBRARY_DB_PATH`, `ROLERADAR_LIBRARY_FILES_DIR` (with the attachment staging and export folders inside it), `TMPDIR` and pytest's `--basetemp` into it.
 - It removes `OPENAI_*` and proxy variables, turns plugin auto-loading off and writes no `.pyc` or `.pytest_cache` files.
 - It loads an audit plugin that blocks network access and records SQLite connections and file writes; the run fails if any of them left the temporary root. The audit covers the pytest process only.
 
@@ -800,13 +801,20 @@ Frontend URL:
 http://localhost:8501
 ```
 
-## Run the Experience Library (v0.1 U1-A, U1-B)
+## Run the Experience Library (v0.1 U1-A to U1-C)
 
 A separate Chinese web app for recording, confirming, deleting, restoring and exporting experiences. U1-A delivered project/portfolio records; U1-B adds:
 
 - Five more categories, each with its own fields: education, internship/work/part-time, courses and activities, certificates and awards, and other.
 - Filtering the record list by category and searching it by words. Search reads only the current content of your own experiences, never private notes, history versions or the recycle bin.
 - A basic profile (name for résumés, phone, email, current city, links) and job preferences (ideal, also acceptable and not acceptable answers; anything unanswered reads as "尚未想好"). School and major stay in education records. Both have history, conflict protection, a 7-day recycle bin and export, and are never "confirmed".
+
+U1-C adds private attachments to saved experiences (not to the profile or the preferences):
+
+- PDF, PNG and JPEG files of at most 10 MiB each, at most 10 per experience (attachments still restorable from the recycle bin count). The name, the declared type and the file's first bytes must agree; this is a type check, not a virus scan, and the content is never read or analysed.
+- Upload, download and delete them on the experience's reading page. Only the owner can download, through a checked route; files are never served as static or public addresses.
+- A deleted attachment can be restored for 7 days or permanently deleted. Deleting an experience takes its attachments along, and restoring it brings back exactly those; attachments deleted on their own keep their own deadline. A clean-up counts as finished only once the files are really removed.
+- "Export all" adds the kept and still restorable attachment files, with a manifest listing each file's experience, path, size, SHA-256 and status. A file that is missing or unreadable is listed as such, and the package is named `…-incomplete.zip`.
 
 It is a local development build for synthetic data only:
 
@@ -818,15 +826,16 @@ Start it through the controlled entry point, from the project root:
 
 ```bash
 cd backend
-../.venv/bin/python -m app.web_main --db /tmp/roleradar-u1b-demo/library.db --dev-login
+../.venv/bin/python -m app.web_main --db /tmp/roleradar-u1c-demo/library.db --files /tmp/roleradar-u1c-demo/files --dev-login
 ```
 
 Then open http://127.0.0.1:8765 and stop the app with Ctrl+C.
 
 - `--db` must be an absolute path outside the repository. Start-up is refused if it is the legacy database (also through a symlink or hard link), lies inside `backend/records/`, or belongs to another program.
 - The entry point only binds to 127.0.0.1 and turns proxy headers off; any other `--host` is refused.
-- While the app runs, expired recycle-bin content is cleaned up every 10 minutes, and once at every start-up.
-- Data files of the U1-A version (structure version 1) are refused and left unchanged: there is no migration tool yet, so start with a new file.
+- `--files` must be an absolute path outside the repository that does not contain the database. On first use it must be new or empty; the app then marks it as belonging to this database, and refuses it for any other database and refuses folders holding anything else. Files are kept under random names; the original names live only in the database.
+- While the app runs, expired recycle-bin content is cleaned up every 10 minutes, and once at every start-up. The same pass removes what interrupted uploads and exports left behind.
+- Data files of earlier versions (U1-A: structure version 1, U1-B: version 2) are refused and left unchanged: there is no migration tool yet, so start with a new file and a new attachment folder.
 - `--dev-clock-offset-days N` moves the app's clock forward to check the 7-day restore window locally; a banner at the top shows the offset. Use a separate database for it, because sessions and timestamps created under the shifted clock stay in that file.
 
 ## V1 Demo Flow

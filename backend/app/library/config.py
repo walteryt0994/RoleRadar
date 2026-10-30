@@ -6,6 +6,10 @@ check_storage_path() rejects any location that could reach the legacy
 RoleRadar database, the parse-record directory, or this repository's working
 tree (where a data file could be committed by accident). The checks look at
 path names and file metadata only; they never open the files they compare.
+
+Attachment files are kept in a folder of their own, also named explicitly.
+check_files_path() keeps it out of the repository and the records directory,
+and apart from the database file and any legacy database.
 """
 import os
 from dataclasses import dataclass
@@ -23,6 +27,7 @@ RECORDS_DIR = BACKEND_DIR / "records"
 LEGACY_DB_NAME = "roleradar.db"
 
 DB_PATH_ENV = "ROLERADAR_LIBRARY_DB_PATH"
+FILES_DIR_ENV = "ROLERADAR_LIBRARY_FILES_DIR"
 DEV_LOGIN_ENV = "ROLERADAR_LIBRARY_DEV_LOGIN"
 TEST_ROOT_ENV = "ROLERADAR_TEST_ROOT"
 LEGACY_DB_URL_ENV = "DATABASE_URL"
@@ -38,6 +43,8 @@ class LibraryConfig:
     purge_on_startup: bool = True
     dev_clock_offset: timedelta = timedelta(0)
     max_form_bytes: int = 256 * 1024
+    # The private attachment folder; create_app() refuses to start without one.
+    files_dir: Path | None = None
 
     def __post_init__(self):
         if self.dev_clock_offset and not self.dev_login:
@@ -48,11 +55,13 @@ def load_config_from_env(
     environ=None,
     *,
     db_path: str | Path | None = None,
+    files_dir: str | Path | None = None,
     dev_login: bool | None = None,
     dev_clock_offset: timedelta = timedelta(0),
 ) -> LibraryConfig:
     environ = os.environ if environ is None else environ
     raw_path = db_path or environ.get(DB_PATH_ENV)
+    raw_files = files_dir or environ.get(FILES_DIR_ENV)
 
     if not raw_path:
         raise ConfigError(
@@ -70,6 +79,7 @@ def load_config_from_env(
         dev_login=dev_login,
         test_root=Path(test_root) if test_root else None,
         dev_clock_offset=dev_clock_offset,
+        files_dir=Path(raw_files) if raw_files else None,
     )
 
 
@@ -136,6 +146,61 @@ def check_storage_path(
 
     if test_root is not None and not _inside(resolved, Path(test_root).resolve()):
         raise UnsafeStoragePath("测试模式下，经历库数据库必须位于测试临时目录内。")
+
+    return resolved
+
+
+def check_files_path(
+    files_dir: str | Path | None,
+    *,
+    db_path: Path,
+    test_root: Path | None = None,
+    repo_root: Path = REPO_ROOT,
+    records_dir: Path = RECORDS_DIR,
+    legacy_paths: list[Path] | None = None,
+) -> Path:
+    """Return the resolved attachment folder, or raise.
+
+    The folder may not lie in the repository or the records directory, nor
+    contain either of them, the library database or a legacy database.
+    Whether it is empty or already this library's is checked when the app
+    claims it (files.FileStore.claim).
+    """
+    if not files_dir:
+        raise ConfigError(
+            f"请用 --files 或环境变量 {FILES_DIR_ENV} 明确指定附件目录（一个新的空目录）；"
+            "附件不使用任何默认位置。"
+        )
+
+    path = Path(files_dir).expanduser()
+
+    if not path.is_absolute():
+        raise UnsafeStoragePath("附件目录必须是绝对路径。")
+
+    resolved = path.resolve()
+
+    if resolved.exists() and not resolved.is_dir():
+        raise UnsafeStoragePath("附件目录路径指向了一个文件，需要指向一个目录。")
+
+    for protected, message in (
+        (repo_root.resolve(), "附件目录不能放在代码仓库里，也不能包含代码仓库。"),
+        (records_dir.resolve(), "附件目录不能放在 records 目录里，也不能包含它。"),
+    ):
+        if _inside(resolved, protected) or _inside(protected, resolved):
+            raise UnsafeStoragePath(message)
+
+    if _inside(Path(db_path).resolve(), resolved):
+        raise UnsafeStoragePath("经历库数据库不能放在附件目录里；请把两者分开。")
+
+    if legacy_paths is None:
+        legacy_paths = legacy_database_paths()
+
+    for legacy in legacy_paths:
+        if _inside(Path(legacy).resolve(), resolved):
+            raise UnsafeStoragePath("附件目录不能包含旧版 RoleRadar 数据库。")
+
+    if test_root is not None and not _inside(resolved, Path(test_root).resolve()):
+        raise UnsafeStoragePath("测试模式下，附件目录必须位于测试临时目录内。")
 
     return resolved
 

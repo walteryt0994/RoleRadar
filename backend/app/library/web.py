@@ -10,23 +10,47 @@ U1-B adds five more categories of experience, filtering and search, and two
 records a user keeps one of each: the basic profile and the job
 preferences. Those two share the experiences' storage, history, deletion
 and export, but are never confirmed and never listed as experiences.
+
+U1-C adds private attachments to saved experiences. They are managed on the
+experience's reading page; the upload has a route of its own that reads its
+body as it streams in (upload.py), while every other post keeps the small
+form limit. A file is only ever sent back through the owner's download
+route, never as a static or public address.
 """
 import ipaddress
 import logging
+import re
 import secrets
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import jinja2
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
-from fastapi.responses import PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.requests import ClientDisconnect
 
+from app.library.attachments import (
+    MAX_ATTACHMENTS,
+    TYPE_LABELS,
+    UploadOutcome,
+    UploadRejected,
+    UploadTokenRejected,
+    binned_attachments,
+    has_free_place,
+    kept_attachment,
+    kept_attachments,
+    places_taken,
+    recover_uploads,
+    referenced_files,
+    store_upload,
+)
 from app.library.clock import Clock
 from app.library.config import LibraryConfig
 from app.library.content import (
@@ -50,15 +74,20 @@ from app.library.content import (
 )
 from app.library.db import Database
 from app.library.errors import (
+    AttachmentConflict,
+    ChangedFile,
     Conflict,
     ContentError,
+    FileStoreError,
     LibraryError,
+    MissingFile,
     NotAllowed,
     NotFound,
     StorageError,
     VersionConflict,
 )
-from app.library.export import export_archive, single_export
+from app.library.export import collect_export, single_export, write_export
+from app.library.files import FileStore, read_chunks
 from app.library.identity import (
     DEV_PROVIDER,
     CurrentUser,
@@ -72,15 +101,21 @@ from app.library.identity import (
 from app.library.lifecycle import (
     RESTORE_WINDOW,
     PurgeReport,
+    attachment_count,
+    attachment_of,
     binned_documents,
+    check_attachment_revision,
     check_version_state,
     deletable_version,
+    delete_attachment,
     delete_experience,
     delete_version,
     deletion_scope,
     purge_due,
+    request_attachment_purge,
     request_experience_purge,
     request_version_purge,
+    restore_attachment,
     restore_experience,
     restore_version,
     run_purge_job,
@@ -107,6 +142,7 @@ from app.library.presentation import (
     format_local,
     format_remaining,
     format_short,
+    format_size,
     record_page,
     state_label,
     summary_line,
@@ -126,6 +162,7 @@ from app.library.service import (
     list_experiences,
     save_draft,
 )
+from app.library.upload import MAX_REQUEST_BYTES, receive_upload
 
 PACKAGE_DIR = Path(__file__).parent
 SESSION_COOKIE = "rr_session"
@@ -133,6 +170,10 @@ LOGIN_COOKIE = "rr_login"
 # Sent with a save from the leave dialog when the user was logging out.
 SAVE_THEN_LOGOUT = "logout"
 ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
+# The only path whose posts may be bigger than an ordinary form: an attachment upload.
+UPLOAD_PATH = re.compile(r"/experiences/[0-9a-f-]{36}/attachments")
+# A download is a file, never a page: if a browser shows it anyway, nothing in it may run.
+DOWNLOAD_POLICY = "default-src 'none'; sandbox"
 CONTENT_SECURITY_POLICY = (
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; "
     "form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
@@ -198,7 +239,37 @@ NOTICES = {
     "preferences_unchanged_before_leaving": "你刚才编辑的求职偏好没有变化，这次没有产生新的保存。",
     "preferences_deleted": "求职偏好已移到回收站：它已停止使用，7 天内可以恢复。",
     "document_saved_logged_out": "已保存，并已退出。",
+    "attachment_added": "已上传附件。",
+    "attachment_already_added": "这个文件刚才已经上传过了，这次没有重复保存。",
+    "attachment_deleted": "已删除这个附件：它已移到回收站，不能再下载；7 天内可以在本页下方恢复。",
+    "attachment_restored": "已恢复这个附件。",
+    "attachment_purged": "已永久删除这个附件，它的文件已从附件目录中删除。",
+    "attachment_purge_pending": (
+        "已永久删除这个附件：它已经不能下载或恢复。文件清理暂未完成，系统会自动重试。"
+    ),
 }
+CHOOSE_AGAIN = "请重新选择文件后再上传（浏览器不会自动保留刚才选择的文件）。"
+UPLOAD_FULL = (
+    f"这条经历已经有 {MAX_ATTACHMENTS} 个附件（包括回收站里还能恢复的），达到上限，这个文件没有上传。"
+)
+UPLOAD_PROBLEMS = {
+    UploadOutcome.IN_PROGRESS: (409, "同一次上传还在处理中，这次没有重复保存。请稍等一下，再刷新页面查看。"),
+    UploadOutcome.FORM_USED: (
+        409,
+        "这个上传表单已经用过了（可能是返回了旧页面），为了不重复保存，这次没有上传。" + CHOOSE_AGAIN,
+    ),
+    UploadOutcome.FULL: (409, UPLOAD_FULL),
+    UploadOutcome.FAILED: (
+        500,
+        "上传没有完成：保存文件或记录时出错，这个文件没有保存，已有的附件和经历内容不受影响。"
+        "请稍后" + CHOOSE_AGAIN,
+    ),
+}
+FILE_PROBLEMS = {
+    MissingFile: "这个附件的文件在附件目录里找不到了，所以没有下载。附件记录还在：可以删除它，再重新上传。",
+    ChangedFile: "这个附件的文件和上传时记录的大小或校验值不一致（可能已损坏），所以没有下载。",
+}
+UNREADABLE_FILE = "这个附件的文件现在无法读取（可能是权限问题，或文件被替换了），所以没有下载。"
 HTTP_MESSAGES = {
     400: "请求的格式不对，没有执行任何操作。",
     404: "找不到这个页面或内容。它可能不存在、属于其他用户，或者已经超过恢复期限。",
@@ -215,24 +286,43 @@ class LibraryRuntime:
     database: Database
     clock: Clock
     templates: Jinja2Templates
+    files: FileStore
 
     def now(self):
         return self.clock.now()
 
     def run_cleanup(self) -> PurgeReport | None:
-        """One clean-up pass: due purge jobs, then expired sessions."""
+        """One clean-up pass: due purge jobs, what unfinished uploads left
+        behind, leftover staging and export files, then expired sessions.
+
+        A step that fails is logged and retried on the next pass; the steps
+        after it still run. Returns the purge report, or None if a step failed.
+        """
         now = self.now()
+        report = None
+        failed = False
 
         try:
-            report = purge_due(self.database, now)
+            report = purge_due(self.database, now, self.files)
+        except LibraryError:
+            logger.exception("purging failed; it will be retried on the next run")
+            failed = True
 
+        try:
+            recover_uploads(self.database, self.files, now)
+            self.files.sweep(referenced_files(self.database))
+        except LibraryError:
+            logger.exception("cleaning up unfinished uploads failed; it will be retried on the next run")
+            failed = True
+
+        try:
             with self.database.transaction() as db:
                 remove_expired_sessions(db, now)
         except LibraryError:
-            logger.exception("clean-up run failed; it will be retried on the next run")
-            return None
+            logger.exception("removing expired sessions failed; it will be retried on the next run")
+            failed = True
 
-        return report
+        return None if failed else report
 
 
 class NotAuthenticated(Exception):
@@ -289,6 +379,9 @@ def build_templates(config: LibraryConfig) -> Jinja2Templates:
         format_remaining=format_remaining,
         summary_line=summary_line,
         unfilled_labels=unfilled_labels,
+        format_size=format_size,
+        TYPE_LABELS=TYPE_LABELS,
+        MAX_ATTACHMENTS=MAX_ATTACHMENTS,
     )
 
     return Jinja2Templates(env=env)
@@ -319,8 +412,9 @@ def install_web(app: FastAPI, config: LibraryConfig) -> None:
     app.add_exception_handler(StorageError, _storage_error)
     app.add_exception_handler(StarletteHTTPException, _http_error)
     # Starlette runs the middleware added last first: LocalOnly is outermost.
+    app.add_exception_handler(AttachmentConflict, _attachment_conflict)
     app.middleware("http")(_security_headers)
-    app.add_middleware(FormSizeLimit, max_bytes=config.max_form_bytes)
+    app.add_middleware(FormSizeLimit, max_bytes=config.max_form_bytes, upload_bytes=MAX_REQUEST_BYTES)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
     app.add_middleware(LocalOnly)
 
@@ -363,22 +457,29 @@ def _is_loopback(client) -> bool:
 
 
 class FormSizeLimit:
-    """Refuse oversized posts before the form is read."""
+    """Refuse oversized posts before the form is read.
 
-    def __init__(self, app, max_bytes: int):
+    Every post must say how long it is. Only an attachment upload, on its
+    own path, may be longer than an ordinary form (up to upload_bytes); its
+    route also counts the bytes that really arrive.
+    """
+
+    def __init__(self, app, max_bytes: int, upload_bytes: int):
         self.app = app
         self.max_bytes = max_bytes
+        self.upload_bytes = upload_bytes
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http" and scope["method"] == "POST":
             length = dict(scope["headers"]).get(b"content-length")
+            limit = self.upload_bytes if UPLOAD_PATH.fullmatch(scope["path"]) else self.max_bytes
 
             if length is None:
                 response = PlainTextResponse("提交缺少长度信息。", status_code=411)
                 await response(scope, receive, send)
                 return
 
-            if not length.isdigit() or int(length) > self.max_bytes:
+            if not length.isdigit() or int(length) > limit:
                 response = PlainTextResponse("提交的内容太大。", status_code=413)
                 await response(scope, receive, send)
                 return
@@ -388,7 +489,8 @@ class FormSizeLimit:
 
 async def _security_headers(request: Request, call_next):
     response = await call_next(request)
-    response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
+    # A download sets its own, stricter policy.
+    response.headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "same-origin"
@@ -885,6 +987,19 @@ async def _version_conflict(request: Request, exc: VersionConflict):
     )
 
 
+async def _attachment_conflict(request: Request, exc: AttachmentConflict):
+    return message_page(
+        request,
+        title="操作没有执行：这个附件的状态已经变化",
+        message=(
+            "你打开这个页面之后，这个附件又被删除或恢复过（可能是在另一个标签页）。"
+            "为了不处理你没有看到的那一次删除，这次操作没有执行。请回到经历页面查看它现在的状态，再决定下一步。"
+        ),
+        status_code=409,
+        links=[(f"/experiences/{exc.item_id}", "查看这条经历")],
+    )
+
+
 def _latest_page(item) -> str:
     if item.deleted_at is not None:
         return "/experiences?tab=trash"
@@ -1105,20 +1220,50 @@ def experience_detail(
     notice: str = "",
     user: CurrentUser = Depends(current_user),
 ):
+    return detail_page(request, user, item_id, notice=NOTICES.get(notice))
+
+
+def detail_page(
+    request: Request,
+    user: CurrentUser,
+    item_id: str,
+    *,
+    notice: str | None = None,
+    upload_error: str | None = None,
+    status_code: int = 200,
+) -> Response:
+    """The reading page of an experience, with its attachments and a fresh upload form."""
     rt = runtime(request)
+    now = rt.now()
 
     with rt.database.transaction() as db:
         item = active_item(db, user.id, item_id)
+        attachments = kept_attachments(db, user.id, item)
+        binned = binned_attachments(db, user.id, item, now)
+        taken = places_taken(db, item.id)
 
     return render(
         request,
         "detail.html",
         {
             "item": item,
-            "notice": NOTICES.get(notice),
+            "notice": notice,
+            "attachments": attachments,
+            # A record whose file is gone says so instead of offering a download that fails.
+            "file_states": {
+                attachment.id: rt.files.kept_file_state(attachment.owner_id, attachment.storage_key)
+                for attachment in attachments
+            },
+            "binned_attachments": binned,
+            "places_left": max(0, MAX_ATTACHMENTS - taken),
+            # A new key for every page: posting this form again cannot add the file twice.
+            "upload_key": secrets.token_urlsafe(24),
+            "upload_error": upload_error,
+            "now": now,
             **library_sidebar(request, user, selected_id=item.id, focus=True),
         },
         user=user,
+        status_code=status_code,
     )
 
 
@@ -1426,7 +1571,7 @@ def version_purge(
             db, user.id, item_id, version_id, expected, rt.now(), ALL_KINDS
         )
 
-    outcome = run_purge_job(rt.database, job_id, rt.now())
+    outcome = run_purge_job(rt.database, job_id, rt.now(), rt.files)
     notice = "version_purged" if outcome == "done" else "version_purge_pending"
 
     return see_other(f"/experiences/{item_id}/history?notice={notice}")
@@ -1471,6 +1616,15 @@ def delete_page(item_id: str, request: Request, user: CurrentUser = Depends(curr
     if scope.versions_already_in_bin:
         points.append(
             f"另有 {scope.versions_already_in_bin} 个历史版本此前已经单独删除，会保持各自原来的恢复期限。"
+        )
+
+    if scope.kept_attachments:
+        points.append(f"{scope.kept_attachments} 个附件会一起移到回收站，恢复这条经历时会一起恢复。")
+
+    if scope.attachments_already_in_bin:
+        points.append(
+            f"另有 {scope.attachments_already_in_bin} 个附件此前已经单独删除，会保持各自原来的恢复期限，"
+            "不会随这条经历一起恢复。"
         )
 
     if item.category in DOCUMENT_KINDS:
@@ -1543,16 +1697,21 @@ def purge_page(item_id: str, request: Request, user: CurrentUser = Depends(curre
 
     with rt.database.transaction() as db:
         item = trashed_item(db, user.id, item_id, rt.now(), ALL_KINDS)
+        attachments = attachment_count(db, item)
 
-    return _purge_confirm(request, user, item)
+    return _purge_confirm(request, user, item, attachments)
 
 
-def _purge_confirm(request, user, item, error=None, status_code=200):
-    what = (
-        f"会删除{KIND_NOUNS[item.category]}的全部内容和全部历史版本。"
-        if item.category in DOCUMENT_KINDS
-        else f"会删除{KIND_NOUNS[item.category]}的全部内容、私有备注和全部历史版本。"
-    )
+def _purge_confirm(request, user, item, attachments, error=None, status_code=200):
+    if item.category in DOCUMENT_KINDS:
+        what = f"会删除{KIND_NOUNS[item.category]}的全部内容和全部历史版本。"
+    elif attachments:
+        what = (
+            f"会删除{KIND_NOUNS[item.category]}的全部内容、私有备注、全部历史版本，"
+            f"以及它的 {attachments} 个附件文件（包括此前单独删除、还没到期的）。"
+        )
+    else:
+        what = f"会删除{KIND_NOUNS[item.category]}的全部内容、私有备注和全部历史版本。"
 
     return confirm_page(
         request,
@@ -1588,11 +1747,13 @@ def purge_item(
         with rt.database.transaction() as db:
             item = trashed_item(db, user.id, item_id, rt.now(), ALL_KINDS)
             check_revision(item, expected)
+            attachments = attachment_count(db, item)
 
         return _purge_confirm(
             request,
             user,
             item,
+            attachments,
             error="请先勾选“我了解永久删除后无法恢复”。",
             status_code=422,
         )
@@ -1600,7 +1761,7 @@ def purge_item(
     with rt.database.transaction() as db:
         job_id = request_experience_purge(db, user.id, item_id, expected, rt.now(), ALL_KINDS)
 
-    outcome = run_purge_job(rt.database, job_id, rt.now())
+    outcome = run_purge_job(rt.database, job_id, rt.now(), rt.files)
     notice = "purged" if outcome == "done" else "purge_pending"
 
     return see_other(f"/experiences?tab=trash&notice={notice}")
@@ -1623,15 +1784,314 @@ def export_one(item_id: str, request: Request, user: CurrentUser = Depends(curre
 @router.get("/export/all.zip")
 def export_all(request: Request, user: CurrentUser = Depends(current_user)):
     rt = runtime(request)
+    now = rt.now()
 
     with rt.database.transaction() as db:
-        filename, payload = export_archive(db, user.id, user.label, rt.now())
+        content = collect_export(db, user.id, now)
 
-    return Response(
-        payload,
+    try:
+        package = write_export(content, rt.files, user.label, now)
+    except (FileStoreError, OSError) as error:
+        logger.error("building an export failed (%s)", type(error).__name__)
+        return message_page(
+            request,
+            title="导出没有完成",
+            message="生成导出文件时出错，没有下载任何内容。经历库里的内容不受影响，请稍后再试。",
+            status_code=500,
+            user=user,
+            links=[("/experiences", "回到我的经历")],
+        )
+
+    return StreamingResponse(
+        read_chunks(package.handle),
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{package.filename}"',
+            "Content-Length": str(package.size),
+        },
     )
+
+
+# --- attachments ----------------------------------------------------------------
+#
+# Only a saved experience of the six categories has attachments; the
+# profile and the preferences do not. Every route finds the experience
+# through the session's owner first and the attachment within it, so an
+# attachment id under another experience, or of another user, is not found.
+
+
+def content_disposition(filename: str) -> str:
+    """A download header that keeps any file name and that no file name can break."""
+    plain = "".join(ch if " " <= ch <= "~" and ch not in '"\\%' else "_" for ch in filename)
+
+    return f"attachment; filename=\"{plain or 'attachment'}\"; filename*=UTF-8''{quote(filename, safe='')}"
+
+
+async def _drain(chunks, length: int) -> None:
+    """Read the rest of a refused upload and drop it, so the browser shows the answer.
+
+    Without this, the connection would be closed while the browser is still
+    sending, and it would show a broken connection instead. Stops at the
+    announced length; nothing is kept.
+    """
+    received = 0
+
+    try:
+        async for chunk in chunks:
+            received += len(chunk)
+
+            if received > length:
+                return
+    except ClientDisconnect:
+        return
+
+
+@router.post("/experiences/{item_id}/attachments")
+async def upload_attachment(item_id: str, request: Request):
+    """Receive one file for a saved experience (attachments.py describes the steps).
+
+    The session, the post's origin and the experience are checked before the
+    body is read, and the CSRF token, which comes first in the body, before
+    any byte of the file is written.
+    """
+    rt = runtime(request)
+    chunks = request.stream()
+    # FormSizeLimit has made sure the length is there and within the upload limit.
+    length = int(request.headers["content-length"])
+
+    try:
+        user = await run_in_threadpool(current_user, request)
+        check_same_origin(request)
+        has_place = await run_in_threadpool(_has_place, rt, user.id, item_id)
+    except (NotAuthenticated, CsrfRejected, NotFound):
+        await _drain(chunks, length)
+        raise
+
+    if not has_place:
+        await _drain(chunks, length)
+        return await run_in_threadpool(
+            detail_page, request, user, item_id, upload_error=UPLOAD_FULL, status_code=409
+        )
+
+    try:
+        received = await receive_upload(
+            chunks,
+            content_type=request.headers.get("content-type", ""),
+            content_length=length,
+            files=rt.files,
+            token_ok=lambda value: _tokens_match(user.csrf_token, value),
+        )
+    except UploadTokenRejected:
+        await _drain(chunks, length)
+        raise CsrfRejected()
+    except UploadRejected as rejected:
+        if rejected.drain:
+            await _drain(chunks, length)
+
+        return await run_in_threadpool(
+            detail_page,
+            request,
+            user,
+            item_id,
+            upload_error=rejected.message,
+            status_code=rejected.status_code,
+        )
+
+    outcome = await run_in_threadpool(store_upload, rt.database, rt.files, user.id, item_id, received, rt.now())
+
+    if outcome in (UploadOutcome.ADDED, UploadOutcome.ALREADY_ADDED):
+        return see_other(f"/experiences/{item_id}?notice=attachment_{outcome}#attachments")
+
+    if outcome == UploadOutcome.PARENT_GONE:
+        return message_page(
+            request,
+            title="附件没有上传",
+            message="这条经历已经不存在，或在上传期间被删除了，所以这个文件没有上传。",
+            status_code=404,
+            user=user,
+            links=[("/experiences", "回到我的经历")],
+        )
+
+    status_code, message = UPLOAD_PROBLEMS[outcome]
+
+    return await run_in_threadpool(
+        detail_page, request, user, item_id, upload_error=message, status_code=status_code
+    )
+
+
+def _has_place(rt: LibraryRuntime, owner_id: str, item_id: str) -> bool:
+    with rt.database.transaction() as db:
+        return has_free_place(db, owner_id, item_id)
+
+
+@router.get("/experiences/{item_id}/attachments/{attachment_id}/download")
+def download_attachment(
+    item_id: str,
+    attachment_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """The attachment's bytes, after checking them against the recorded size and checksum."""
+    rt = runtime(request)
+
+    with rt.database.transaction() as db:
+        attachment = kept_attachment(db, user.id, item_id, attachment_id)
+
+    try:
+        handle = rt.files.open_checked(user.id, attachment.storage_key, attachment.size, attachment.sha256)
+    except FileStoreError as error:
+        logger.warning("attachment %s could not be sent (%s)", attachment.id, type(error).__name__)
+        return message_page(
+            request,
+            title="附件没有下载",
+            message=FILE_PROBLEMS.get(type(error), UNREADABLE_FILE),
+            status_code=500,
+            user=user,
+            links=[(f"/experiences/{item_id}", "回到这条经历")],
+        )
+
+    return StreamingResponse(
+        read_chunks(handle),
+        media_type=attachment.media_type,
+        headers={
+            "Content-Disposition": content_disposition(attachment.filename),
+            "Content-Length": str(attachment.size),
+            "Content-Security-Policy": DOWNLOAD_POLICY,
+        },
+    )
+
+
+@router.get("/experiences/{item_id}/attachments/{attachment_id}/delete")
+def attachment_delete_page(
+    item_id: str,
+    attachment_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    rt = runtime(request)
+    now = rt.now()
+
+    with rt.database.transaction() as db:
+        item, attachment = attachment_of(db, user.id, item_id, attachment_id, now, in_bin=False)
+
+    return confirm_page(
+        request,
+        user,
+        title=f"删除附件：{attachment.filename}",
+        points=[
+            "只删除这一个附件；这条经历的内容、历史版本和其他附件不受影响。",
+            "删除后立即不能下载；恢复期内导出全部时，它会放在导出包的回收站部分，并标明恢复期限。",
+            f"{RESTORE_WINDOW.days} 天内（截至 {format_local(now + RESTORE_WINDOW)}）"
+            "可以在这条经历的页面恢复，也可以提前永久删除；在那之前它仍占用一个附件名额。",
+            "已经下载到本机的文件需要你自己处理。",
+        ],
+        action=f"/experiences/{item.id}/attachments/{attachment.id}/delete",
+        button="删除这个附件",
+        cancel=f"/experiences/{item.id}",
+        hidden={"expected_revision": str(attachment.revision)},
+    )
+
+
+@router.post("/experiences/{item_id}/attachments/{attachment_id}/delete")
+def attachment_delete(
+    item_id: str,
+    attachment_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+    form: dict[str, str] = Depends(checked_form),
+):
+    rt = runtime(request)
+
+    with rt.database.transaction() as db:
+        delete_attachment(db, user.id, item_id, attachment_id, _expected_revision(form), rt.now())
+
+    return see_other(f"/experiences/{item_id}?notice=attachment_deleted#attachments")
+
+
+@router.post("/experiences/{item_id}/attachments/{attachment_id}/restore")
+def attachment_restore(
+    item_id: str,
+    attachment_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+    form: dict[str, str] = Depends(checked_form),
+):
+    rt = runtime(request)
+
+    with rt.database.transaction() as db:
+        restore_attachment(db, user.id, item_id, attachment_id, _expected_revision(form), rt.now())
+
+    return see_other(f"/experiences/{item_id}?notice=attachment_restored#attachments")
+
+
+@router.get("/experiences/{item_id}/attachments/{attachment_id}/purge")
+def attachment_purge_page(
+    item_id: str,
+    attachment_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    rt = runtime(request)
+
+    with rt.database.transaction() as db:
+        item, attachment = attachment_of(db, user.id, item_id, attachment_id, rt.now(), in_bin=True)
+
+    return _attachment_purge_confirm(request, user, item, attachment)
+
+
+def _attachment_purge_confirm(request, user, item, attachment, error=None, status_code=200):
+    return confirm_page(
+        request,
+        user,
+        title=f"永久删除附件：{attachment.filename}",
+        points=[
+            "永久删除后无法恢复。",
+            "只删除这一个附件的文件；这条经历和其他附件不受影响。",
+            "清理会立即开始；如果暂时没有完成，这个附件也已经不能下载或恢复，系统会自动重试。",
+            "已经下载到本机的文件不受影响。",
+        ],
+        action=f"/experiences/{item.id}/attachments/{attachment.id}/purge",
+        button="永久删除这个附件",
+        cancel=f"/experiences/{item.id}",
+        hidden={"expected_revision": str(attachment.revision)},
+        acknowledge="我了解永久删除后无法恢复",
+        error=error,
+        status_code=status_code,
+    )
+
+
+@router.post("/experiences/{item_id}/attachments/{attachment_id}/purge")
+def attachment_purge(
+    item_id: str,
+    attachment_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+    form: dict[str, str] = Depends(checked_form),
+):
+    rt = runtime(request)
+    expected = _expected_revision(form)
+
+    if form.get("acknowledge") != "yes":
+        with rt.database.transaction() as db:
+            item, attachment = attachment_of(db, user.id, item_id, attachment_id, rt.now(), in_bin=True)
+            check_attachment_revision(attachment, expected)
+
+        return _attachment_purge_confirm(
+            request,
+            user,
+            item,
+            attachment,
+            error="请先勾选“我了解永久删除后无法恢复”。",
+            status_code=422,
+        )
+
+    with rt.database.transaction() as db:
+        job_id = request_attachment_purge(db, user.id, item_id, attachment_id, expected, rt.now())
+
+    outcome = run_purge_job(rt.database, job_id, rt.now(), rt.files)
+    notice = "attachment_purged" if outcome == "done" else "attachment_purge_pending"
+
+    return see_other(f"/experiences/{item_id}?notice={notice}#attachments")
 
 
 # --- the basic profile and the job preferences --------------------------------
