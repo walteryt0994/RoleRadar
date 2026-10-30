@@ -87,3 +87,15 @@ class UnreadableFile(FileStoreError):
 
 class ChangedFile(FileStoreError):
     """The stored bytes no longer match the size and checksum recorded at upload."""
+
+
+class InconsistentRecord(LibraryError):
+    """A record's confirmation does not point to its own kept, confirmed version.
+
+    Raised instead of guessing what was confirmed. item_id names the record,
+    never its content.
+    """
+
+    def __init__(self, item_id: str):
+        super().__init__("inconsistent confirmation")
+        self.item_id = item_id

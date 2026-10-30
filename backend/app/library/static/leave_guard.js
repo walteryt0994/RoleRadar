@@ -76,6 +76,22 @@
     );
   });
 
+  // Where "save draft" continues to after another form of this site was
+  // sent: a search (a GET form) goes on with exactly the conditions it
+  // carries, encoded by the browser's own rules. A form that would change
+  // something is never sent again on its own; the list opens instead.
+  function continuation(other, submitter) {
+    const target = new URL(other.action, window.location.href);
+
+    if (other.method !== "get" || target.origin !== window.location.origin) {
+      return "/experiences";
+    }
+
+    target.search = new URLSearchParams(new FormData(other, submitter)).toString();
+
+    return target.pathname + target.search;
+  }
+
   // Other forms on the page leave it too. For the logout button, "save
   // draft" sends the save with after_save=logout: the server logs out only
   // after the save succeeded, and keeps the session when it fails.
@@ -94,7 +110,7 @@
         function () {
           other.submit();
         },
-        loggingOut ? "" : "/experiences",
+        loggingOut ? "" : continuation(other, event.submitter),
         loggingOut ? "logout" : ""
       );
     },

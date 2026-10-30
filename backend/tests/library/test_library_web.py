@@ -1,6 +1,7 @@
 """The Chinese web pages: access control, safe rendering, conflicts and flows."""
 import re
 import sqlite3
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
 from sqlalchemy import event, select
@@ -525,12 +526,87 @@ def test_saving_from_the_leave_dialog_continues_to_the_chosen_page(browser_a):
 
 @pytest.mark.parametrize(
     "target",
-    ["https://evil.example/", "//evil.example/x", "/\\evil.example", "javascript:alert(1)", " /experiences"],
+    [
+        "https://evil.example/",
+        "//evil.example/x",
+        "/\\evil.example",
+        "javascript:alert(1)",
+        " /experiences",
+        # A search's conditions never make a foreign target acceptable.
+        "//evil.example/experiences?q=%E6%8E%A2%E9%92%88",
+        "/\\evil.example?category=project",
+        "https://evil.example/experiences?q=1",
+    ],
 )
 def test_the_continue_target_never_leaves_the_site(browser_a, target):
     response = browser_a.submit("/experiences/new", "/experiences", actions="内容", next=target)
 
     assert re.fullmatch(r"/experiences/[0-9a-f-]{36}\?notice=created", response.headers["location"])
+
+
+# The sidebar search a leave dialog interrupted, encoded as a browser sends
+# a GET form: words with spaces and characters that need encoding (U1B-N1).
+SEARCH = {"q": "探针 C++ & 50% 合成", "category": "project"}
+SEARCH_TARGET = f"/experiences?{urlencode(SEARCH)}"
+
+
+@pytest.mark.parametrize("form", ["new", "edit", "profile", "preferences"])
+def test_saving_from_the_leave_dialog_continues_the_interrupted_search(browser_a, form):
+    found = browser_a.create(title="探针 C++ & 50% 合成项目", actions="要被找到的那条")
+
+    if form == "new":
+        response = browser_a.submit("/experiences/new", "/experiences", actions="新建时写的", next=SEARCH_TARGET)
+        notice = "created_before_leaving"
+    elif form == "edit":
+        source = browser_a.create(actions="正在编辑")
+        response = browser_a.submit(
+            f"/experiences/{source}/edit", f"/experiences/{source}/draft", actions="编辑后的", next=SEARCH_TARGET
+        )
+        notice = "saved_before_leaving"
+    else:
+        page, values = ("/basic-profile", {"city": "合成城"}) if form == "profile" else ("/job-preferences", {"cities_ideal": "合成城"})
+        [action] = [
+            f.action for f in forms_in(browser_a.get(f"{page}/edit").text) if f.method == "post" and f.action.startswith(page)
+        ]
+        response = browser_a.submit(f"{page}/edit", action, next=SEARCH_TARGET, **values)
+        notice = f"{form}_created_before_leaving"
+
+    location = urlsplit(response.headers["location"])
+    landing = browser_a.get(response.headers["location"]).text
+
+    assert response.status_code == 303
+    assert location.path == "/experiences"
+    assert parse_qs(location.query) == {"q": [SEARCH["q"]], "category": ["project"], "notice": [notice]}
+    # The list opens filtered, with the words still in the search box.
+    assert f'href="/experiences/{found}?' in landing
+    assert 'value="探针 C++ &amp; 50% 合成"' in landing
+
+
+def test_a_save_that_fails_or_conflicts_never_continues_to_the_search(browser_a):
+    item_id = browser_a.create(actions="原来的内容")
+    edit, draft = f"/experiences/{item_id}/edit", f"/experiences/{item_id}/draft"
+    refused = browser_a.submit(edit, draft, actions="  ", next=SEARCH_TARGET)
+
+    # Shown again with its error; the search waits for the save that succeeds.
+    assert refused.status_code == 422 and "location" not in refused.headers
+    assert form_for(refused.text, draft).fields["next"] == SEARCH_TARGET
+
+    stale = browser_a.form(edit, draft)
+    assert browser_a.submit(edit, draft, actions="另一个标签页先保存的").status_code == 303
+    clash = browser_a.post(draft, {**stale.fields, "actions": "我在这页写的", "next": SEARCH_TARGET})
+
+    assert clash.status_code == 409 and "location" not in clash.headers
+    assert "我在这页写的" in clash.text
+
+
+def test_search_forms_never_put_the_page_token_into_an_address(browser_a):
+    item_id = browser_a.create(title="有侧栏的页面")
+
+    for page in ("/experiences", f"/experiences/{item_id}", f"/experiences/{item_id}/edit", "/experiences/new"):
+        searches = [form for form in forms_in(browser_a.get(page).text) if form.method.lower() == "get"]
+
+        assert searches, page
+        assert all("csrf_token" not in form.fields for form in searches), page
 
 
 # --- sessions -------------------------------------------------------------

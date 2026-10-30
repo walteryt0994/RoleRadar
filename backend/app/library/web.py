@@ -144,11 +144,13 @@ from app.library.presentation import (
     format_short,
     format_size,
     record_page,
+    reference_note,
     state_label,
     summary_line,
     unfilled_labels,
     version_label,
 )
+from app.library.projection import list_references
 from app.library.service import (
     active_item,
     check_revision,
@@ -1602,6 +1604,7 @@ def delete_page(item_id: str, request: Request, user: CurrentUser = Depends(curr
 
     with rt.database.transaction() as db:
         scope = deletion_scope(db, user.id, item_id, rt.now(), ALL_KINDS)
+        references = list_references(db, user.id, item_id, rt.now(), ALL_KINDS)
 
     item = scope.item
     noun = KIND_NOUNS[item.category]
@@ -1641,7 +1644,7 @@ def delete_page(item_id: str, request: Request, user: CurrentUser = Depends(curr
         f"{RESTORE_WINDOW.days} 天内（截至 {format_local(scope.restore_deadline)}）可以在回收站恢复，"
         "也可以提前永久删除；到期后会被永久删除。",
         "已经下载到本机的导出文件不受影响，需要你自己处理。",
-        "分析、简历等功能还没有建立，所以目前没有其他地方保存这些内容的副本，不需要选择保留或清理。",
+        reference_note(references),
     ]
 
     return confirm_page(
@@ -1698,11 +1701,12 @@ def purge_page(item_id: str, request: Request, user: CurrentUser = Depends(curre
     with rt.database.transaction() as db:
         item = trashed_item(db, user.id, item_id, rt.now(), ALL_KINDS)
         attachments = attachment_count(db, item)
+        references = list_references(db, user.id, item_id, rt.now(), ALL_KINDS)
 
-    return _purge_confirm(request, user, item, attachments)
+    return _purge_confirm(request, user, item, attachments, references)
 
 
-def _purge_confirm(request, user, item, attachments, error=None, status_code=200):
+def _purge_confirm(request, user, item, attachments, references, error=None, status_code=200):
     if item.category in DOCUMENT_KINDS:
         what = f"会删除{KIND_NOUNS[item.category]}的全部内容和全部历史版本。"
     elif attachments:
@@ -1722,6 +1726,7 @@ def _purge_confirm(request, user, item, attachments, error=None, status_code=200
             what,
             "清理会立即开始；如果暂时没有完成，内容也已经不能访问或恢复，系统会自动重试，并在回收站显示进度。",
             "已经下载到本机的导出文件不受影响。",
+            reference_note(references),
         ],
         action=f"/experiences/{item.id}/purge",
         button="永久删除",
@@ -1748,12 +1753,14 @@ def purge_item(
             item = trashed_item(db, user.id, item_id, rt.now(), ALL_KINDS)
             check_revision(item, expected)
             attachments = attachment_count(db, item)
+            references = list_references(db, user.id, item_id, rt.now(), ALL_KINDS)
 
         return _purge_confirm(
             request,
             user,
             item,
             attachments,
+            references,
             error="请先勾选“我了解永久删除后无法恢复”。",
             status_code=422,
         )

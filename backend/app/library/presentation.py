@@ -15,6 +15,7 @@ from app.library.content import (
     WORK,
 )
 from app.library.models import ItemState, VersionKind
+from app.library.projection import NOT_ESTABLISHED
 
 # How the fields of each category are grouped on the form. Every field is in
 # exactly one group (a test checks this), so the layout cannot drop one; the
@@ -287,6 +288,20 @@ PART_CLEANUP_LABELS = {
 }
 # The profile and preferences keep every save; their first save is not an "initial version".
 DOCUMENT_EVENT_LABELS = {**EVENT_LABELS, "created": "第一次保存"}
+
+
+# The modules a record's reference status covers, as the deletion pages name them.
+MODULE_LABELS = {"analysis": "分析", "resume": "简历"}
+
+
+def reference_note(references) -> str:
+    """What a deletion page says about other modules: only what the library knows."""
+    if references.status != NOT_ESTABLISHED:
+        raise ValueError(f"no wording for the reference status {references.status!r}")
+
+    modules = "、".join(MODULE_LABELS[name] for name in references.modules)
+
+    return f"本经历库尚未建立与{modules}的关联，无法列出它们是否用过这些内容；这次删除只处理经历库里的内容。"
 
 
 def event_label(event, category: str = PROJECT) -> str:
