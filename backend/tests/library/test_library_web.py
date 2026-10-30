@@ -34,6 +34,10 @@ GET_ROUTES = {
     "/experiences/{item_id}/purge": {"item_id": "trashed"},
     "/experiences/{item_id}/export.md": {"item_id": "item"},
     "/export/all.zip": {},
+    "/basic-profile": {},
+    "/basic-profile/edit": {},
+    "/job-preferences": {},
+    "/job-preferences/edit": {},
 }
 POST_ROUTES = {
     "/logout": {},
@@ -46,7 +50,13 @@ POST_ROUTES = {
     "/experiences/{item_id}/delete": {"item_id": "item"},
     "/experiences/{item_id}/restore": {"item_id": "trashed"},
     "/experiences/{item_id}/purge": {"item_id": "trashed"},
+    "/basic-profile": {},
+    "/basic-profile/{item_id}/save": {"item_id": "profile"},
+    "/job-preferences": {},
+    "/job-preferences/{item_id}/save": {"item_id": "preferences"},
 }
+# One field each kind of record accepts, so the same post is valid for every route.
+SOME_CONTENT = {"actions": "", "name": "", "cities_ideal": ""}
 SENTINEL = "哨兵-c41f"
 HOSTILE = '<script>alert("x")</script><img src=x onerror=alert(1)>'
 
@@ -60,7 +70,8 @@ def database(app):
 
 
 def prepare_resources(app, browser) -> dict:
-    """An active draft with one kept and one binned version, plus a binned experience."""
+    """An active draft with one kept and one binned version, a binned experience,
+    and the user's basic profile and job preferences."""
     item = browser.create(title="A 的经历", actions=f"A 的内容{SENTINEL}", private_note=f"A 的备注{SENTINEL}")
     assert browser.submit(f"/experiences/{item}", f"/experiences/{item}/confirm").status_code == 303
     edited = browser.submit(f"/experiences/{item}/edit", f"/experiences/{item}/draft", actions=f"A 改过{SENTINEL}")
@@ -76,8 +87,23 @@ def prepare_resources(app, browser) -> dict:
     assert browser.submit(binned_path, binned_path).status_code == 303
     trashed = browser.create(actions=f"A 回收站里的内容{SENTINEL}")
     assert browser.submit(f"/experiences/{trashed}/delete", f"/experiences/{trashed}/delete").status_code == 303
+    assert browser.submit("/basic-profile/edit", "/basic-profile", name=f"A 的名字{SENTINEL}").status_code == 303
+    assert browser.submit("/job-preferences/edit", "/job-preferences", cities_ideal=f"A 的城市{SENTINEL}").status_code == 303
 
-    return {"item": item, "kept": kinds["initial"], "binned": kinds["confirmed"], "trashed": trashed}
+    with database(app).transaction() as db:
+        documents = {
+            row.category: row.id
+            for row in db.scalars(select(ExperienceItem).where(ExperienceItem.category.in_(("profile", "preferences"))))
+        }
+
+    return {
+        "item": item,
+        "kept": kinds["initial"],
+        "binned": kinds["confirmed"],
+        "trashed": trashed,
+        "profile": documents["profile"],
+        "preferences": documents["preferences"],
+    }
 
 
 def snapshot(app):
@@ -182,7 +208,7 @@ def test_posts_without_this_sessions_csrf_token_are_refused(app, browser_a, brow
 def test_another_user_gets_404_for_every_one_of_my_resources(app, browser_a, browser_b):
     ids = prepare_resources(app, browser_a)
     before = snapshot(app)
-    revisions = {name: revision_of(app, ids[name]) for name in ("item", "trashed")}
+    revisions = {name: revision_of(app, ids[name]) for name in ("item", "trashed", "profile", "preferences")}
     states = {name: state_of(app, ids[name]) for name in ("kept", "binned")}
     token = browser_b.csrf_token()
 
@@ -199,7 +225,7 @@ def test_another_user_gets_404_for_every_one_of_my_resources(app, browser_a, bro
                 "expected_revision": str(revisions[mapping["item_id"]]),
                 "expected_state": states.get(mapping.get("version_id"), ""),
                 "acknowledge": "yes",
-                "actions": "B 写入的内容",
+                **{name: "B 写入的内容" for name in SOME_CONTENT},
             }
             response = browser_b.post(fill(template, ids, mapping), data)
             assert response.status_code == 404, template
@@ -207,7 +233,7 @@ def test_another_user_gets_404_for_every_one_of_my_resources(app, browser_a, bro
 
     assert snapshot(app) == before
 
-    for path in ("/experiences", "/experiences?tab=trash"):
+    for path in ("/experiences", "/experiences?tab=trash", "/basic-profile", "/job-preferences"):
         assert SENTINEL not in browser_b.get(path).text
 
 
@@ -221,7 +247,7 @@ def test_the_same_requests_work_for_the_owner(app, browser_a, template):
         "expected_revision": str(revision_of(app, ids[mapping["item_id"]])),
         "expected_state": state_of(app, ids[mapping["version_id"]]) if "version_id" in mapping else "",
         "acknowledge": "yes",
-        "actions": "A 自己的修改",
+        **{name: "A 自己的修改" for name in SOME_CONTENT},
     }
 
     assert browser_a.post(fill(template, ids, mapping), data).status_code == 303

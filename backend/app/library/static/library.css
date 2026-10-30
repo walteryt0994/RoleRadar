@@ -197,6 +197,37 @@ code { background: var(--tag); padding: 0 4px; border-radius: 4px; }
 }
 .library-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 8px; font-size: 12px; color: var(--ink-soft); }
 .library-empty { margin: 0 8px; font-size: 14px; color: var(--ink-soft); }
+.library-category { color: var(--ink); }
+
+/* Finding records: words and a category, applied together; clearing returns to everything. */
+.library-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 8px 16px; }
+.library-filter input[type=search] {
+  flex: 1 1 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 15px;
+  color: var(--ink);
+  background: var(--white);
+  border: 1px solid var(--field-line);
+  border-radius: var(--radius-control);
+}
+.library-filter select {
+  /* Shares its row with the button however long the category names are. */
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 40px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  background: var(--white);
+  border: 1px solid var(--field-line);
+  border-radius: var(--radius-control);
+}
+.library-filter input[type=search]:focus, .library-filter select:focus { border-color: var(--ink); outline: 2px solid var(--ink); outline-offset: 1px; }
+.library-filter button { min-height: 40px; padding: 6px 14px; font-size: 14px; }
+.library-clear { flex: 1 1 100%; font-size: 13px; }
 .library-unavailable {
   margin: 0 8px;
   padding: 8px 12px;
@@ -215,6 +246,12 @@ code { background: var(--tag); padding: 0 4px; border-radius: 4px; }
 .crumbs { margin: 0; font-size: 13px; color: var(--ink-soft); }
 .crumbs a { color: var(--ink-soft); }
 .state-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: 4px 0 8px; font-size: 13px; color: var(--ink-soft); }
+
+/* The kind of a new record: one current choice among six plain-word links. */
+.kind-switch { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 14px; padding: 3px; background: var(--outcome); border: 1px solid var(--line); border-radius: var(--radius-control); width: fit-content; max-width: 100%; }
+.kind-switch a, .kind-switch span { padding: 4px 12px; border-radius: 6px; font-size: 14px; color: var(--ink-soft); text-decoration: none; }
+.kind-switch a:hover { color: var(--ink); background: var(--hover); }
+.kind-switch [aria-current="page"] { color: var(--ink); font-weight: 500; background: var(--white); box-shadow: 0 1px 2px rgba(48, 50, 54, 0.14); }
 
 /* --- the reading page: a project record, not a form -------------------- */
 
@@ -262,6 +299,22 @@ code { background: var(--tag); padding: 0 4px; border-radius: 4px; }
 .fold-private { margin-top: 26px; padding: 0 16px; background: var(--page); border: 1px solid var(--line); border-radius: var(--radius-panel); }
 .fold-private + .fold-private, .record-more + .fold-private { margin-top: 26px; }
 .private-notice { font-size: 13px; color: var(--ink-soft); }
+
+/* --- the basic profile and the job preferences ----------------------------- */
+
+.document-body { margin-top: 8px; }
+.document-body .fields dt:first-child { margin-top: 0; }
+.preferences { display: grid; gap: 4px; }
+.preference { padding: 14px 0; border-bottom: 1px solid var(--line); }
+.preference h3 { margin: 0 0 8px; font-size: 15px; }
+.stances { display: grid; gap: 6px; margin: 0; }
+.stances div { display: grid; grid-template-columns: 6.5em minmax(0, 1fr); gap: 12px; }
+.stances dt { font-size: 13px; color: var(--ink-soft); }
+.stances dd { margin: 0; }
+.preference-group .fold { margin-top: 4px; }
+.profile-education { margin-top: 36px; }
+.profile-education h2 { margin-top: 0; }
+.trash-category { font-size: 13px; color: var(--ink-soft); }
 
 /* --- messages ------------------------------------------------------------- */
 
@@ -467,6 +520,9 @@ dialog h2 { margin-top: 0; }
   .who { width: 100%; margin-left: 0; justify-content: space-between; }
   .nav a, .link-button { display: inline-flex; align-items: center; min-height: 44px; }
   .button, button { min-height: 44px; }
+  .library-filter select, .library-filter input[type=search] { min-height: 44px; }
+  .kind-switch a, .kind-switch span { display: inline-flex; align-items: center; min-height: 44px; }
+  .stances div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   h1 { font-size: 24px; }
   .prose { font-size: 16px; }
   .record-outcome { padding: 18px 18px 20px; }
@@ -475,6 +531,7 @@ dialog h2 { margin-top: 0; }
   .workspace { display: block; min-height: 0; }
   .library { padding: 16px; border-bottom: 1px solid var(--line); }
   .workspace-focus .library-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; margin: 0; }
+  .workspace-focus .library-filter,
   .workspace-focus .library-head h2,
   .workspace-focus .library-list,
   .workspace-focus .library-empty { display: none; }
@@ -487,7 +544,7 @@ dialog h2 { margin-top: 0; }
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .button, button, .library-item, .nav a { transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease; }
+  .button, button, .library-item, .nav a, .kind-switch a { transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease; }
   .chevron { transition: transform 0.16s ease; }
 }
 

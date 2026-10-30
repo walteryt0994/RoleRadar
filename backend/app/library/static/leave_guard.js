@@ -129,8 +129,14 @@
     }
   });
 
+  // Closing the dialog (a choice, or Escape) forgets the leave it asked
+  // about. The browser fires this event a moment after the dialog closed; if
+  // a new leave has opened the dialog again by then, the event is stale and
+  // must not forget the new one, or none of its buttons would act.
   dialog.addEventListener("close", function () {
-    pendingLeave = null;
+    if (!dialog.open) {
+      pendingLeave = null;
+    }
   });
 
   window.addEventListener("beforeunload", function (event) {

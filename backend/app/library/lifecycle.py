@@ -1,4 +1,4 @@
-"""Deleting, restoring and permanently removing experiences and versions.
+"""Deleting, restoring and permanently removing records and their versions.
 
 Deleting moves an object to the recycle bin. It leaves normal use at once and
 can be restored for exactly RESTORE_WINDOW (7 days). From that deadline on it
@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from app.library.content import DOCUMENT_KINDS, EXPERIENCE_CATEGORIES, PREFERENCES, PROFILE
 from app.library.db import Database
 from app.library.errors import NotAllowed, NotFound, VersionConflict
 from app.library.models import (
@@ -30,6 +31,7 @@ from app.library.models import (
 from app.library.service import (
     active_item,
     check_revision,
+    current_document,
     get_version,
     is_current_confirmed,
     is_expired,
@@ -45,6 +47,18 @@ CURRENT_CONFIRMED_REASON = (
     "这是当前的确认版本，代表这条经历现在已确认的事实，不能单独删除。"
     "如果要删除它，可以先修改内容（之后它会成为历史版本），或者删除整条经历。"
 )
+# Restoring an old profile or preferences next to a newer one would make two.
+RESTORE_BLOCKED_REASONS = {
+    PROFILE: (
+        "你现在已经有一份基本资料。为了不覆盖它，这份旧的基本资料不能直接恢复。"
+        "如果想换回旧的，请先删除现在这份，再回到回收站恢复。"
+    ),
+    PREFERENCES: (
+        "你现在已经有一份求职偏好。为了不覆盖它，这份旧的求职偏好不能直接恢复。"
+        "如果想换回旧的，请先删除现在这份，再回到回收站恢复。"
+    ),
+}
+KINDS = tuple[str, ...]
 
 logger = logging.getLogger("roleradar.library")
 
@@ -54,12 +68,14 @@ def trashed_item(
     owner_id: str,
     item_id: str,
     now: datetime,
+    kinds: KINDS = EXPERIENCE_CATEGORIES,
 ) -> ExperienceItem:
-    """An experience in the recycle bin that can still be restored."""
+    """A record in the recycle bin that can still be restored."""
     item = db.scalar(
         select(ExperienceItem).where(
             ExperienceItem.id == item_id,
             ExperienceItem.owner_id == owner_id,
+            ExperienceItem.category.in_(kinds),
             ExperienceItem.deleted_at.is_not(None),
         )
     )
@@ -76,10 +92,11 @@ def delete_experience(
     item_id: str,
     expected_revision: int,
     now: datetime,
+    kinds: KINDS = EXPERIENCE_CATEGORIES,
 ) -> ExperienceItem:
-    item = active_item(db, owner_id, item_id)
+    item = active_item(db, owner_id, item_id, kinds)
     check_revision(item, expected_revision)
-    _start_deletion(db, owner_id, TargetType.EXPERIENCE, item, item.id, now)
+    _start_deletion(db, owner_id, TargetType.EXPERIENCE, item, item, now)
     item.revision += 1
     record_event(db, owner_id, item.id, TargetType.EXPERIENCE, item.id, "deleted", now)
 
@@ -92,10 +109,18 @@ def restore_experience(
     item_id: str,
     expected_revision: int,
     now: datetime,
+    kinds: KINDS = EXPERIENCE_CATEGORIES,
 ) -> ExperienceItem:
-    """Bring an experience back; versions deleted on their own stay deleted."""
-    item = trashed_item(db, owner_id, item_id, now)
+    """Bring a record back; versions deleted on their own stay deleted.
+
+    An old profile or preferences is not brought back next to a current one.
+    """
+    item = trashed_item(db, owner_id, item_id, now, kinds)
     check_revision(item, expected_revision)
+
+    if item.category in DOCUMENT_KINDS and current_document(db, owner_id, item.category):
+        raise NotAllowed(RESTORE_BLOCKED_REASONS[item.category])
+
     _cancel_deletion(db, item, now)
     item.revision += 1
     record_event(db, owner_id, item.id, TargetType.EXPERIENCE, item.id, "restored", now)
@@ -109,9 +134,10 @@ def request_experience_purge(
     item_id: str,
     expected_revision: int,
     now: datetime,
+    kinds: KINDS = EXPERIENCE_CATEGORIES,
 ) -> str:
-    """Make a binned experience unrestorable now; return its purge job id."""
-    item = trashed_item(db, owner_id, item_id, now)
+    """Make a binned record unrestorable now; return its purge job id."""
+    item = trashed_item(db, owner_id, item_id, now, kinds)
     check_revision(item, expected_revision)
     job_id = _expire_now(db, item, now)
     item.revision += 1
@@ -125,8 +151,9 @@ def deletable_version(
     owner_id: str,
     item_id: str,
     version_id: str,
+    kinds: KINDS = EXPERIENCE_CATEGORIES,
 ) -> tuple[ExperienceItem, ExperienceVersion]:
-    item, version = get_version(db, owner_id, item_id, version_id)
+    item, version = get_version(db, owner_id, item_id, version_id, kinds)
 
     if is_current_confirmed(item, version):
         raise NotAllowed(CURRENT_CONFIRMED_REASON)
@@ -140,9 +167,10 @@ def trashed_version(
     item_id: str,
     version_id: str,
     now: datetime,
+    kinds: KINDS = EXPERIENCE_CATEGORIES,
 ) -> tuple[ExperienceItem, ExperienceVersion]:
-    """A separately deleted version of an active experience, still restorable."""
-    item = active_item(db, owner_id, item_id)
+    """A separately deleted version of an active record, still restorable."""
+    item = active_item(db, owner_id, item_id, kinds)
     version = db.scalar(
         select(ExperienceVersion).where(
             ExperienceVersion.id == version_id,
@@ -195,10 +223,11 @@ def delete_version(
     version_id: str,
     expected_state: str,
     now: datetime,
+    kinds: KINDS = EXPERIENCE_CATEGORIES,
 ) -> ExperienceVersion:
-    item, version = deletable_version(db, owner_id, item_id, version_id)
+    item, version = deletable_version(db, owner_id, item_id, version_id, kinds)
     check_version_state(db, version, expected_state)
-    _start_deletion(db, owner_id, TargetType.VERSION, version, item.id, now)
+    _start_deletion(db, owner_id, TargetType.VERSION, version, item, now)
     record_event(db, owner_id, item.id, TargetType.VERSION, version.id, "version_deleted", now)
 
     return version
@@ -211,8 +240,9 @@ def restore_version(
     version_id: str,
     expected_state: str,
     now: datetime,
+    kinds: KINDS = EXPERIENCE_CATEGORIES,
 ) -> ExperienceVersion:
-    item, version = trashed_version(db, owner_id, item_id, version_id, now)
+    item, version = trashed_version(db, owner_id, item_id, version_id, now, kinds)
     check_version_state(db, version, expected_state)
     _cancel_deletion(db, version, now)
     record_event(db, owner_id, item.id, TargetType.VERSION, version.id, "version_restored", now)
@@ -227,8 +257,9 @@ def request_version_purge(
     version_id: str,
     expected_state: str,
     now: datetime,
+    kinds: KINDS = EXPERIENCE_CATEGORIES,
 ) -> str:
-    item, version = trashed_version(db, owner_id, item_id, version_id, now)
+    item, version = trashed_version(db, owner_id, item_id, version_id, now, kinds)
     check_version_state(db, version, expected_state)
     job_id = _expire_now(db, version, now)
     record_event(
@@ -243,7 +274,7 @@ def _start_deletion(
     owner_id: str,
     target_type: str,
     target,
-    item_id: str,
+    item: ExperienceItem,
     now: datetime,
 ) -> None:
     target.deleted_at = now
@@ -256,7 +287,8 @@ def _start_deletion(
             deletion_id=target.deletion_id,
             target_type=target_type,
             target_id=target.id,
-            item_id=item_id,
+            item_id=item.id,
+            category=item.category,
             reason=PurgeReason.EXPIRED,
             status=JobStatus.PENDING,
             due_at=target.purge_after,
@@ -298,6 +330,26 @@ def _expire_now(db: Session, target, now: datetime) -> str:
     return job.id
 
 
+def binned_documents(
+    db: Session,
+    owner_id: str,
+    kind: str,
+    now: datetime,
+) -> list[ExperienceItem]:
+    """The owner's profiles (or preferences) in the recycle bin that can still be restored."""
+    items = db.scalars(
+        select(ExperienceItem)
+        .where(
+            ExperienceItem.owner_id == owner_id,
+            ExperienceItem.category == kind,
+            ExperienceItem.deleted_at.is_not(None),
+        )
+        .order_by(ExperienceItem.deleted_at.desc())
+    )
+
+    return [item for item in items if not is_expired(item, now)]
+
+
 @dataclass
 class DeletionScope:
     item: ExperienceItem
@@ -311,9 +363,10 @@ def deletion_scope(
     owner_id: str,
     item_id: str,
     now: datetime,
+    kinds: KINDS = EXPERIENCE_CATEGORIES,
 ) -> DeletionScope:
-    """What deleting this experience now would take into the recycle bin."""
-    item = active_item(db, owner_id, item_id)
+    """What deleting this record now would take into the recycle bin."""
+    item = active_item(db, owner_id, item_id, kinds)
     versions = item_versions(db, owner_id, item, now)
     in_bin = sum(1 for version in versions if version.deleted_at is not None)
 

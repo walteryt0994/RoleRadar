@@ -85,7 +85,10 @@ def forms_in(html: str) -> list[Form]:
 
 
 def form_for(html: str, action: str) -> Form:
-    matches = [form for form in forms_in(html) if form.action == action]
+    """The form that posts to action. A page may also have a search form
+    (method get) with the same action, so posting forms come first."""
+    candidates = [form for form in forms_in(html) if form.action == action]
+    matches = [form for form in candidates if form.method.lower() == "post"] or candidates
 
     if not matches:
         actions = [form.action for form in forms_in(html)]

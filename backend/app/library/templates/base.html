@@ -21,6 +21,8 @@
     {% if user %}
     <nav class="nav" aria-label="主要导航">
       <a href="/experiences"{% if section == "library" %} aria-current="page"{% endif %}>经历库</a>
+      <a href="/basic-profile"{% if section == "profile" %} aria-current="page"{% endif %}>基本资料</a>
+      <a href="/job-preferences"{% if section == "preferences" %} aria-current="page"{% endif %}>求职偏好</a>
       <a href="/experiences?tab=trash"{% if section == "trash" %} aria-current="page"{% endif %}>回收站</a>
       <a href="/export/all.zip" download>导出全部</a>
     </nav>

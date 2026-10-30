@@ -22,13 +22,16 @@
 {% else %}
 <header class="pane-head" data-reveal>
   <h1>回收站</h1>
-  <p class="lede">回收站里的经历已停止使用，不能编辑、确认或查看历史。删除后 {{ RESTORE_DAYS }} 天内可以恢复；导出全部时会单独列出。</p>
+  <p class="lede">回收站里的内容已停止使用，不能编辑、确认或查看历史。删除后 {{ RESTORE_DAYS }} 天内可以恢复；导出全部时会单独列出。</p>
 </header>
 {% if trash.items %}
 <ul class="item-list" data-reveal>
   {% for item in trash.items %}
   <li>
-    <strong>{{ display_title(item.content) }}</strong>
+    <strong>{{ display_title(item.content, item.category) }}</strong>
+    {% if item.category not in DOCUMENT_KINDS %}
+    <span class="trash-category">{{ CATEGORY_LABELS[item.category] }}</span>
+    {% endif %}
     <span class="muted small">删除于 {{ item.deleted_at|localtime }}；在 {{ item.purge_after|localtime }} 之前可以恢复（{{ format_remaining(item.purge_after, now) }}）</span>
     <div class="row-actions">
       <form method="post" action="/experiences/{{ item.id }}/restore" class="inline">
@@ -42,13 +45,13 @@
   {% endfor %}
 </ul>
 {% else %}
-<p class="empty-state">回收站里没有可以恢复的经历。</p>
+<p class="empty-state">回收站里没有可以恢复的内容。</p>
 {% endif %}
 {% if trash.waiting_cleanups %}
 <h2>等待清理</h2>
 <ul class="status-list">
   {% for job in trash.waiting_cleanups %}
-  <li>一条项目经历：{% if job.reason == "user_request" %}你已于 {{ job.due_at|localtime }} 申请永久删除{% else %}已于 {{ job.due_at|localtime }} 超过恢复期限{% endif %}。内容已经不能访问或恢复，正在等待清理{% if job.status == "failed" %}；上次清理失败（已尝试 {{ job.attempts }} 次），系统会自动重试{% endif %}。</li>
+  <li>{{ CLEANUP_NOUNS[job.category] }}：{% if job.reason == "user_request" %}你已于 {{ job.due_at|localtime }} 申请永久删除{% else %}已于 {{ job.due_at|localtime }} 超过恢复期限{% endif %}。内容已经不能访问或恢复，正在等待清理{% if job.status == "failed" %}；上次清理失败（已尝试 {{ job.attempts }} 次），系统会自动重试{% endif %}。</li>
   {% endfor %}
 </ul>
 {% endif %}
@@ -56,7 +59,7 @@
 <h2>最近完成的清理</h2>
 <ul class="status-list">
   {% for job in trash.finished_cleanups %}
-  <li>一条项目经历（{% if job.reason == "user_request" %}你申请的永久删除{% else %}超过恢复期限{% endif %}）已于 {{ job.completed_at|localtime }} 清理完成：它的内容和全部历史版本已从经历库数据库中删除。</li>
+  <li>{{ CLEANUP_NOUNS[job.category] }}（{% if job.reason == "user_request" %}你申请的永久删除{% else %}超过恢复期限{% endif %}）已于 {{ job.completed_at|localtime }} 清理完成：它的内容和全部历史版本已从经历库数据库中删除。</li>
   {% endfor %}
 </ul>
 <p class="muted small">“清理完成”指经历库数据库里的记录已经删除。已经下载的导出文件，以及电脑备份等经历库之外的副本，不在清理范围内。</p>

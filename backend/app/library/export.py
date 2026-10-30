@@ -1,10 +1,11 @@
 """Exports a user can take away and read without RoleRadar.
 
-One experience exports as a Markdown file. "Export all" builds a ZIP with a
-README, one Markdown file per experience, the same data as JSON and a
-manifest with checksums. Exports include the private notes, so every file
-reminds the reader to check them before sharing. Content past its restore
-deadline, or permanently deleted, is never exported.
+One record exports as a Markdown file. "Export all" builds a ZIP with a
+README, one Markdown file per experience, the basic profile and the job
+preferences, the same data as JSON and a manifest with checksums. Exports
+include private notes and contact details, so every file reminds the reader
+to check them before sharing. Content past its restore deadline, or
+permanently deleted, is never exported.
 """
 import hashlib
 import io
@@ -16,19 +17,33 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.library.content import (
+    ALL_KINDS,
+    CATEGORY_FIELDS,
     CATEGORY_LABELS,
+    DOCUMENT_KINDS,
+    NOT_DECIDED,
     NOT_FILLED,
-    PROJECT_FIELDS,
+    PREFERENCE_GROUPS,
+    PREFERENCE_SINGLES,
+    PREFERENCES,
+    PROFILE,
     display_title,
 )
 from app.library.models import ExperienceItem, ExperienceVersion, VersionKind
 from app.library.presentation import format_local, state_label, version_label
-from app.library.service import active_item, is_expired, item_versions, list_experiences
+from app.library.service import (
+    active_item,
+    current_document,
+    is_expired,
+    item_versions,
+    list_experiences,
+)
 
 EXPORT_FORMAT = "roleradar-library-export"
-EXPORT_FORMAT_VERSION = 1
+# 2: six categories, the profile and the preferences; field labels per kind.
+EXPORT_FORMAT_VERSION = 2
 SHARE_WARNING = (
-    "注意：这份文件包含你的私有备注。导出文件离开 RoleRadar 后不再受平台的权限保护；"
+    "注意：这份文件包含你的私有备注或联系方式。导出文件离开 RoleRadar 后不再受平台的权限保护；"
     "分享或发送之前，请先检查并删掉不想让别人看到的内容。"
 )
 NOT_INCLUDED = (
@@ -36,6 +51,7 @@ NOT_INCLUDED = (
     "附件：经历库目前还没有附件功能",
     "分析结果、岗位简历和投递记录：这些功能还没有建立",
 )
+FILE_PREFIXES = {PROFILE: "roleradar-profile", PREFERENCES: "roleradar-preferences"}
 
 
 def single_export(
@@ -44,29 +60,41 @@ def single_export(
     item_id: str,
     now: datetime,
 ) -> tuple[str, str]:
-    item = active_item(db, owner_id, item_id)
+    item = active_item(db, owner_id, item_id, ALL_KINDS)
     versions = item_versions(db, owner_id, item, now)
+    prefix = FILE_PREFIXES.get(item.category, "roleradar-experience")
 
-    return f"roleradar-experience-{item.id[:8]}.md", experience_markdown(item, versions, now)
+    return f"{prefix}-{item.id[:8]}.md", item_markdown(item, versions, now)
 
 
-def experience_markdown(
+def item_markdown(
     item: ExperienceItem,
     versions: list[ExperienceVersion],
     now: datetime,
 ) -> str:
-    last_confirmed = (
-        format_local(item.last_confirmed_at) if item.last_confirmed_at else "尚未确认"
-    )
+    document = item.category in DOCUMENT_KINDS
     lines = [
-        f"# {display_title(item.content)}",
+        f"# {display_title(item.content, item.category)}",
         "",
         f"- 类别：{CATEGORY_LABELS.get(item.category, item.category)}",
-        f"- 状态：{state_label(item)}",
+    ]
+
+    if not document:
+        last_confirmed = (
+            format_local(item.last_confirmed_at) if item.last_confirmed_at else "尚未确认"
+        )
+        lines.append(f"- 状态：{state_label(item)}")
+
+    lines += [
         f"- 第一次保存：{format_local(item.created_at)}",
         f"- 最近一次保存：{format_local(item.updated_at)}",
-        f"- 上次确认：{last_confirmed}",
-        f"- 经历编号：{item.id}",
+    ]
+
+    if not document:
+        lines.append(f"- 上次确认：{last_confirmed}")
+
+    lines += [
+        f"- {'编号' if document else '经历编号'}：{item.id}",
         f"- 导出时间：{format_local(now)}",
     ]
 
@@ -77,15 +105,21 @@ def experience_markdown(
         )
 
     lines += ["", f"> {SHARE_WARNING}", "", "## 当前内容", ""]
-    lines += _field_lines(item.content)
-    lines += ["## 私有备注", "", item.private_note or NOT_FILLED, ""]
+    lines += _field_lines(item.category, item.content)
+
+    if not document:
+        lines += ["## 私有备注", "", item.private_note or NOT_FILLED, ""]
+
     lines += [f"## 历史版本（{len(versions)} 个）", ""]
 
     if not versions:
         lines += ["没有保留的历史版本。", ""]
 
     for version in versions:
-        when = "第一次保存于" if version.kind == VersionKind.INITIAL else "确认于"
+        when = {
+            VersionKind.INITIAL: "第一次保存于",
+            VersionKind.SAVED: "保存于",
+        }.get(version.kind, "确认于")
         lines += [f"### {version_label(version)} · {when} {format_local(version.created_at)}", ""]
 
         if version.deleted_at is not None:
@@ -94,25 +128,49 @@ def experience_markdown(
                 "",
             ]
 
-        lines += _field_lines(version.content)
-        lines += ["**当时的私有备注**", "", version.private_note or NOT_FILLED, ""]
+        lines += _field_lines(item.category, version.content)
 
-    lines += [
-        "---",
-        "",
-        "导出范围：这条经历的当前内容和私有备注，以及仍保留或仍可恢复的历史版本；"
-        "不含已超过恢复期限或已永久删除的内容。",
-        "",
-    ]
+        if not document:
+            lines += ["**当时的私有备注**", "", version.private_note or NOT_FILLED, ""]
+
+    scope = (
+        "导出范围：当前内容，以及仍保留或仍可恢复的历史版本；"
+        if document
+        else "导出范围：这条经历的当前内容和私有备注，以及仍保留或仍可恢复的历史版本；"
+    )
+    lines += ["---", "", scope + "不含已超过恢复期限或已永久删除的内容。", ""]
 
     return "\n".join(lines)
 
 
-def _field_lines(content: dict) -> list[str]:
+# U1-A's name for it.
+experience_markdown = item_markdown
+
+
+def _field_lines(category: str, content: dict) -> list[str]:
+    if category == PREFERENCES:
+        return _preference_lines(content)
+
     lines = []
 
-    for field in PROJECT_FIELDS:
+    for field in CATEGORY_FIELDS[category]:
         lines += [f"**{field.label}**", "", content.get(field.name) or NOT_FILLED, ""]
+
+    return lines
+
+
+def _preference_lines(content: dict) -> list[str]:
+    """Each preference with only the answers given; nothing given reads as undecided."""
+    lines = []
+
+    for _, label, fields in PREFERENCE_GROUPS:
+        answers = [
+            f"{field.label}：{content[field.name]}" for field in fields if content.get(field.name)
+        ]
+        lines += [f"**{label}**", "", "\n\n".join(answers) if answers else NOT_DECIDED, ""]
+
+    for field in PREFERENCE_SINGLES:
+        lines += [f"**{field.label}**", "", content.get(field.name) or NOT_DECIDED, ""]
 
     return lines
 
@@ -125,6 +183,7 @@ def export_archive(
 ) -> tuple[str, bytes]:
     """Everything this owner still keeps, as (file name, ZIP bytes)."""
     current = list_experiences(db, owner_id)
+    documents = {kind: current_document(db, owner_id, kind) for kind in DOCUMENT_KINDS}
     binned = [
         item
         for item in db.scalars(
@@ -138,24 +197,41 @@ def export_archive(
         if not is_expired(item, now)
     ]
     files: dict[str, bytes] = {}
-    listing = {"experiences": [], "recycle-bin": []}
+    listing = {"experiences": [], "documents": [], "recycle-bin": []}
     records = {"experiences": [], "recycle-bin": []}
 
     for section, items in (("experiences", current), ("recycle-bin", binned)):
         for index, item in enumerate(items, start=1):
             versions = item_versions(db, owner_id, item, now)
             path = f"{section}/{index:02d}-{item.id[:8]}.md"
-            files[path] = experience_markdown(item, versions, now).encode("utf-8")
-            listing[section].append((path, display_title(item.content), item))
+            files[path] = item_markdown(item, versions, now).encode("utf-8")
+            listing[section].append((path, item))
             records[section].append(_item_record(item, versions))
+
+    document_records = {}
+
+    for kind, item in documents.items():
+        document_records[kind] = None
+
+        if item is not None:
+            versions = item_versions(db, owner_id, item, now)
+            path = f"{kind}.md"
+            files[path] = item_markdown(item, versions, now).encode("utf-8")
+            listing["documents"].append((path, item))
+            document_records[kind] = _item_record(item, versions)
 
     data = {
         "format": EXPORT_FORMAT,
         "format_version": EXPORT_FORMAT_VERSION,
         "generated_at": _iso(now),
         "owner": owner_label,
-        "field_labels": {field.name: field.label for field in PROJECT_FIELDS},
+        "field_labels": {
+            kind: {field.name: field.label for field in CATEGORY_FIELDS[kind]}
+            for kind in ALL_KINDS
+        },
         "experiences": records["experiences"],
+        "profile": document_records[PROFILE],
+        "preferences": document_records[PREFERENCES],
         "recycle_bin": records["recycle-bin"],
     }
     files["data.json"] = _json_bytes(data)
@@ -167,6 +243,8 @@ def export_archive(
             "generated_at": _iso(now),
             "counts": {
                 "experiences": len(current),
+                "profile": int(documents[PROFILE] is not None),
+                "preferences": int(documents[PREFERENCES] is not None),
                 "recycle_bin": len(binned),
                 "attachments": 0,
             },
@@ -205,21 +283,23 @@ def _readme(owner_label: str, now: datetime, listing: dict) -> str:
         "",
         "## 包含什么",
         "",
-        f"- `experiences/`：当前的经历，每条一个 Markdown 文件，共 {len(listing['experiences'])} 条。",
-        f"- `recycle-bin/`：回收站里仍可恢复的经历，共 {len(listing['recycle-bin'])} 条；"
+        f"- `experiences/`：当前的经历（六个类别），每条一个 Markdown 文件，共 {len(listing['experiences'])} 条。",
+        "- `profile.md`、`preferences.md`：当前的基本资料和求职偏好（只在已经填写时才有）。",
+        f"- `recycle-bin/`：回收站里仍可恢复的内容，共 {len(listing['recycle-bin'])} 份；"
         "每个文件都写明了恢复截止时间。",
         "- `data.json`：同样的内容整理成结构化数据，方便以后导入其他工具。",
         "- `manifest.json`：文件清单和每个文件的 SHA-256 校验值。",
         "",
     ]
 
-    for section, heading in (("experiences", "当前经历"), ("recycle-bin", "回收站")):
+    for section, heading in (
+        ("experiences", "当前经历"),
+        ("documents", "基本资料与求职偏好"),
+        ("recycle-bin", "回收站"),
+    ):
         if listing[section]:
             lines += [f"### {heading}", ""]
-            lines += [
-                f"- `{path}`：{title}（{state_label(item)}）"
-                for path, title, item in listing[section]
-            ]
+            lines += [f"- `{path}`：{_listing_label(item)}" for path, item in listing[section]]
             lines.append("")
 
     lines += ["## 不包含什么", ""]
@@ -229,7 +309,7 @@ def _readme(owner_label: str, now: datetime, listing: dict) -> str:
         "## 分享前请注意",
         "",
         f"- {SHARE_WARNING}",
-        "- 这个导出包是一份副本：之后在 RoleRadar 里删除经历，不会删除已经下载到你电脑上的这份文件。",
+        "- 这个导出包是一份副本：之后在 RoleRadar 里删除内容，不会删除已经下载到你电脑上的这份文件。",
         "",
         "## 怎么打开",
         "",
@@ -240,35 +320,58 @@ def _readme(owner_label: str, now: datetime, listing: dict) -> str:
     return "\n".join(lines)
 
 
+def _listing_label(item: ExperienceItem) -> str:
+    title = display_title(item.content, item.category)
+
+    if item.category in DOCUMENT_KINDS:
+        return title
+
+    return f"{CATEGORY_LABELS[item.category]}：{title}（{state_label(item)}）"
+
+
 def _item_record(item: ExperienceItem, versions: list[ExperienceVersion]) -> dict:
-    return {
+    record = {
         "id": item.id,
         "category": item.category,
         "category_label": CATEGORY_LABELS.get(item.category, item.category),
-        "state": item.state,
-        "state_label": state_label(item),
-        "revision": item.revision,
-        "created_at": _iso(item.created_at),
-        "updated_at": _iso(item.updated_at),
-        "last_confirmed_at": _iso(item.last_confirmed_at),
-        "deleted_at": _iso(item.deleted_at),
-        "restore_deadline": _iso(item.purge_after),
-        "content": item.content,
-        "private_note": item.private_note,
-        "versions": [
-            {
-                "id": version.id,
-                "kind": version.kind,
-                "label": version_label(version),
-                "created_at": _iso(version.created_at),
-                "deleted_at": _iso(version.deleted_at),
-                "restore_deadline": _iso(version.purge_after),
-                "content": version.content,
-                "private_note": version.private_note,
-            }
-            for version in versions
-        ],
     }
+
+    if item.category not in DOCUMENT_KINDS:
+        record.update(state=item.state, state_label=state_label(item))
+
+    record.update(
+        revision=item.revision,
+        created_at=_iso(item.created_at),
+        updated_at=_iso(item.updated_at),
+    )
+
+    if item.category not in DOCUMENT_KINDS:
+        record["last_confirmed_at"] = _iso(item.last_confirmed_at)
+
+    record.update(
+        deleted_at=_iso(item.deleted_at),
+        restore_deadline=_iso(item.purge_after),
+        content=item.content,
+    )
+
+    if item.category not in DOCUMENT_KINDS:
+        record["private_note"] = item.private_note
+
+    record["versions"] = [
+        {
+            "id": version.id,
+            "kind": version.kind,
+            "label": version_label(version),
+            "created_at": _iso(version.created_at),
+            "deleted_at": _iso(version.deleted_at),
+            "restore_deadline": _iso(version.purge_after),
+            "content": version.content,
+            **({} if item.category in DOCUMENT_KINDS else {"private_note": version.private_note}),
+        }
+        for version in versions
+    ]
+
+    return record
 
 
 def _iso(value: datetime | None) -> str | None:

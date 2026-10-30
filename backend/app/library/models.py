@@ -1,9 +1,12 @@
 """Tables of the experience library (separate from app.models).
 
-Current content lives on ExperienceItem. ExperienceVersion rows are fixed
-snapshots: the first saved text (initial) and every confirmation
-(confirmed). Saving a draft only updates the item, so drafts are not
-recorded keystroke by keystroke.
+Current content lives on ExperienceItem: one row per experience, and one
+row each for a user's basic profile and job preferences (its category tells
+which). ExperienceVersion rows are fixed snapshots. An experience keeps the
+first saved text (initial) and every confirmation (confirmed); saving a
+draft only updates the item, so drafts are not recorded keystroke by
+keystroke. The profile and the preferences are never confirmed, so each of
+their saves that changes something is kept as a version (saved).
 """
 from datetime import datetime
 from enum import StrEnum
@@ -16,7 +19,9 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 from app.library.db import LibraryBase, UTCDateTime
 from app.library.errors import ConfigError
 
-SCHEMA_VERSION = "1"
+# 2: categories beyond project/portfolio, the profile and preferences,
+# saved versions, and the category on purge jobs.
+SCHEMA_VERSION = "2"
 
 
 class ItemState(StrEnum):
@@ -27,6 +32,7 @@ class ItemState(StrEnum):
 class VersionKind(StrEnum):
     INITIAL = "initial"
     CONFIRMED = "confirmed"
+    SAVED = "saved"
 
 
 class TargetType(StrEnum):
@@ -83,6 +89,8 @@ class ExperienceItem(LibraryBase):
     content: Mapped[dict] = mapped_column(JSON)
     private_note: Mapped[str] = mapped_column(Text)
     confirmed_version_id: Mapped[str | None] = mapped_column(String(36))
+    # How many numbered versions were made: confirmations of an experience,
+    # or saves of the profile or preferences.
     confirmation_count: Mapped[int] = mapped_column(Integer)
     last_confirmed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
@@ -128,6 +136,8 @@ class PurgeJob(LibraryBase):
     target_type: Mapped[str] = mapped_column(String(30))
     target_id: Mapped[str] = mapped_column(String(36))
     item_id: Mapped[str] = mapped_column(String(36), index=True)
+    # The kind of record, so a finished clean-up can still say what it removed.
+    category: Mapped[str] = mapped_column(String(30))
     reason: Mapped[str] = mapped_column(String(20))
     status: Mapped[str] = mapped_column(String(20))
     due_at: Mapped[datetime] = mapped_column(UTCDateTime)
@@ -153,24 +163,36 @@ class AuditEvent(LibraryBase):
 
 
 def create_schema(engine: Engine) -> None:
-    """Create the library tables, refusing files that belong to something else."""
+    """Create the library tables, refusing files that belong to something else.
+
+    Everything happens in one transaction that holds the write lock from its
+    start, so two processes opening the same new file cannot both create it.
+    A file is checked before anything is written to it: one of another
+    program, or of another library version, is refused as it is. A new file
+    gets all its tables and its version together, so it is never left half
+    created.
+    """
     try:
-        existing = set(inspect(engine).get_table_names())
+        with Session(engine) as session, session.begin():
+            connection = session.connection()
+            existing = set(inspect(connection).get_table_names())
+
+            if existing and LibraryMeta.__tablename__ not in existing:
+                raise ConfigError("这个数据库文件里已有其他程序的表，不是经历库数据库；请指定一个新文件。")
+
+            if existing:
+                meta = session.get(LibraryMeta, "schema_version")
+                stored = meta.value if meta is not None else None
+
+                if stored != SCHEMA_VERSION:
+                    raise ConfigError(
+                        f"经历库数据库的结构版本是 {stored or '未知'}，当前程序只支持 {SCHEMA_VERSION}；"
+                        "U1 还没有迁移工具。这个文件没有被修改，请换一个新文件。"
+                    )
+
+                return
+
+            LibraryBase.metadata.create_all(connection)
+            session.add(LibraryMeta(key="schema_version", value=SCHEMA_VERSION))
     except SQLAlchemyError as error:
         raise ConfigError("这个文件不是可用的 SQLite 数据库；请指定一个新文件。") from error
-
-    if existing and LibraryMeta.__tablename__ not in existing:
-        raise ConfigError("这个数据库文件里已有其他程序的表，不是经历库数据库；请指定一个新文件。")
-
-    LibraryBase.metadata.create_all(engine)
-
-    with Session(engine) as session, session.begin():
-        meta = session.get(LibraryMeta, "schema_version")
-
-        if meta is None:
-            session.add(LibraryMeta(key="schema_version", value=SCHEMA_VERSION))
-        elif meta.value != SCHEMA_VERSION:
-            raise ConfigError(
-                f"经历库数据库的结构版本是 {meta.value}，当前程序只支持 {SCHEMA_VERSION}；"
-                "U1 还没有迁移工具，请换一个新文件。"
-            )

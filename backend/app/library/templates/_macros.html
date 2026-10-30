@@ -21,10 +21,23 @@
 {% endif %}
 {% endmacro %}
 
-{% macro content_block(content) %}
-{% for group_label, fields in FIELD_GROUPS %}
+{# Every field of a record or a history version, grouped as its form groups them. #}
+{% macro content_block(content, category="project") %}
+{% if category == PREFERENCES %}
+{{ preference_view(content) }}
+{% elif category == PROFILE %}
+<dl class="fields">
+  {% for field in CATEGORY_FIELDS[category] %}
+  <dt>{{ field.label }}</dt>
+  <dd>{{ field_value(field, content.get(field.name, "")) }}</dd>
+  {% endfor %}
+</dl>
+{% else %}
+{% for group_label, fields in CATEGORY_GROUPS[category] %}
 <section class="content-group">
+  {% if group_label %}
   <h2>{{ group_label }}</h2>
+  {% endif %}
   <dl class="fields">
     {% for field in fields %}
     <dt>{{ field.label }}</dt>
@@ -33,6 +46,45 @@
   </dl>
 </section>
 {% endfor %}
+{% endif %}
+{% endmacro %}
+
+{# Only the answers given show; a preference with none reads as not decided, never as "anything goes". #}
+{% macro preference_view(content) %}
+<div class="preferences">
+  {% for key, label, fields in PREFERENCE_GROUPS %}
+  {% set given = namespace(any=False) %}
+  {% for field in fields %}
+  {% if content.get(field.name) %}
+  {% set given.any = True %}
+  {% endif %}
+  {% endfor %}
+  <section class="preference">
+    <h3>{{ label }}</h3>
+    {% if given.any %}
+    <dl class="stances">
+      {% for field in fields %}
+      {% if content.get(field.name) %}
+      <div><dt>{{ field.label }}</dt><dd class="text">{{ content[field.name] }}</dd></div>
+      {% endif %}
+      {% endfor %}
+    </dl>
+    {% else %}
+    <p class="empty">{{ NOT_DECIDED }}</p>
+    {% endif %}
+  </section>
+  {% endfor %}
+  {% for field in PREFERENCE_SINGLES %}
+  <section class="preference">
+    <h3>{{ field.label }}</h3>
+    {% if content.get(field.name) %}
+    <p class="text">{{ content[field.name] }}</p>
+    {% else %}
+    <p class="empty">{{ NOT_DECIDED }}</p>
+    {% endif %}
+  </section>
+  {% endfor %}
+</div>
 {% endmacro %}
 
 {% macro note_block(title, note) %}
@@ -49,13 +101,13 @@
 {% endmacro %}
 
 {# A field with an error says so in words, also to a screen reader that lands on it. #}
-{% macro form_field(field, value, error) %}
+{% macro form_field(field, value, error, rows=none) %}
 {% set described = "h-" ~ field.name ~ (" e-" ~ field.name if error else "") %}
 <div class="field{% if error %} has-error{% endif %}">
   <label for="f-{{ field.name }}">{{ field.label }}</label>
   <span class="hint" id="h-{{ field.name }}">{{ field.hint }}</span>
   {% if field.multiline %}
-  <textarea id="f-{{ field.name }}" name="{{ field.name }}" rows="{{ 3 if field.name == 'links' else 4 }}" maxlength="{{ field.max_length }}" aria-describedby="{{ described }}"{% if error %} aria-invalid="true"{% endif %}>{{ value }}</textarea>
+  <textarea id="f-{{ field.name }}" name="{{ field.name }}" rows="{{ rows or (3 if field.name == 'links' else 4) }}" maxlength="{{ field.max_length }}" aria-describedby="{{ described }}"{% if error %} aria-invalid="true"{% endif %}>{{ value }}</textarea>
   {% else %}
   <input id="f-{{ field.name }}" type="text" name="{{ field.name }}" value="{{ value }}" maxlength="{{ field.max_length }}" aria-describedby="{{ described }}"{% if error %} aria-invalid="true"{% endif %}>
   {% endif %}
@@ -65,46 +117,64 @@
 </div>
 {% endmacro %}
 
+{# items is the list as filtered by the address (?category=…&q=…); its links keep the filter. #}
 {% macro library_nav(items, selected_id) %}
-<aside class="library" aria-label="项目与作品">
+<aside class="library" aria-label="我的经历">
   <div class="library-head">
-    <a class="library-back" href="/experiences">{{ i.icon("arrow-left") }}返回经历库{% if items %}（{{ items|length }} 条）{% endif %}</a>
-    <h2>项目与作品</h2>
+    <a class="library-back" href="/experiences{{ filter_suffix }}">{{ i.icon("arrow-left") }}返回经历库{% if sidebar_total %}（{{ sidebar_total }} 条）{% endif %}</a>
+    <h2>我的经历</h2>
     {# An empty library invites the first record in the page itself. #}
-    {% if items is none or items %}
-    <a class="button secondary" href="/experiences/new">{{ i.icon("plus") }}新建记录</a>
+    {% if items is none or sidebar_total %}
+    <a class="button secondary" href="/experiences/new{% if filter_category %}?kind={{ filter_category }}&amp;{{ filter_suffix[1:] }}{% endif %}">{{ i.icon("plus") }}新建记录</a>
     {% endif %}
   </div>
+  {% if items is not none and sidebar_total %}
+  <form class="library-filter" method="get" action="/experiences" role="search" aria-label="查找经历">
+    <input type="search" name="q" value="{{ filter_query }}" maxlength="100" placeholder="搜索" aria-label="搜索经历">
+    <select name="category" aria-label="类别">
+      <option value="">全部类别</option>
+      {% for category in EXPERIENCE_CATEGORIES %}
+      <option value="{{ category }}"{% if category == filter_category %} selected{% endif %}>{{ CATEGORY_LABELS[category] }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="secondary">查找</button>
+    {% if filter_category or filter_query %}
+    <a class="library-clear" href="/experiences">清空筛选</a>
+    {% endif %}
+  </form>
+  {% endif %}
   {% if items is none %}
   <p class="library-unavailable" role="status">经历列表暂时无法显示，请稍后刷新页面。这一页的内容不受影响。</p>
   {% elif items %}
-  <nav aria-label="我的项目与作品" data-reveal>
+  <nav aria-label="经历列表" data-reveal>
     <ul class="library-list">
       {% for entry in items %}
       <li>
-        <a class="library-item" href="/experiences/{{ entry.id }}"{% if entry.id == selected_id %} aria-current="page"{% endif %}>
-          <span class="library-title">{{ display_title(entry.content) }}</span>
-          {% set summary = summary_line(entry.content) %}
+        <a class="library-item" href="/experiences/{{ entry.id }}{{ filter_suffix }}"{% if entry.id == selected_id %} aria-current="page"{% endif %}>
+          <span class="library-title">{{ display_title(entry.content, entry.category) }}</span>
+          {% set summary = summary_line(entry.content, entry.category) %}
           {% if summary %}
           <span class="library-summary">{{ summary }}</span>
           {% endif %}
-          <span class="library-meta">{{ state_badge(entry) }}<span>最近保存 {{ entry.updated_at|shorttime }}</span></span>
+          <span class="library-meta"><span class="library-category">{{ CATEGORY_LABELS[entry.category] }}</span>{{ state_badge(entry) }}<span>最近保存 {{ entry.updated_at|shorttime }}</span></span>
         </a>
       </li>
       {% endfor %}
     </ul>
   </nav>
+  {% elif sidebar_total %}
+  <p class="library-empty" role="status">没有符合条件的记录。</p>
   {% else %}
   <p class="library-empty">还没有记录。</p>
   {% endif %}
 </aside>
 {% endmacro %}
 
-{% macro leave_dialog() %}
+{% macro leave_dialog(save_label="保存草稿") %}
 <dialog id="leave-dialog" aria-labelledby="leave-title">
   <h2 id="leave-title">有还没保存的修改</h2>
   <div class="dialog-actions">
-    <button type="button" data-leave-choice="save">保存草稿</button>
+    <button type="button" data-leave-choice="save">{{ save_label }}</button>
     <button type="button" data-leave-choice="stay" class="secondary">继续编辑</button>
     <button type="button" data-leave-choice="discard" class="danger">放弃修改</button>
   </div>

@@ -1,10 +1,15 @@
-"""Chinese web pages of the experience library (U1-A: project/portfolio).
+"""Chinese web pages of the experience library (U1-A, U1-B).
 
 Pages are rendered on the server with Jinja2 autoescaping. The owner of every
 operation is the user of the server-side session (current_user), never a
 value sent by the browser, and every POST must carry that session's CSRF
 token. Forms that change an existing experience also carry the revision the
 page was showing, so an older page cannot overwrite or confirm newer content.
+
+U1-B adds five more categories of experience, filtering and search, and two
+records a user keeps one of each: the basic profile and the job
+preferences. Those two share the experiences' storage, history, deletion
+and export, but are never confirmed and never listed as experiences.
 """
 import ipaddress
 import logging
@@ -25,9 +30,20 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from app.library.clock import Clock
 from app.library.config import LibraryConfig
 from app.library.content import (
+    ALL_KINDS,
+    CATEGORY_FIELDS,
+    CATEGORY_LABELS,
+    DOCUMENT_KINDS,
+    EDUCATION,
+    EXPERIENCE_CATEGORIES,
+    NOT_DECIDED,
     NOT_FILLED,
     NOTE_FIELD,
-    PROJECT_FIELDS,
+    PREFERENCE_GROUPS,
+    PREFERENCE_SINGLES,
+    PREFERENCES,
+    PROFILE,
+    PROJECT,
     display_title,
     link_lines,
     parse_experience_form,
@@ -56,6 +72,7 @@ from app.library.identity import (
 from app.library.lifecycle import (
     RESTORE_WINDOW,
     PurgeReport,
+    binned_documents,
     check_version_state,
     deletable_version,
     delete_experience,
@@ -75,13 +92,22 @@ from app.library.lifecycle import (
 )
 from app.library.models import User
 from app.library.presentation import (
+    CATEGORY_GROUPS,
+    CLEANUP_NOUNS,
+    DOCUMENT_PAGES,
+    EDIT_HEADINGS,
     FIELD_GROUPS,
     FOLDED_GROUPS,
+    KIND_NOUNS,
+    NEW_HEADINGS,
     READING_LABELS,
+    READINGS,
     event_label,
+    field_label,
     format_local,
     format_remaining,
     format_short,
+    record_page,
     state_label,
     summary_line,
     unfilled_labels,
@@ -91,7 +117,9 @@ from app.library.service import (
     active_item,
     check_revision,
     confirm_experience,
+    create_document,
     create_experience,
+    current_document,
     experience_history,
     get_version,
     is_current_confirmed,
@@ -117,6 +145,18 @@ GONE_WHILE_EDITING = (
     "这条经历已经不存在，或已被删除，所以这次修改没有保存。你填写的内容还在下面，"
     "可以另存为一条新的经历，或者复制到别处。"
 )
+DOCUMENT_GONE = {
+    PROFILE: (
+        "基本资料在你编辑期间已被删除，所以这次修改没有保存。你填写的内容还在下面，"
+        "可以保存为一份新的基本资料。"
+    ),
+    PREFERENCES: (
+        "求职偏好在你编辑期间已被删除，所以这次修改没有保存。你填写的内容还在下面，"
+        "可以保存为一份新的求职偏好。"
+    ),
+}
+# The longest search the record list accepts; anything longer is cut there.
+MAX_QUERY_LENGTH = 100
 NOTICES = {
     # The record page right below says that saving is not confirming.
     "created": "已保存（待核对）。",
@@ -142,6 +182,22 @@ NOTICES = {
     ),
     "saved_logged_out": "已保存草稿（待核对），并已退出。",
     "logged_out": "已退出。",
+    # The profile and the preferences are saved as they are; nothing waits for confirmation.
+    "profile_created": "已保存基本资料。",
+    "profile_saved": "已保存基本资料的修改。",
+    "profile_unchanged": "基本资料没有变化，这次没有产生新的保存。",
+    "profile_created_before_leaving": "已保存你刚才填写的基本资料。",
+    "profile_saved_before_leaving": "已保存你刚才编辑的基本资料。",
+    "profile_unchanged_before_leaving": "你刚才编辑的基本资料没有变化，这次没有产生新的保存。",
+    "profile_deleted": "基本资料已移到回收站：它已停止使用，7 天内可以恢复。",
+    "preferences_created": "已保存求职偏好。",
+    "preferences_saved": "已保存求职偏好的修改。",
+    "preferences_unchanged": "求职偏好没有变化，这次没有产生新的保存。",
+    "preferences_created_before_leaving": "已保存你刚才填写的求职偏好。",
+    "preferences_saved_before_leaving": "已保存你刚才编辑的求职偏好。",
+    "preferences_unchanged_before_leaving": "你刚才编辑的求职偏好没有变化，这次没有产生新的保存。",
+    "preferences_deleted": "求职偏好已移到回收站：它已停止使用，7 天内可以恢复。",
+    "document_saved_logged_out": "已保存，并已退出。",
 }
 HTTP_MESSAGES = {
     400: "请求的格式不对，没有执行任何操作。",
@@ -198,12 +254,31 @@ def build_templates(config: LibraryConfig) -> Jinja2Templates:
     env.filters["localtime"] = format_local
     env.filters["shorttime"] = format_short
     env.globals.update(
-        FIELDS=PROJECT_FIELDS,
+        FIELDS=CATEGORY_FIELDS[PROJECT],
         FIELD_GROUPS=FIELD_GROUPS,
         FOLDED_GROUPS=FOLDED_GROUPS,
         READING_LABELS=READING_LABELS,
         NOTE_FIELD=NOTE_FIELD,
         NOT_FILLED=NOT_FILLED,
+        NOT_DECIDED=NOT_DECIDED,
+        CATEGORY_FIELDS=CATEGORY_FIELDS,
+        CATEGORY_GROUPS=CATEGORY_GROUPS,
+        CATEGORY_LABELS=CATEGORY_LABELS,
+        EXPERIENCE_CATEGORIES=EXPERIENCE_CATEGORIES,
+        DOCUMENT_KINDS=DOCUMENT_KINDS,
+        PROFILE=PROFILE,
+        PREFERENCES=PREFERENCES,
+        EDUCATION=EDUCATION,
+        PREFERENCE_GROUPS=PREFERENCE_GROUPS,
+        PREFERENCE_SINGLES=PREFERENCE_SINGLES,
+        READINGS=READINGS,
+        NEW_HEADINGS=NEW_HEADINGS,
+        EDIT_HEADINGS=EDIT_HEADINGS,
+        KIND_NOUNS=KIND_NOUNS,
+        CLEANUP_NOUNS=CLEANUP_NOUNS,
+        DOCUMENT_PAGES=DOCUMENT_PAGES,
+        record_page=record_page,
+        field_label=field_label,
         RESTORE_DAYS=RESTORE_WINDOW.days,
         clock_note=_clock_note(config),
         display_title=display_title,
@@ -484,6 +559,25 @@ def confirm_page(
     )
 
 
+def list_filter(request: Request) -> tuple[str, str]:
+    """The category and search words a workspace address asks the list to show.
+
+    An unknown category means all of them; the search is cut to
+    MAX_QUERY_LENGTH characters, without control characters.
+    """
+    category = request.query_params.get("category", "")
+
+    if category not in EXPERIENCE_CATEGORIES:
+        category = ""
+
+    raw = request.query_params.get("q", "")
+    query = " ".join(
+        "".join(ch for ch in raw if unicodedata.category(ch) != "Cc").split()
+    )[:MAX_QUERY_LENGTH]
+
+    return category, query
+
+
 def library_sidebar(
     request: Request,
     user: CurrentUser,
@@ -497,16 +591,39 @@ def library_sidebar(
     The list only helps finding records. If it cannot be read, sidebar_items
     is None and the page still shows its own content, its error and the
     user's unsaved input unchanged; the list shows a short note instead.
-    """
-    if items is None:
-        try:
-            with runtime(request).database.transaction() as db:
-                items = list_experiences(db, user.id)
-        except StorageError as error:
-            logger.error("reading the record list failed (%s)", type(error.__cause__).__name__)
-            items = None
 
-    return {"sidebar_items": items, "selected_id": selected_id, "focus": focus}
+    The list follows the filter in the page's own address (?category=…&q=…).
+    Its record links keep that filter, so the list stays filtered while the
+    records found are opened one after another.
+    """
+    category, query = list_filter(request)
+    filtering = bool(category or query)
+
+    try:
+        with runtime(request).database.transaction() as db:
+            if items is None:
+                items = list_experiences(db, user.id)
+
+            shown = (
+                list_experiences(db, user.id, category=category, query=query)
+                if filtering
+                else items
+            )
+    except StorageError as error:
+        logger.error("reading the record list failed (%s)", type(error.__cause__).__name__)
+        items = shown = None
+
+    asked = {key: value for key, value in (("category", category), ("q", query)) if value}
+
+    return {
+        "sidebar_items": shown,
+        "sidebar_total": len(items) if items is not None else 0,
+        "selected_id": selected_id,
+        "focus": focus,
+        "filter_category": category,
+        "filter_query": query,
+        "filter_suffix": f"?{urlencode(asked)}" if asked else "",
+    }
 
 
 def form_page(
@@ -514,6 +631,7 @@ def form_page(
     user: CurrentUser,
     *,
     values: dict[str, str],
+    category: str = PROJECT,
     item_id: str | None = None,
     item=None,
     expected_revision: int | None = None,
@@ -528,6 +646,7 @@ def form_page(
         request,
         "form.html",
         {
+            "category": category,
             "item_id": item_id,
             "item": item,
             "values": values,
@@ -547,22 +666,41 @@ def form_page(
     )
 
 
-def stored_values(item=None) -> dict[str, str]:
-    values = {field.name: "" for field in PROJECT_FIELDS}
-    values[NOTE_FIELD.name] = ""
+def value_names(category: str) -> list[str]:
+    names = [field.name for field in CATEGORY_FIELDS[category]]
+
+    if category in EXPERIENCE_CATEGORIES:
+        names.append(NOTE_FIELD.name)
+
+    return names
+
+
+def stored_values(item=None, category: str = PROJECT) -> dict[str, str]:
+    """The saved values of a record (or of an empty new one) for its form."""
+    if item is not None:
+        category = item.category
+
+    values = {name: "" for name in value_names(category)}
 
     if item is not None:
-        values.update({field.name: item.content.get(field.name, "") for field in PROJECT_FIELDS})
-        values[NOTE_FIELD.name] = item.private_note
+        values.update({field.name: item.content.get(field.name, "") for field in CATEGORY_FIELDS[category]})
+
+        if category in EXPERIENCE_CATEGORIES:
+            values[NOTE_FIELD.name] = item.private_note
 
     return values
 
 
-def submitted_values(form: dict[str, str]) -> dict[str, str]:
+def submitted_values(form: dict[str, str], category: str = PROJECT) -> dict[str, str]:
     """Exactly what the user typed, so a failed save loses nothing."""
-    names = [field.name for field in PROJECT_FIELDS] + [NOTE_FIELD.name]
+    return {name: form.get(name, "") for name in value_names(category)}
 
-    return {name: form.get(name, "") for name in names}
+
+def submitted_category(form: dict[str, str]) -> str:
+    """The category a form says it is for, used to show the form again only."""
+    category = form.get("category", PROJECT)
+
+    return category if category in EXPERIENCE_CATEGORIES else PROJECT
 
 
 def safe_next(value: str) -> str | None:
@@ -615,23 +753,58 @@ def finish_save(
     form: dict[str, str],
     default_path: str,
     notice: str,
+    *,
+    document: bool = False,
 ) -> Response:
-    """After a successful save: log out if the user chose that, else continue."""
+    """After a successful save: log out if the user chose that, else continue.
+
+    document: the profile or preferences, which are saved as they are rather
+    than as drafts waiting for confirmation.
+    """
     if form.get("after_save") != SAVE_THEN_LOGOUT:
         return redirect_after_save(form, default_path, notice)
 
     try:
-        return logout_response(runtime(request), user, "saved_logged_out")
+        return logout_response(
+            runtime(request), user, "document_saved_logged_out" if document else "saved_logged_out"
+        )
     except StorageError as error:
         logger.error("logging out after a save failed (%s)", type(error.__cause__).__name__)
         return message_page(
             request,
-            title="草稿已保存，但还没有退出",
-            message="草稿已经保存（待核对），但退出时数据库操作失败，你仍处于登录状态。请再点一次“退出”。",
+            title="已保存，但还没有退出" if document else "草稿已保存，但还没有退出",
+            message=(
+                "内容已经保存" if document else "草稿已经保存（待核对）"
+            ) + "，但退出时数据库操作失败，你仍处于登录状态。请再点一次“退出”。",
             status_code=500,
             user=user,
             links=[(default_path, "查看已保存的内容")],
         )
+
+
+def conflict_page(request: Request, user: CurrentUser, current, mine: dict[str, str]) -> Response:
+    """Both versions side by side after a save lost a race, with mine kept for saving."""
+    fields = list(CATEGORY_FIELDS[current.category])
+
+    if current.category in EXPERIENCE_CATEGORIES:
+        fields.append(NOTE_FIELD)
+        action = f"/experiences/{current.id}/draft"
+    else:
+        action = f"{DOCUMENT_PAGES[current.category]}/{current.id}/save"
+
+    return render(
+        request,
+        "conflict.html",
+        {
+            "item": current,
+            "fields": fields,
+            "action": action,
+            "mine": mine,
+            "theirs": stored_values(current),
+        },
+        user=user,
+        status_code=409,
+    )
 
 
 def see_other(path: str) -> RedirectResponse:
@@ -716,7 +889,7 @@ def _latest_page(item) -> str:
     if item.deleted_at is not None:
         return "/experiences?tab=trash"
 
-    return f"/experiences/{item.id}"
+    return record_page(item)
 
 
 async def _storage_error(request: Request, exc: StorageError):
@@ -858,9 +1031,28 @@ def experience_list(
 
 
 @router.get("/experiences/new")
-def new_experience(request: Request, notice: str = "", user: CurrentUser = Depends(current_user)):
+def new_experience(
+    request: Request,
+    kind: str = PROJECT,
+    notice: str = "",
+    user: CurrentUser = Depends(current_user),
+):
+    """The form for a new experience of one category (kind; project if not given).
+
+    kind is separate from the list filter (category), so switching the kind
+    of a new record leaves the list on the left as it was.
+    """
+    if kind not in EXPERIENCE_CATEGORIES:
+        raise NotFound()
+
     # The leave dialog can save another record and continue here.
-    return form_page(request, user, values=stored_values(), notice=NOTICES.get(notice))
+    return form_page(
+        request,
+        user,
+        category=kind,
+        values=stored_values(category=kind),
+        notice=NOTICES.get(notice),
+    )
 
 
 @router.post("/experiences")
@@ -870,9 +1062,13 @@ def create_experience_page(
     form: dict[str, str] = Depends(checked_form),
 ):
     rt = runtime(request)
+    category = form.get("category", PROJECT)
+
+    if category not in EXPERIENCE_CATEGORIES:
+        raise HTTPException(status_code=400)
 
     try:
-        entry = parse_experience_form(form)
+        entry = parse_experience_form(form, category)
 
         with rt.database.transaction() as db:
             item = create_experience(db, user.id, entry, rt.now())
@@ -880,7 +1076,8 @@ def create_experience_page(
         return form_page(
             request,
             user,
-            values=submitted_values(form),
+            category=category,
+            values=submitted_values(form, category),
             error=error.message,
             field_errors=error.field_errors,
             next_path=form.get("next", ""),
@@ -891,7 +1088,8 @@ def create_experience_page(
         return form_page(
             request,
             user,
-            values=submitted_values(form),
+            category=category,
+            values=submitted_values(form, category),
             error=SAVE_FAILED,
             next_path=form.get("next", ""),
             status_code=500,
@@ -934,6 +1132,7 @@ def edit_experience(item_id: str, request: Request, user: CurrentUser = Depends(
     return form_page(
         request,
         user,
+        category=item.category,
         values=stored_values(item),
         item_id=item.id,
         item=item,
@@ -950,17 +1149,21 @@ def save_experience_draft(
 ):
     rt = runtime(request)
     expected = _expected_revision(form)
+    # The stored record decides which fields it has; the form's own category
+    # is only used to show the form again if the record is gone.
+    category = submitted_category(form)
 
     try:
-        entry = parse_experience_form(form)
-
         with rt.database.transaction() as db:
+            category = active_item(db, user.id, item_id).category
+            entry = parse_experience_form(form, category)
             item, changed = save_draft(db, user.id, item_id, expected, entry, rt.now())
     except ContentError as error:
         return form_page(
             request,
             user,
-            values=submitted_values(form),
+            category=category,
+            values=submitted_values(form, category),
             item_id=item_id,
             expected_revision=expected,
             error=error.message,
@@ -969,22 +1172,13 @@ def save_experience_draft(
             status_code=422,
         )
     except Conflict as conflict:
-        return render(
-            request,
-            "conflict.html",
-            {
-                "item": conflict.current,
-                "mine": submitted_values(form),
-                "theirs": stored_values(conflict.current),
-            },
-            user=user,
-            status_code=409,
-        )
+        return conflict_page(request, user, conflict.current, submitted_values(form, category))
     except NotFound:
         return form_page(
             request,
             user,
-            values=submitted_values(form),
+            category=category,
+            values=submitted_values(form, category),
             error=GONE_WHILE_EDITING,
             status_code=404,
         )
@@ -993,7 +1187,8 @@ def save_experience_draft(
         return form_page(
             request,
             user,
-            values=submitted_values(form),
+            category=category,
+            values=submitted_values(form, category),
             item_id=item_id,
             expected_revision=expected,
             error=SAVE_FAILED,
@@ -1049,7 +1244,7 @@ def history_page(
     now = rt.now()
 
     with rt.database.transaction() as db:
-        history = experience_history(db, user.id, item_id, now)
+        history = experience_history(db, user.id, item_id, now, ALL_KINDS)
         waiting, finished = version_cleanups(db, user.id, item_id, now)
         states = {
             version.id: version_state(db, version)
@@ -1085,7 +1280,7 @@ def version_page(
     rt = runtime(request)
 
     with rt.database.transaction() as db:
-        item, version = get_version(db, user.id, item_id, version_id)
+        item, version = get_version(db, user.id, item_id, version_id, ALL_KINDS)
 
     return render(
         request,
@@ -1110,7 +1305,7 @@ def version_delete_page(
     now = rt.now()
 
     with rt.database.transaction() as db:
-        item, version = deletable_version(db, user.id, item_id, version_id)
+        item, version = deletable_version(db, user.id, item_id, version_id, ALL_KINDS)
         state = version_state(db, version)
 
     return confirm_page(
@@ -1118,7 +1313,7 @@ def version_delete_page(
         user,
         title=f"删除历史版本：{version_label(version)}",
         points=[
-            "只删除这一个历史版本；这条经历的当前内容和其他版本不受影响。",
+            f"只删除这一个历史版本；{_owner_noun(item)}的当前内容和其他版本不受影响。",
             "删除后它立即不能查看；恢复期内导出时仍会带上它，并标明“已单独删除”和恢复期限。",
             f"{RESTORE_WINDOW.days} 天内（截至 {format_local(now + RESTORE_WINDOW)}）"
             "可以在历史页恢复，也可以提前永久删除。",
@@ -1142,7 +1337,7 @@ def version_delete(
     rt = runtime(request)
 
     with rt.database.transaction() as db:
-        delete_version(db, user.id, item_id, version_id, _expected_state(form), rt.now())
+        delete_version(db, user.id, item_id, version_id, _expected_state(form), rt.now(), ALL_KINDS)
 
     return see_other(f"/experiences/{item_id}/history?notice=version_deleted")
 
@@ -1158,7 +1353,7 @@ def version_restore(
     rt = runtime(request)
 
     with rt.database.transaction() as db:
-        restore_version(db, user.id, item_id, version_id, _expected_state(form), rt.now())
+        restore_version(db, user.id, item_id, version_id, _expected_state(form), rt.now(), ALL_KINDS)
 
     return see_other(f"/experiences/{item_id}/history?notice=version_restored")
 
@@ -1173,7 +1368,7 @@ def version_purge_page(
     rt = runtime(request)
 
     with rt.database.transaction() as db:
-        item, version = trashed_version(db, user.id, item_id, version_id, rt.now())
+        item, version = trashed_version(db, user.id, item_id, version_id, rt.now(), ALL_KINDS)
         state = version_state(db, version)
 
     return _version_purge_confirm(request, user, item, version, state)
@@ -1186,7 +1381,7 @@ def _version_purge_confirm(request, user, item, version, state, error=None, stat
         title=f"永久删除历史版本：{version_label(version)}",
         points=[
             "永久删除后无法恢复。",
-            "只删除这一个历史版本，这条经历的当前内容和其他版本不受影响。",
+            f"只删除这一个历史版本，{_owner_noun(item)}的当前内容和其他版本不受影响。",
             "清理会立即开始；如果暂时没有完成，这个版本也已经不能访问或恢复，系统会自动重试。",
             "已经下载到本机的导出文件不受影响。",
         ],
@@ -1213,7 +1408,7 @@ def version_purge(
 
     if form.get("acknowledge") != "yes":
         with rt.database.transaction() as db:
-            item, version = trashed_version(db, user.id, item_id, version_id, rt.now())
+            item, version = trashed_version(db, user.id, item_id, version_id, rt.now(), ALL_KINDS)
             check_version_state(db, version, expected)
 
         return _version_purge_confirm(
@@ -1227,7 +1422,9 @@ def version_purge(
         )
 
     with rt.database.transaction() as db:
-        job_id = request_version_purge(db, user.id, item_id, version_id, expected, rt.now())
+        job_id = request_version_purge(
+            db, user.id, item_id, version_id, expected, rt.now(), ALL_KINDS
+        )
 
     outcome = run_purge_job(rt.database, job_id, rt.now())
     notice = "version_purged" if outcome == "done" else "version_purge_pending"
@@ -1235,39 +1432,73 @@ def version_purge(
     return see_other(f"/experiences/{item_id}/history?notice={notice}")
 
 
+# What deleting the profile or the preferences leaves alone.
+DOCUMENT_UNTOUCHED = {
+    PROFILE: "你的经历（包括教育经历）和求职偏好不受影响。",
+    PREFERENCES: "你的经历和基本资料不受影响。",
+}
+
+
+def _owner_noun(item) -> str:
+    """Whose current content a history version belongs to, for its delete pages."""
+    return KIND_NOUNS[item.category] if item.category in DOCUMENT_KINDS else "这条经历"
+
+
+def _delete_title(item) -> str:
+    if item.category in DOCUMENT_KINDS:
+        return f"删除{CATEGORY_LABELS[item.category]}"
+
+    return f"删除经历：{display_title(item.content, item.category)}"
+
+
 @router.get("/experiences/{item_id}/delete")
 def delete_page(item_id: str, request: Request, user: CurrentUser = Depends(current_user)):
     rt = runtime(request)
 
     with rt.database.transaction() as db:
-        scope = deletion_scope(db, user.id, item_id, rt.now())
+        scope = deletion_scope(db, user.id, item_id, rt.now(), ALL_KINDS)
 
-    points = [
-        f"将删除：这条项目经历的当前内容、私有备注，以及 {scope.kept_versions} 个保留中的历史版本。",
-    ]
+    item = scope.item
+    noun = KIND_NOUNS[item.category]
+
+    if item.category in DOCUMENT_KINDS:
+        points = [f"将删除：{noun}的当前内容，以及 {scope.kept_versions} 个保留中的历史版本。"]
+    else:
+        points = [
+            f"将删除：{noun}的当前内容、私有备注，以及 {scope.kept_versions} 个保留中的历史版本。"
+        ]
 
     if scope.versions_already_in_bin:
         points.append(
             f"另有 {scope.versions_already_in_bin} 个历史版本此前已经单独删除，会保持各自原来的恢复期限。"
         )
 
+    if item.category in DOCUMENT_KINDS:
+        points += [
+            "删除后立即停止使用：不会出现在导出的当前部分，也不能再编辑或查看历史。",
+            DOCUMENT_UNTOUCHED[item.category],
+        ]
+    else:
+        points.append(
+            "删除后立即停止使用：不会出现在经历列表和导出的当前部分，也不能再编辑、确认或查看历史。"
+        )
+
     points += [
-        "删除后立即停止使用：不会出现在经历列表和导出的当前部分，也不能再编辑、确认或查看历史。",
         f"{RESTORE_WINDOW.days} 天内（截至 {format_local(scope.restore_deadline)}）可以在回收站恢复，"
         "也可以提前永久删除；到期后会被永久删除。",
         "已经下载到本机的导出文件不受影响，需要你自己处理。",
-        "分析、简历等功能还没有建立，所以目前没有其他地方保存这条经历的副本，不需要选择保留或清理。",
+        "分析、简历等功能还没有建立，所以目前没有其他地方保存这些内容的副本，不需要选择保留或清理。",
     ]
 
     return confirm_page(
         request,
         user,
-        title=f"删除经历：{display_title(scope.item.content)}",
+        title=_delete_title(item),
         points=points,
-        action=f"/experiences/{scope.item.id}/delete",
+        action=f"/experiences/{item.id}/delete",
         button="移到回收站",
-        cancel=f"/experiences/{scope.item.id}",
-        hidden={"expected_revision": str(scope.item.revision)},
+        cancel=record_page(item),
+        hidden={"expected_revision": str(item.revision)},
     )
 
 
@@ -1281,7 +1512,11 @@ def delete_item(
     rt = runtime(request)
 
     with rt.database.transaction() as db:
-        delete_experience(db, user.id, item_id, _expected_revision(form), rt.now())
+        item = delete_experience(db, user.id, item_id, _expected_revision(form), rt.now(), ALL_KINDS)
+        category = item.category
+
+    if category in DOCUMENT_KINDS:
+        return see_other(f"{DOCUMENT_PAGES[category]}?notice={category}_deleted")
 
     return see_other("/experiences?notice=deleted")
 
@@ -1296,9 +1531,10 @@ def restore_item(
     rt = runtime(request)
 
     with rt.database.transaction() as db:
-        restore_experience(db, user.id, item_id, _expected_revision(form), rt.now())
+        item = restore_experience(db, user.id, item_id, _expected_revision(form), rt.now(), ALL_KINDS)
+        page = record_page(item)
 
-    return see_other(f"/experiences/{item_id}?notice=restored")
+    return see_other(f"{page}?notice=restored")
 
 
 @router.get("/experiences/{item_id}/purge")
@@ -1306,19 +1542,25 @@ def purge_page(item_id: str, request: Request, user: CurrentUser = Depends(curre
     rt = runtime(request)
 
     with rt.database.transaction() as db:
-        item = trashed_item(db, user.id, item_id, rt.now())
+        item = trashed_item(db, user.id, item_id, rt.now(), ALL_KINDS)
 
     return _purge_confirm(request, user, item)
 
 
 def _purge_confirm(request, user, item, error=None, status_code=200):
+    what = (
+        f"会删除{KIND_NOUNS[item.category]}的全部内容和全部历史版本。"
+        if item.category in DOCUMENT_KINDS
+        else f"会删除{KIND_NOUNS[item.category]}的全部内容、私有备注和全部历史版本。"
+    )
+
     return confirm_page(
         request,
         user,
-        title=f"永久删除经历：{display_title(item.content)}",
+        title=f"永久{_delete_title(item)}",
         points=[
             "永久删除后无法恢复。",
-            "会删除这条经历的全部内容、私有备注和全部历史版本。",
+            what,
             "清理会立即开始；如果暂时没有完成，内容也已经不能访问或恢复，系统会自动重试，并在回收站显示进度。",
             "已经下载到本机的导出文件不受影响。",
         ],
@@ -1344,7 +1586,7 @@ def purge_item(
 
     if form.get("acknowledge") != "yes":
         with rt.database.transaction() as db:
-            item = trashed_item(db, user.id, item_id, rt.now())
+            item = trashed_item(db, user.id, item_id, rt.now(), ALL_KINDS)
             check_revision(item, expected)
 
         return _purge_confirm(
@@ -1356,7 +1598,7 @@ def purge_item(
         )
 
     with rt.database.transaction() as db:
-        job_id = request_experience_purge(db, user.id, item_id, expected, rt.now())
+        job_id = request_experience_purge(db, user.id, item_id, expected, rt.now(), ALL_KINDS)
 
     outcome = run_purge_job(rt.database, job_id, rt.now())
     notice = "purged" if outcome == "done" else "purge_pending"
@@ -1390,3 +1632,246 @@ def export_all(request: Request, user: CurrentUser = Depends(current_user)):
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# --- the basic profile and the job preferences --------------------------------
+#
+# Each user keeps at most one of each. They are read and edited on their own
+# pages; their history, deletion, restoring and export use the record routes
+# above.
+
+
+def document_view(request: Request, user: CurrentUser, kind: str, notice: str) -> Response:
+    rt = runtime(request)
+    now = rt.now()
+
+    with rt.database.transaction() as db:
+        item = current_document(db, user.id, kind)
+        # School and major live in the education experiences only, never twice.
+        education = list_experiences(db, user.id, category=EDUCATION) if kind == PROFILE else []
+        in_bin = bool(binned_documents(db, user.id, kind, now))
+
+    return render(
+        request,
+        "document.html",
+        {
+            "kind": kind,
+            "item": item,
+            "education": education,
+            "in_bin": in_bin,
+            "notice": NOTICES.get(notice),
+            "section": kind,
+        },
+        user=user,
+    )
+
+
+def document_form(
+    request: Request,
+    user: CurrentUser,
+    kind: str,
+    *,
+    values: dict[str, str],
+    item_id: str | None = None,
+    expected_revision: int | None = None,
+    error: str | None = None,
+    field_errors: dict[str, str] | None = None,
+    next_path: str = "",
+    status_code: int = 200,
+) -> Response:
+    """The form of the profile or preferences. Without item_id it starts a new one."""
+    base = DOCUMENT_PAGES[kind]
+
+    return render(
+        request,
+        "document_form.html",
+        {
+            "kind": kind,
+            "item_id": item_id,
+            "values": values,
+            "expected_revision": expected_revision,
+            "error": error,
+            "field_errors": field_errors or {},
+            "next_path": safe_next(next_path) or "",
+            # A page shown again after a failed save may hold text that exists
+            # nowhere else yet; the leave guard must treat it as unsaved.
+            "unsaved_input": bool(error) and any(value.strip() for value in values.values()),
+            "action": f"{base}/{item_id}/save" if item_id else base,
+            "section": kind,
+        },
+        user=user,
+        status_code=status_code,
+    )
+
+
+def document_edit(request: Request, user: CurrentUser, kind: str) -> Response:
+    rt = runtime(request)
+
+    with rt.database.transaction() as db:
+        item = current_document(db, user.id, kind)
+
+    if item is None:
+        return document_form(request, user, kind, values=stored_values(category=kind))
+
+    return document_form(
+        request,
+        user,
+        kind,
+        values=stored_values(item),
+        item_id=item.id,
+        expected_revision=item.revision,
+    )
+
+
+def document_create(request: Request, user: CurrentUser, form: dict[str, str], kind: str) -> Response:
+    rt = runtime(request)
+
+    try:
+        entry = parse_experience_form(form, kind)
+
+        with rt.database.transaction() as db:
+            create_document(db, user.id, entry, rt.now())
+    except ContentError as error:
+        return document_form(
+            request,
+            user,
+            kind,
+            values=submitted_values(form, kind),
+            error=error.message,
+            field_errors=error.field_errors,
+            next_path=form.get("next", ""),
+            status_code=422,
+        )
+    except Conflict as conflict:
+        # Another page created it meanwhile: show both, overwrite nothing.
+        return conflict_page(request, user, conflict.current, submitted_values(form, kind))
+    except StorageError as error:
+        logger.error("saving a new %s failed (%s)", kind, type(error.__cause__).__name__)
+        return document_form(
+            request,
+            user,
+            kind,
+            values=submitted_values(form, kind),
+            error=SAVE_FAILED,
+            next_path=form.get("next", ""),
+            status_code=500,
+        )
+
+    return finish_save(request, user, form, DOCUMENT_PAGES[kind], f"{kind}_created", document=True)
+
+
+def document_save(
+    request: Request,
+    user: CurrentUser,
+    form: dict[str, str],
+    kind: str,
+    item_id: str,
+) -> Response:
+    rt = runtime(request)
+    expected = _expected_revision(form)
+
+    try:
+        with rt.database.transaction() as db:
+            # Someone else's or a missing record is not found, whatever the form holds.
+            active_item(db, user.id, item_id, kinds=(kind,))
+            entry = parse_experience_form(form, kind)
+            _, changed = save_draft(db, user.id, item_id, expected, entry, rt.now())
+    except ContentError as error:
+        return document_form(
+            request,
+            user,
+            kind,
+            values=submitted_values(form, kind),
+            item_id=item_id,
+            expected_revision=expected,
+            error=error.message,
+            field_errors=error.field_errors,
+            next_path=form.get("next", ""),
+            status_code=422,
+        )
+    except Conflict as conflict:
+        return conflict_page(request, user, conflict.current, submitted_values(form, kind))
+    except NotFound:
+        return document_form(
+            request,
+            user,
+            kind,
+            values=submitted_values(form, kind),
+            error=DOCUMENT_GONE[kind],
+            status_code=404,
+        )
+    except StorageError as error:
+        logger.error("saving the %s failed (%s)", kind, type(error.__cause__).__name__)
+        return document_form(
+            request,
+            user,
+            kind,
+            values=submitted_values(form, kind),
+            item_id=item_id,
+            expected_revision=expected,
+            error=SAVE_FAILED,
+            next_path=form.get("next", ""),
+            status_code=500,
+        )
+
+    notice = f"{kind}_saved" if changed else f"{kind}_unchanged"
+
+    return finish_save(request, user, form, DOCUMENT_PAGES[kind], notice, document=True)
+
+
+@router.get("/basic-profile")
+def profile_page(request: Request, notice: str = "", user: CurrentUser = Depends(current_user)):
+    return document_view(request, user, PROFILE, notice)
+
+
+@router.get("/basic-profile/edit")
+def profile_edit(request: Request, user: CurrentUser = Depends(current_user)):
+    return document_edit(request, user, PROFILE)
+
+
+@router.post("/basic-profile")
+def profile_create(
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+    form: dict[str, str] = Depends(checked_form),
+):
+    return document_create(request, user, form, PROFILE)
+
+
+@router.post("/basic-profile/{item_id}/save")
+def profile_save(
+    item_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+    form: dict[str, str] = Depends(checked_form),
+):
+    return document_save(request, user, form, PROFILE, item_id)
+
+
+@router.get("/job-preferences")
+def preferences_page(request: Request, notice: str = "", user: CurrentUser = Depends(current_user)):
+    return document_view(request, user, PREFERENCES, notice)
+
+
+@router.get("/job-preferences/edit")
+def preferences_edit(request: Request, user: CurrentUser = Depends(current_user)):
+    return document_edit(request, user, PREFERENCES)
+
+
+@router.post("/job-preferences")
+def preferences_create(
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+    form: dict[str, str] = Depends(checked_form),
+):
+    return document_create(request, user, form, PREFERENCES)
+
+
+@router.post("/job-preferences/{item_id}/save")
+def preferences_save(
+    item_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+    form: dict[str, str] = Depends(checked_form),
+):
+    return document_save(request, user, form, PREFERENCES, item_id)

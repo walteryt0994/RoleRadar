@@ -534,7 +534,7 @@ roleradar/
 │   │   ├── jd_outcome.py
 │   │   ├── jd_record.py
 │   │   ├── jd_service.py
-│   │   ├── library/        # v0.1 U1-A experience library: own database and pages
+│   │   ├── library/        # v0.1 U1 experience library: own database and pages
 │   │   ├── main.py
 │   │   ├── models.py
 │   │   ├── parser.py
@@ -800,9 +800,15 @@ Frontend URL:
 http://localhost:8501
 ```
 
-## Run the Experience Library (v0.1 U1-A)
+## Run the Experience Library (v0.1 U1-A, U1-B)
 
-A separate Chinese web app for recording, confirming, deleting, restoring and exporting project/portfolio experiences. It is a local development build for synthetic data only:
+A separate Chinese web app for recording, confirming, deleting, restoring and exporting experiences. U1-A delivered project/portfolio records; U1-B adds:
+
+- Five more categories, each with its own fields: education, internship/work/part-time, courses and activities, certificates and awards, and other.
+- Filtering the record list by category and searching it by words. Search reads only the current content of your own experiences, never private notes, history versions or the recycle bin.
+- A basic profile (name for résumés, phone, email, current city, links) and job preferences (ideal, also acceptable and not acceptable answers; anything unanswered reads as "尚未想好"). School and major stay in education records. Both have history, conflict protection, a 7-day recycle bin and export, and are never "confirmed".
+
+It is a local development build for synthetic data only:
 
 - It keeps its own SQLite file and never imports or opens the legacy `roleradar.db`.
 - The dev login lets anyone who can reach the page act as synthetic user A or B. It is not authentication, so the app only accepts connections from this machine and must not be opened to anyone else.
@@ -812,7 +818,7 @@ Start it through the controlled entry point, from the project root:
 
 ```bash
 cd backend
-../.venv/bin/python -m app.web_main --db /tmp/roleradar-u1a-demo/library.db --dev-login
+../.venv/bin/python -m app.web_main --db /tmp/roleradar-u1b-demo/library.db --dev-login
 ```
 
 Then open http://127.0.0.1:8765 and stop the app with Ctrl+C.
@@ -820,7 +826,8 @@ Then open http://127.0.0.1:8765 and stop the app with Ctrl+C.
 - `--db` must be an absolute path outside the repository. Start-up is refused if it is the legacy database (also through a symlink or hard link), lies inside `backend/records/`, or belongs to another program.
 - The entry point only binds to 127.0.0.1 and turns proxy headers off; any other `--host` is refused.
 - While the app runs, expired recycle-bin content is cleaned up every 10 minutes, and once at every start-up.
-- `--dev-clock-offset-days N` moves the app's clock forward to check the 7-day restore window locally; a red banner shows the offset. Use a separate database for it, because sessions and timestamps created under the shifted clock stay in that file.
+- Data files of the U1-A version (structure version 1) are refused and left unchanged: there is no migration tool yet, so start with a new file.
+- `--dev-clock-offset-days N` moves the app's clock forward to check the 7-day restore window locally; a banner at the top shows the offset. Use a separate database for it, because sessions and timestamps created under the shifted clock stay in that file.
 
 ## V1 Demo Flow
 

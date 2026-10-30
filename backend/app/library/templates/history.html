@@ -1,13 +1,22 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
-{% block title %}历史 · {{ display_title(item.content) }}{% endblock %}
+{% set document = item.category in DOCUMENT_KINDS %}
+{% block title %}历史 · {{ display_title(item.content, item.category) }}{% endblock %}
 {% block content %}
-<p class="crumbs"><a href="/experiences">我的经历</a> / <a href="/experiences/{{ item.id }}">{{ display_title(item.content) }}</a> / 历史</p>
+{% if document %}
+<p class="crumbs"><a href="{{ record_page(item) }}">{{ display_title(item.content, item.category) }}</a> / 历史</p>
+{% else %}
+<p class="crumbs"><a href="/experiences">我的经历</a> / <a href="/experiences/{{ item.id }}">{{ display_title(item.content, item.category) }}</a> / 历史</p>
+{% endif %}
 <h1>历史</h1>
+{% if document %}
+<p class="muted">每次保存有变化时都会留一份历史版本，可以单独查看或删除。</p>
+{% else %}
 <p class="muted">保存草稿只更新当前内容，不会每次都留一份；历史只保留第一次保存时的初始版，以及每次确认时的确认版。</p>
+{% endif %}
 <h2>当前内容</h2>
 <ul class="version-list">
-  <li><a href="/experiences/{{ item.id }}">当前内容</a> {{ m.state_badge(item) }} <span class="muted small">最近保存：{{ item.updated_at|localtime }}</span></li>
+  <li><a href="{{ record_page(item) }}">当前内容</a>{% if not document %} {{ m.state_badge(item) }}{% endif %} <span class="muted small">最近保存：{{ item.updated_at|localtime }}</span></li>
 </ul>
 <h2>保存过的版本</h2>
 {% if versions %}
@@ -27,7 +36,7 @@
     </div>
     {% else %}
     <a href="/experiences/{{ item.id }}/versions/{{ version.id }}">{{ version_label(version) }}</a>
-    <span class="muted small">{% if version.kind == "initial" %}第一次保存于{% else %}确认于{% endif %} {{ version.created_at|localtime }}</span>
+    <span class="muted small">{% if version.kind == "initial" %}第一次保存于{% elif version.kind == "saved" %}保存于{% else %}确认于{% endif %} {{ version.created_at|localtime }}</span>
     {% if is_current_confirmed(item, version) %}
     <span class="badge state-confirmed">当前确认版本</span>
     {% else %}
@@ -59,7 +68,7 @@
 <h2>操作记录</h2>
 <ul class="event-list">
   {% for event in events %}
-  <li><span class="muted small">{{ event.at|localtime }}</span> {{ event_label(event) }}</li>
+  <li><span class="muted small">{{ event.at|localtime }}</span> {{ event_label(event, item.category) }}</li>
   {% endfor %}
 </ul>
 {% endblock %}

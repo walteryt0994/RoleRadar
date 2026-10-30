@@ -1,16 +1,18 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
+{% set document = item.category in DOCUMENT_KINDS %}
+{% set noun = KIND_NOUNS[item.category] if document else "这条经历" %}
 {% block title %}保存没有生效{% endblock %}
 {% block content %}
-<h1>保存没有生效：这条经历已经有更新的保存</h1>
-<p class="error" role="alert">你打开编辑页之后，这条经历又被保存或改变了状态（可能是在另一个标签页）。为了不覆盖较新的内容，这次保存没有写入。</p>
+<h1>保存没有生效：{{ noun }}已经有更新的保存</h1>
+<p class="error" role="alert">你打开编辑页之后，{{ noun }}又被保存或改变了状态（可能是在另一个标签页）。为了不覆盖较新的内容，这次保存没有写入。</p>
 <p>下面对照列出你这次提交的内容和当前已保存的内容，有差异的栏目已经标出。请你决定：</p>
 <ul>
   <li>用你的版本保存：在页面下方核对后提交，会以当前最新的保存为基础，换成你的内容；</li>
-  <li>或者<a href="/experiences/{{ item.id }}" data-skip-leave-guard>放弃你的修改，查看最新内容</a>。</li>
+  <li>或者<a href="{{ record_page(item) }}" data-skip-leave-guard>放弃你的修改，查看最新内容</a>。</li>
 </ul>
 <div class="compare">
-  {% for field in FIELDS|list + [NOTE_FIELD] %}
+  {% for field in fields %}
   {% set differs = mine[field.name] != theirs[field.name] %}
   <div class="compare-row{% if differs %} differs{% endif %}">
     <h3>{{ field.label }}{% if differs %} <span class="badge diff">有差异</span>{% endif %}</h3>
@@ -22,31 +24,28 @@
   {% endfor %}
 </div>
 <h2>用我的版本保存</h2>
-<form method="post" action="/experiences/{{ item.id }}/draft" data-leave-guard data-initially-dirty>
+<form method="post" action="{{ action }}" data-leave-guard data-initially-dirty>
   <input type="hidden" name="csrf_token" value="{{ user.csrf_token }}">
   <input type="hidden" name="expected_revision" value="{{ item.revision }}">
   <input type="hidden" name="next" value="">
   <input type="hidden" name="after_save" value="">
-  {% for field in FIELDS %}
+  {% for field in fields %}
+  {% set field_id = "c-note" if field.name == NOTE_FIELD.name else "c-" ~ field.name %}
   <div class="field">
-    <label for="c-{{ field.name }}">{{ field.label }}</label>
+    <label for="{{ field_id }}">{{ field.label }}</label>
     {% if field.multiline %}
-    <textarea id="c-{{ field.name }}" name="{{ field.name }}" rows="3" maxlength="{{ field.max_length }}">{{ mine[field.name] }}</textarea>
+    <textarea id="{{ field_id }}" name="{{ field.name }}" rows="3" maxlength="{{ field.max_length }}">{{ mine[field.name] }}</textarea>
     {% else %}
-    <input id="c-{{ field.name }}" type="text" name="{{ field.name }}" value="{{ mine[field.name] }}" maxlength="{{ field.max_length }}">
+    <input id="{{ field_id }}" type="text" name="{{ field.name }}" value="{{ mine[field.name] }}" maxlength="{{ field.max_length }}">
     {% endif %}
   </div>
   {% endfor %}
-  <div class="field">
-    <label for="c-note">{{ NOTE_FIELD.label }}</label>
-    <textarea id="c-note" name="{{ NOTE_FIELD.name }}" rows="3" maxlength="{{ NOTE_FIELD.max_length }}">{{ mine[NOTE_FIELD.name] }}</textarea>
-  </div>
   <p class="dirty-status" id="dirty-status" aria-live="polite"></p>
   <div class="form-actions">
     <button type="submit" data-save-button>我已核对差异，用我的版本保存</button>
-    <a href="/experiences/{{ item.id }}" data-skip-leave-guard>放弃我的修改</a>
+    <a href="{{ record_page(item) }}" data-skip-leave-guard>放弃我的修改</a>
   </div>
 </form>
-{{ m.leave_dialog() }}
+{{ m.leave_dialog("保存" if document else "保存草稿") }}
 {% endblock %}
 {% block scripts %}<script src="/static/leave_guard.js"></script>{% endblock %}

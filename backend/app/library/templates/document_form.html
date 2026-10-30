@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% set heading = ("编辑" if item_id else "填写") ~ CATEGORY_LABELS[kind] %}
+{% block title %}{{ heading }}{% endblock %}
+{% block content %}
+<header class="pane-head">
+  <h1>{{ heading }}</h1>
+  {% if kind == PREFERENCES %}
+  <p class="lede">只写想好的部分，其余以后再补。</p>
+  {% endif %}
+</header>
+{% if error %}
+<p class="error" role="alert">{{ error }}</p>
+{% endif %}
+<form method="post" action="{{ action }}" class="editor" data-leave-guard{% if unsaved_input %} data-initially-dirty{% endif %}>
+  <input type="hidden" name="csrf_token" value="{{ user.csrf_token }}">
+  {% if expected_revision is not none %}
+  <input type="hidden" name="expected_revision" value="{{ expected_revision }}">
+  {% endif %}
+  <input type="hidden" name="next" value="{{ next_path }}">
+  <input type="hidden" name="after_save" value="">
+  {% if kind == PROFILE %}
+  <div class="group">
+    {% for field in CATEGORY_FIELDS[kind] %}
+    {{ m.form_field(field, values[field.name], field_errors.get(field.name)) }}
+    {% endfor %}
+  </div>
+  {% else %}
+  {% for key, label, fields in PREFERENCE_GROUPS %}
+  {% set ideal, acceptable, refused = fields %}
+  {% set more = values[acceptable.name] or values[refused.name] or field_errors.get(acceptable.name) or field_errors.get(refused.name) %}
+  <fieldset class="group preference-group">
+    <legend>{{ label }}</legend>
+    {{ m.form_field(ideal, values[ideal.name], field_errors.get(ideal.name), rows=2) }}
+    {# Folded while empty: most answers need only the ideal. #}
+    <details class="fold"{% if more %} open{% endif %}>
+      {{ m.fold_summary("可以接受与不能接受") }}
+      {{ m.form_field(acceptable, values[acceptable.name], field_errors.get(acceptable.name), rows=2) }}
+      {{ m.form_field(refused, values[refused.name], field_errors.get(refused.name), rows=2) }}
+    </details>
+  </fieldset>
+  {% endfor %}
+  <div class="group">
+    {% for field in PREFERENCE_SINGLES %}
+    {{ m.form_field(field, values[field.name], field_errors.get(field.name), rows=3) }}
+    {% endfor %}
+  </div>
+  {% endif %}
+  <p class="muted small">直接关闭或刷新页面时，浏览器的提醒不一定出现，离开前请先保存。</p>
+  <div class="form-actions sticky">
+    <button type="submit" data-save-button>保存</button>
+    <a href="{{ DOCUMENT_PAGES[kind] }}">取消</a>
+    <p class="dirty-status" id="dirty-status" aria-live="polite"></p>
+  </div>
+</form>
+{{ m.leave_dialog("保存") }}
+{% endblock %}
+{% block scripts %}<script src="/static/leave_guard.js"></script>{% endblock %}

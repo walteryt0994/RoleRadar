@@ -1,13 +1,16 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
 {% import "_icons.html" as i %}
-{% block title %}{{ version_label(version) }} · {{ display_title(item.content) }}{% endblock %}
+{% set document = item.category in DOCUMENT_KINDS %}
+{% block title %}{{ version_label(version) }} · {{ display_title(item.content, item.category) }}{% endblock %}
 {% block content %}
-<p class="crumbs"><a href="/experiences">我的经历</a> / <a href="/experiences/{{ item.id }}">{{ display_title(item.content) }}</a> / <a href="/experiences/{{ item.id }}/history">历史</a> / {{ version_label(version) }}</p>
+<p class="crumbs">{% if not document %}<a href="/experiences">我的经历</a> / {% endif %}<a href="{{ record_page(item) }}">{{ display_title(item.content, item.category) }}</a> / <a href="/experiences/{{ item.id }}/history">历史</a> / {{ version_label(version) }}</p>
 <h1>{{ version_label(version) }}</h1>
-<p class="muted">{% if version.kind == "initial" %}第一次保存于{% else %}确认于{% endif %} {{ version.created_at|localtime }}。历史版本只能查看，不能修改。{% if not deletable %}这是当前的确认版本。{% elif version.kind == "confirmed" %}这个确认版本已不再代表当前事实。{% endif %}</p>
-{{ m.content_block(version.content) }}
+<p class="muted">{% if version.kind == "initial" %}第一次保存于{% elif version.kind == "saved" %}保存于{% else %}确认于{% endif %} {{ version.created_at|localtime }}。历史版本只能查看，不能修改。{% if not deletable %}这是当前的确认版本。{% elif version.kind == "confirmed" %}这个确认版本已不再代表当前事实。{% endif %}</p>
+{{ m.content_block(version.content, item.category) }}
+{% if not document %}
 {% call m.note_block("当时的私有备注", version.private_note) %}{% endcall %}
+{% endif %}
 <div class="actions">
   <a class="button secondary" href="/experiences/{{ item.id }}/history">{{ i.icon("arrow-left") }}回到历史</a>
   {% if deletable %}

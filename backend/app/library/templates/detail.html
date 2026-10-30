@@ -1,24 +1,31 @@
 {% extends "workspace.html" %}
 {% import "_macros.html" as m with context %}
 {% import "_icons.html" as i %}
-{% block title %}{{ display_title(item.content) }}{% endblock %}
+{% block title %}{{ display_title(item.content, item.category) }}{% endblock %}
 {% block content %}
 {% set content = item.content %}
-{# A project record, read top to bottom: what it was, what came out of it,
-   then the user's own part. The text is shown exactly as written. #}
+{% set reading = READINGS[item.category] %}
+{# A record, read top to bottom: what it was, what came out of it, then the
+   user's own part, as its category lays it out. The text is shown exactly
+   as written. #}
 <header class="record-head" data-reveal>
-  <h1>{{ display_title(content) }}</h1>
-  {% if content.context %}
-  <p class="record-context">{{ content.context }}</p>
+  <h1>{{ display_title(content, item.category) }}</h1>
+  {% if reading.subtitle and content.get(reading.subtitle) %}
+  <p class="record-context">{{ content[reading.subtitle] }}</p>
   {% endif %}
-  {% if content.role or content.period %}
+  {% set meta = namespace(any=False) %}
+  {% for name in reading.meta %}
+  {% if content.get(name) %}
+  {% set meta.any = True %}
+  {% endif %}
+  {% endfor %}
+  {% if meta.any %}
   <dl class="record-meta">
-    {% if content.role %}
-    <div><dt>我的角色</dt><dd>{{ content.role }}</dd></div>
+    {% for name in reading.meta %}
+    {% if content.get(name) %}
+    <div><dt>{{ field_label(item.category, name) }}</dt><dd>{{ content[name] }}</dd></div>
     {% endif %}
-    {% if content.period %}
-    <div><dt>时间</dt><dd>{{ content.period }}</dd></div>
-    {% endif %}
+    {% endfor %}
   </dl>
   {% endif %}
   {# The badge names the state; the line after it only adds what the badge cannot say. #}
@@ -49,32 +56,40 @@
   <a class="button secondary" href="/experiences/{{ item.id }}/export.md" download>导出为 Markdown</a>
   <a class="danger-link" href="/experiences/{{ item.id }}/delete">删除…</a>
 </div>
-{% if content.outcome %}
-<section class="record-outcome" data-reveal aria-labelledby="read-outcome">
-  <h2 class="section-label" id="read-outcome">{{ READING_LABELS.outcome }}</h2>
-  <p class="prose">{{ content.outcome }}</p>
+{% if reading.highlight and content.get(reading.highlight) %}
+<section class="record-outcome" data-reveal aria-labelledby="read-{{ reading.highlight }}">
+  <h2 class="section-label" id="read-{{ reading.highlight }}">{{ field_label(item.category, reading.highlight) }}</h2>
+  <p class="prose">{{ content[reading.highlight] }}</p>
 </section>
 {% endif %}
-{% if content.actions %}
-<section class="record-contribution" data-reveal aria-labelledby="read-actions">
-  <h2 class="section-label" id="read-actions">{{ READING_LABELS.actions }}</h2>
-  <p class="prose">{{ content.actions }}</p>
+{% for name in reading.sections %}
+{% if content.get(name) %}
+<section class="record-contribution" data-reveal aria-labelledby="read-{{ name }}">
+  <h2 class="section-label" id="read-{{ name }}">{{ field_label(item.category, name) }}</h2>
+  <p class="prose">{{ content[name] }}</p>
 </section>
 {% endif %}
-{% if content.reflection or content.links %}
+{% endfor %}
+{% set folds = namespace(any=False) %}
+{% for name in reading.folds %}
+{% if content.get(name) %}
+{% set folds.any = True %}
+{% endif %}
+{% endfor %}
+{% if folds.any %}
 <div class="record-more" data-reveal>
-  {% if content.reflection %}
+  {% for name in reading.folds %}
+  {% if content.get(name) %}
   <details class="fold">
-    {{ m.fold_summary(READING_LABELS.reflection) }}
-    <p class="prose">{{ content.reflection }}</p>
+    {{ m.fold_summary(field_label(item.category, name)) }}
+    {% if name == "links" %}
+    {{ m.link_list(content[name]) }}
+    {% else %}
+    <p class="prose">{{ content[name] }}</p>
+    {% endif %}
   </details>
   {% endif %}
-  {% if content.links %}
-  <details class="fold">
-    {{ m.fold_summary(READING_LABELS.links) }}
-    {{ m.link_list(content.links) }}
-  </details>
-  {% endif %}
+  {% endfor %}
 </div>
 {% endif %}
 {% if item.private_note %}
@@ -84,7 +99,7 @@
   <p class="prose">{{ item.private_note }}</p>
 </details>
 {% endif %}
-{% set unfilled = unfilled_labels(content) %}
+{% set unfilled = unfilled_labels(content, item.category) %}
 {% if unfilled %}
 <p class="record-unfilled">尚未填写：{{ unfilled|join("、") }}。</p>
 {% endif %}

@@ -1,11 +1,24 @@
 {% extends "workspace.html" %}
 {% import "_macros.html" as m with context %}
-{% block title %}{% if item_id %}编辑项目/作品{% else %}记录一段项目/作品{% endif %}{% endblock %}
+{% set heading = EDIT_HEADINGS[category] if item_id else NEW_HEADINGS[category] %}
+{% block title %}{{ heading }}{% endblock %}
 {% block content %}
 {% set confirmed = item and item.state == "confirmed" %}
 {# A page shown again after a failed save is read at once: nothing on it waits for an animation. #}
 <header class="pane-head"{% if not error %} data-reveal{% endif %}>
-  <h1>{% if item_id %}编辑项目/作品{% else %}记录一段项目/作品{% endif %}</h1>
+  <h1>{{ heading }}</h1>
+  {% if not item_id %}
+  {# The kind of a new record; the list on the left keeps its own filter. #}
+  <nav class="kind-switch" aria-label="经历类别">
+    {% for kind in EXPERIENCE_CATEGORIES %}
+    {% if kind == category %}
+    <span aria-current="page">{{ CATEGORY_LABELS[kind] }}</span>
+    {% else %}
+    <a href="/experiences/new?kind={{ kind }}{% if filter_suffix %}&amp;{{ filter_suffix[1:] }}{% endif %}">{{ CATEGORY_LABELS[kind] }}</a>
+    {% endif %}
+    {% endfor %}
+  </nav>
+  {% endif %}
   {% if not confirmed %}
   <p class="lede">保存后是“待核对”的草稿，不等于确认属实。</p>
   {% endif %}
@@ -18,12 +31,13 @@
 {% endif %}
 <form method="post" action="{{ action }}" class="editor" data-leave-guard{% if unsaved_input %} data-initially-dirty{% endif %}>
   <input type="hidden" name="csrf_token" value="{{ user.csrf_token }}">
+  <input type="hidden" name="category" value="{{ category }}">
   {% if expected_revision is not none %}
   <input type="hidden" name="expected_revision" value="{{ expected_revision }}">
   {% endif %}
   <input type="hidden" name="next" value="{{ next_path }}">
   <input type="hidden" name="after_save" value="">
-  {% for group_label, fields in FIELD_GROUPS %}
+  {% for group_label, fields in CATEGORY_GROUPS[category] %}
   {% if group_label in FOLDED_GROUPS %}
   {% set fold = namespace(open=False) %}
   {% for field in fields %}
@@ -38,7 +52,7 @@
     {{ m.form_field(field, values[field.name], field_errors.get(field.name)) }}
     {% endfor %}
   </details>
-  {% else %}
+  {% elif group_label %}
   <fieldset class="group"{% if not error %} data-reveal{% endif %}>
     <legend>{{ group_label }}</legend>
     <div{% if not fields|selectattr("multiline")|list %} class="field-grid"{% endif %}>
@@ -47,6 +61,13 @@
       {% endfor %}
     </div>
   </fieldset>
+  {% else %}
+  {# A heading here would only repeat the label of the field below it. #}
+  <div class="group"{% if not error %} data-reveal{% endif %}>
+    {% for field in fields %}
+    {{ m.form_field(field, values[field.name], field_errors.get(field.name)) }}
+    {% endfor %}
+  </div>
   {% endif %}
   {% endfor %}
   {% set note_error = field_errors.get(NOTE_FIELD.name) %}
