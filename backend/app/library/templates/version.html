@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
+{% import "_icons.html" as i %}
 {% block title %}{{ version_label(version) }} · {{ display_title(item.content) }}{% endblock %}
 {% block content %}
 <p class="crumbs"><a href="/experiences">我的经历</a> / <a href="/experiences/{{ item.id }}">{{ display_title(item.content) }}</a> / <a href="/experiences/{{ item.id }}/history">历史</a> / {{ version_label(version) }}</p>
@@ -8,7 +9,7 @@
 {{ m.content_block(version.content) }}
 {% call m.note_block("当时的私有备注", version.private_note) %}{% endcall %}
 <div class="actions">
-  <a class="button secondary" href="/experiences/{{ item.id }}/history">回到历史</a>
+  <a class="button secondary" href="/experiences/{{ item.id }}/history">{{ i.icon("arrow-left") }}回到历史</a>
   {% if deletable %}
   <a class="danger-link" href="/experiences/{{ item.id }}/versions/{{ version.id }}/delete">删除这个历史版本…</a>
   {% endif %}

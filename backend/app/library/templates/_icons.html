@@ -1,0 +1,25 @@
+{#- Line icons from Lucide 1.64.0. The drawing elements are copied unchanged
+    from the official files kept with their licence in
+    app/library/third_party/lucide/, and a test compares them. Each icon sits
+    beside the words that name its control, so it is hidden from screen
+    readers and never takes focus. -#}
+{% macro icon(name) -%}
+<svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+{%- if name == "radar" -%}
+<path d="M19.07 4.93A10 10 0 0 0 6.99 3.34" /><path d="M4 6h.01" /><path d="M2.29 9.62A10 10 0 1 0 21.31 8.35" /><path d="M16.24 7.76A6 6 0 1 0 8.23 16.67" /><path d="M12 18h.01" /><path d="M17.99 11.66A6 6 0 0 1 15.77 16.67" /><circle cx="12" cy="12" r="2" /><path d="m13.41 10.59 5.66-5.66" />
+{%- elif name == "plus" -%}
+<path d="M5 12h14" /><path d="M12 5v14" />
+{%- elif name == "arrow-left" -%}
+<path d="m12 19-7-7 7-7" /><path d="M19 12H5" />
+{%- elif name == "rotate-ccw-clock" -%}
+<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /><path d="M12 7v5l4 2" />
+{%- elif name == "lock-keyhole" -%}
+<circle cx="12" cy="16" r="1" /><rect x="3" y="10" width="18" height="12" rx="2" /><path d="M7 10V7a5 5 0 0 1 10 0v3" />
+{%- elif name == "chevron-right" -%}
+<path d="m9 18 6-6-6-6" />
+{%- else -%}
+{#- There is no such helper, so StrictUndefined stops the page here instead of drawing an empty icon. -#}
+{{ unknown_icon(name) }}
+{%- endif -%}
+</svg>
+{%- endmacro %}

@@ -1,7 +1,35 @@
 """Chinese labels and time formatting shared by the pages and the exports."""
 from datetime import datetime, timedelta
 
+from app.library.content import PROJECT_FIELDS
 from app.library.models import ItemState, VersionKind
+
+# How the experience fields are grouped on the pages. Every field is in
+# exactly one group (a test checks this), so the layout cannot drop one;
+# the private note is always shown on its own.
+FIELD_GROUP_NAMES = (
+    ("基本信息", ("title", "context", "role", "period")),
+    ("过程与收获", ("actions", "outcome", "reflection")),
+    ("相关资料", ("links",)),
+)
+_FIELDS_BY_NAME = {field.name: field for field in PROJECT_FIELDS}
+FIELD_GROUPS = tuple(
+    (label, tuple(_FIELDS_BY_NAME[name] for name in names))
+    for label, names in FIELD_GROUP_NAMES
+)
+# Form groups that stay folded while they are empty. The folded title and
+# its arrow say enough; the field inside carries its own hint.
+FOLDED_GROUPS = ("相关资料",)
+# The reading page reads as a project record rather than a form: what came
+# out of the work first, then the user's own part. These are its headings;
+# the form keeps the field labels.
+READING_LABELS = {
+    "outcome": "结果与产出",
+    "actions": "我的贡献",
+    "reflection": "收获与反思",
+    "links": "相关资料",
+}
+READING_ORDER = ("title", "context", "role", "period", "outcome", "actions", "reflection", "links")
 
 
 def format_local(value: datetime | None) -> str:
@@ -13,6 +41,38 @@ def format_local(value: datetime | None) -> str:
     offset = local.strftime("%z")
 
     return f"{local:%Y-%m-%d %H:%M:%S}（UTC{offset[:3]}:{offset[3:]}）"
+
+
+def format_short(value: datetime) -> str:
+    """Local date and minute, short enough for the record list."""
+    return f"{value.astimezone():%Y-%m-%d %H:%M}"
+
+
+def summary_line(content: dict) -> str:
+    """A first line of what was done, shown under a titled record in the list.
+
+    Untitled records already show their first words as the title, so they
+    get no summary.
+    """
+    if not content.get("title"):
+        return ""
+
+    for name in ("actions", "outcome", "context"):
+        value = content.get(name, "")
+
+        if value:
+            return value.split("\n", 1)[0]
+
+    return ""
+
+
+def unfilled_labels(content: dict) -> list[str]:
+    """The experience fields still empty, in reading order, named as the reading page names them."""
+    return [
+        READING_LABELS.get(name, _FIELDS_BY_NAME[name].label)
+        for name in READING_ORDER
+        if not content.get(name)
+    ]
 
 
 def format_remaining(deadline: datetime, now: datetime) -> str:

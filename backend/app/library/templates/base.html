@@ -5,18 +5,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}经历库{% endblock %} · RoleRadar 本地开发版</title>
   <link rel="stylesheet" href="/static/library.css">
+  <script src="/static/motion.js"></script>
 </head>
 <body>
+  {% set section = section|default("library") %}
+  {% import "_icons.html" as i %}
+  <div class="backdrop" aria-hidden="true"><div class="backdrop-layer" data-parallax></div></div>
+  <a class="skip-link" href="#main" data-skip-leave-guard>跳到正文</a>
   <div class="dev-banner">本地开发模式：只用合成资料。这里的“进入”不是真实登录，请不要填写真实个人信息。</div>
   {% if clock_note %}
   <div class="dev-banner clock">{{ clock_note }}</div>
   {% endif %}
   <header class="topbar">
-    <a class="brand" href="/experiences">RoleRadar 经历库</a>
+    <a class="brand" href="/experiences"><span class="brand-mark">{{ i.icon("radar") }}</span>RoleRadar</a>
     {% if user %}
-    <nav class="nav">
-      <a href="/experiences">我的经历</a>
-      <a href="/experiences?tab=trash">回收站</a>
+    <nav class="nav" aria-label="主要导航">
+      <a href="/experiences"{% if section == "library" %} aria-current="page"{% endif %}>经历库</a>
+      <a href="/experiences?tab=trash"{% if section == "trash" %} aria-current="page"{% endif %}>回收站</a>
       <a href="/export/all.zip" download>导出全部</a>
     </nav>
     <div class="who">
@@ -28,12 +33,14 @@
     </div>
     {% endif %}
   </header>
-  <main>
+  {% block layout %}
+  <main id="main" class="page" tabindex="-1">
     {% if notice %}
     <p class="notice" role="status">{{ notice }}</p>
     {% endif %}
     {% block content %}{% endblock %}
   </main>
+  {% endblock %}
   {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -1,111 +1,499 @@
+/* RoleRadar experience library: a calm, macOS-style tool (UI batch 1).
+   Light mode only. Dark grey ink and brand, a light grey page, near-white
+   surfaces for reading and editing, and one muted terracotta accent that
+   only marks the main action of a page. Errors and dangerous actions are
+   grey too: their words, a heavier dark border and their place say what
+   they are. A test checks the contrast of these tokens, that the accent is
+   used only by primary actions and that no other colour slips in. */
 :root {
-  --fg: #1d2330;
-  --muted: #5d6676;
-  --line: #d9dee7;
-  --bg: #f7f8fa;
-  --card: #ffffff;
-  --accent: #2457c5;
-  --ok: #1d7a46;
-  --warn: #8a5a00;
-  --danger: #b3261e;
+  color-scheme: light;
+  --page: #f3f4f4;
+  --paper: #fafafa;
+  --white: #ffffff;
+  --ink: #303236;
+  --ink-soft: #65696f;
+  --line: #dedfe1;
+  --field-line: #85888d;
+  --outcome: #eceeef;
+  --tag: #e8e9ea;
+  --hover: #ebeced;
+  --accent: #a3623e;
+  --accent-strong: #8a5233;
+  --skeleton: #e6e7e8;
+  --backdrop-band: #ecedee;
+  --backdrop-period: 640px;
+  --radius-panel: 12px;
+  --radius-outcome: 14px;
+  --radius-control: 9px;
+  --radius-tag: 6px;
+  --font: system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
 }
 
 * { box-sizing: border-box; }
 
+/* Keep fields that receive keyboard focus clear of the sticky save bar. */
+html { scroll-padding-bottom: 96px; }
+
 body {
   margin: 0;
-  font-family: system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  color: var(--fg);
-  background: var(--bg);
-  line-height: 1.6;
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--ink);
+  background: var(--page);
 }
 
-a { color: var(--accent); }
-h1 { font-size: 24px; margin: 12px 0; }
-h2 { font-size: 18px; margin: 24px 0 8px; }
-code { background: #eef1f6; padding: 0 4px; border-radius: 4px; }
+a { color: var(--ink); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+a:hover { text-decoration-thickness: 2px; }
+h1 { font-size: 28px; line-height: 1.4; font-weight: 600; margin: 0 0 8px; }
+h2 { font-size: 17px; line-height: 1.5; font-weight: 600; margin: 32px 0 12px; }
+h3 { font-size: 15px; line-height: 1.5; font-weight: 600; margin: 0 0 6px; }
+p { margin: 0 0 12px; }
+code { background: var(--tag); padding: 0 4px; border-radius: 4px; }
 
-.dev-banner { background: #fff4d6; color: #5c4400; padding: 6px 16px; font-size: 14px; border-bottom: 1px solid #f0dba0; }
-.dev-banner.clock { background: #ffe1e1; color: #7a1010; border-color: #f2b8b8; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 
-.topbar { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 10px 16px; background: var(--card); border-bottom: 1px solid var(--line); }
-.brand { font-weight: 600; color: var(--fg); text-decoration: none; }
-.nav { display: flex; gap: 12px; }
-.who { margin-left: auto; display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
 
-main { max-width: 860px; margin: 0 auto; padding: 16px; }
+/* Lucide line icons (see app/library/third_party/lucide) sit beside the
+   words of their control and take its colour. */
+.icon { flex: none; width: 18px; height: 18px; }
 
-.muted { color: var(--muted); }
-.small { font-size: 13px; }
-.crumbs { color: var(--muted); font-size: 14px; }
-.notice { background: #e6f4ea; border: 1px solid #b7dfc3; color: #0f5130; padding: 8px 12px; border-radius: 6px; }
-.error { background: #fde8e7; border: 1px solid #f2b8b5; color: #8c1d18; padding: 8px 12px; border-radius: 6px; }
-.warning { background: #fff4d6; border: 1px solid #f0dba0; color: #5c4400; padding: 8px 12px; border-radius: 6px; }
+.skip-link {
+  position: absolute;
+  top: -60px;
+  left: 16px;
+  z-index: 10;
+  padding: 8px 14px;
+  background: var(--white);
+  border: 1px solid var(--field-line);
+  border-radius: var(--radius-control);
+}
+.skip-link:focus { top: 8px; }
 
-.button, button {
-  display: inline-block;
-  font: inherit;
-  padding: 6px 14px;
-  border-radius: 6px;
-  border: 1px solid var(--accent);
-  background: var(--accent);
-  color: #fff;
+/* --- the parallax backdrop -------------------------------------------------- */
+
+/* A faint grey banding behind everything. It takes no clicks and is hidden
+   from assistive technology; motion.js moves it at half the scrolling speed.
+   Without JavaScript, or with reduced motion, it stays still. The bands
+   repeat every --backdrop-period, so the layer never runs out at either end
+   of a long page and never needs to be wider than the viewport. */
+.backdrop { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+.backdrop-layer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: calc(100% + var(--backdrop-period));
+  background-image: repeating-linear-gradient(
+    180deg,
+    var(--page) 0,
+    var(--backdrop-band) calc(var(--backdrop-period) / 2),
+    var(--page) var(--backdrop-period)
+  );
+  will-change: transform;
+}
+
+/* --- page chrome ---------------------------------------------------------- */
+
+.dev-banner {
+  padding: 6px 24px;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--tag);
+  border-bottom: 1px solid var(--line);
+}
+.dev-banner.clock { font-weight: 600; border-bottom: 2px solid var(--ink); }
+
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 28px;
+  padding: 10px 24px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+}
+.brand { display: inline-flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 600; color: var(--ink); text-decoration: none; }
+.brand:hover { color: var(--ink); }
+/* Lucide's radar in white on a dark grey tile; the accent stays for actions. */
+.brand-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  color: var(--white);
+  background: var(--ink);
+  border-radius: var(--radius-control);
+}
+.brand-mark .icon { width: 21px; height: 21px; }
+.nav { display: flex; flex-wrap: wrap; gap: 4px 22px; }
+.nav a { padding: 6px 0; color: var(--ink-soft); text-decoration: none; border-bottom: 2px solid transparent; }
+.nav a:hover { color: var(--ink); }
+.nav a[aria-current="page"] { color: var(--ink); font-weight: 600; border-bottom-color: var(--ink); }
+.who { display: flex; align-items: center; gap: 12px; margin-left: auto; font-size: 14px; color: var(--ink-soft); }
+
+/* Pages outside the workspace (history, versions, confirmations, sign-in)
+   sit on one sheet of paper. */
+.page {
+  max-width: 880px;
+  margin: 32px auto;
+  padding: 32px 40px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+}
+.page:focus, .pane:focus { outline: none; }
+
+/* --- workspace: the record list on the left, one record on the right ----- */
+
+.workspace { display: grid; grid-template-columns: 244px minmax(0, 1fr); min-height: calc(100vh - 100px); }
+
+.library { padding: 24px 14px 32px; }
+.library-head { display: grid; gap: 12px; margin: 0 8px 16px; }
+.library-head h2 { margin: 0; font-size: 13px; font-weight: 500; color: var(--ink-soft); }
+.library-head .button { width: 100%; }
+.library-back { display: none; }
+/* minmax(0, 1fr): a long unbroken summary must not widen the list past the sidebar. */
+.library-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
+.library-item {
+  display: block;
+  padding: 11px 12px;
+  color: var(--ink);
   text-decoration: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-panel);
+}
+.library-item:hover { color: var(--ink); background: var(--hover); }
+.library-item[aria-current="page"] { background: var(--paper); border-color: var(--line); }
+.library-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  font-weight: 500;
+}
+.library-item[aria-current="page"] .library-title { font-weight: 600; }
+.library-summary {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  font-size: 13px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.library-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 8px; font-size: 12px; color: var(--ink-soft); }
+.library-empty { margin: 0 8px; font-size: 14px; color: var(--ink-soft); }
+.library-unavailable {
+  margin: 0 8px;
+  padding: 8px 12px;
+  font-size: 14px;
+  color: var(--ink);
+  background: var(--white);
+  border: 1px solid var(--field-line);
+  border-radius: var(--radius-control);
+}
+
+.pane { position: relative; min-width: 0; padding: 32px 48px 56px; background: var(--paper); border-left: 1px solid var(--line); }
+/* The leave dialog also sits in the pane; it keeps its own, narrower width. */
+.pane > :not(dialog) { max-width: 720px; }
+.pane-head { margin-bottom: 24px; }
+.lede { font-size: 15px; color: var(--ink-soft); }
+.crumbs { margin: 0; font-size: 13px; color: var(--ink-soft); }
+.crumbs a { color: var(--ink-soft); }
+.state-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: 4px 0 8px; font-size: 13px; color: var(--ink-soft); }
+
+/* --- the reading page: a project record, not a form -------------------- */
+
+.record-head { margin-bottom: 4px; }
+.record-head h1 { margin: 0 0 10px; overflow-wrap: anywhere; }
+.record-context { margin: 0 0 12px; font-size: 16px; line-height: 1.8; color: var(--ink-soft); white-space: pre-wrap; overflow-wrap: anywhere; }
+.record-meta { display: flex; flex-wrap: wrap; gap: 4px 28px; margin: 0 0 14px; font-size: 13px; }
+.record-meta div { display: flex; gap: 8px; min-width: 0; }
+.record-meta dt { flex: none; color: var(--ink-soft); }
+.record-meta dd { margin: 0; overflow-wrap: anywhere; }
+.state-explain { margin: 0; font-size: 13px; color: var(--ink-soft); }
+.record-actions { margin: 20px 0 30px; }
+/* Deleting is set apart from the everyday actions, at the end of the row. */
+.record-actions .danger-link { margin-left: auto; }
+
+/* Section titles are plain words: quieter than the text they introduce. */
+.section-label { margin: 0 0 12px; font-size: 13px; font-weight: 500; line-height: 1.5; color: var(--ink-soft); }
+.prose { margin: 0; font-size: 17px; line-height: 1.9; white-space: pre-wrap; overflow-wrap: anywhere; }
+.record-outcome { margin: 0 0 30px; padding: 22px 26px 24px; background: var(--outcome); border-radius: var(--radius-outcome); }
+.record-outcome .prose { font-size: 19px; font-weight: 500; line-height: 1.8; }
+.record-contribution { margin: 0 0 30px; }
+.record-more { border-top: 1px solid var(--line); }
+.record-unfilled { margin: 22px 0 0; font-size: 13px; color: var(--ink-soft); overflow-wrap: anywhere; }
+
+/* Folding sections: a whole-row title with one arrow on the right. */
+.fold { border-bottom: 1px solid var(--line); }
+.fold > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 10px 0;
+  font-size: 15px;
+  font-weight: 500;
+  list-style: none;
   cursor: pointer;
 }
-.button.secondary, button.secondary { background: var(--card); color: var(--accent); }
-button.confirm { background: var(--ok); border-color: var(--ok); }
-button.danger { background: var(--danger); border-color: var(--danger); }
-.link-button { background: none; border: none; color: var(--accent); padding: 0; text-decoration: underline; }
-.danger-link { color: var(--danger); }
-form.inline { display: inline; }
+.fold > summary::-webkit-details-marker { display: none; }
+.fold-title { margin-right: auto; }
+.chevron { display: inline-flex; color: var(--ink-soft); }
+.chevron .icon { width: 16px; height: 16px; }
+.fold[open] > summary .chevron { transform: rotate(90deg); }
+.fold > :not(summary) { margin-top: 4px; margin-bottom: 18px; }
+.fold .prose { font-size: 16px; }
+.fold-private { margin-top: 26px; padding: 0 16px; background: var(--page); border: 1px solid var(--line); border-radius: var(--radius-panel); }
+.fold-private + .fold-private, .record-more + .fold-private { margin-top: 26px; }
+.private-notice { font-size: 13px; color: var(--ink-soft); }
 
-.actions, .form-actions, .row-actions, .dialog-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0; }
+/* --- messages ------------------------------------------------------------- */
+
+.notice, .error, .warning { padding: 10px 14px; border: 1px solid; border-radius: var(--radius-control); }
+.notice { color: var(--ink); background: var(--outcome); border-color: var(--line); }
+/* An error carries a heavier dark border than a warning, and its own words. */
+.error { font-weight: 500; color: var(--ink); background: var(--white); border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.warning { color: var(--ink); background: var(--white); border-color: var(--field-line); }
+.muted { color: var(--ink-soft); }
+.small { font-size: 13px; }
+.empty-state { color: var(--ink-soft); }
+
+/* --- buttons and links ---------------------------------------------------- */
+
+.button, button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 8px 16px;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--ink);
+  text-decoration: none;
+  background: var(--white);
+  border: 1px solid var(--field-line);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.button:hover, button:hover { color: var(--ink); background: var(--hover); }
+.button:active, button:active { background: var(--tag); }
+/* The one accent: the main action of a page (one per page). */
+.button.primary, button.primary, button[data-save-button], button[data-leave-choice="save"] {
+  color: var(--white);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.button.primary:hover, button.primary:hover, button[data-save-button]:hover, button[data-leave-choice="save"]:hover,
+.button.primary:active, button.primary:active, button[data-save-button]:active, button[data-leave-choice="save"]:active {
+  color: var(--white);
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+/* A choice that throws work away: a heavier dark outline, never the accent. */
+button.danger { font-weight: 600; border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.link-button, .link-button:hover, .link-button:active {
+  min-height: 0;
+  padding: 4px 0;
+  font-size: inherit;
+  font-weight: 400;
+  color: var(--ink);
+  text-decoration: underline;
+  background: none;
+  border: 0;
+}
+.danger-link { font-weight: 500; }
+form.inline { display: inline; }
+.actions, .form-actions, .row-actions, .dialog-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 16px 0; }
+.dialog-actions .danger { margin-left: auto; }
 .row-actions { margin: 0; }
 
-.tabs { display: flex; gap: 16px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
-.tabs a { padding: 6px 2px; text-decoration: none; }
-.tabs a[aria-current="page"] { border-bottom: 2px solid var(--accent); font-weight: 600; }
+/* Saved states are told apart by their words; colour only stays neutral. */
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.6;
+  color: var(--ink);
+  white-space: nowrap;
+  vertical-align: middle;
+  background: var(--tag);
+  border-radius: var(--radius-tag);
+}
+.badge.state-confirmed { background: var(--white); box-shadow: inset 0 0 0 1px var(--field-line); }
+.badge.diff { color: var(--white); background: var(--ink); }
 
-.item-list, .version-list, .status-list, .event-list { list-style: none; padding: 0; margin: 0; }
-.item-list li, .version-list li { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.status-list li, .event-list li { padding: 4px 0; border-bottom: 1px dashed var(--line); }
-.empty-state { color: var(--muted); }
-.deleted { text-decoration: line-through; color: var(--muted); }
+/* --- forms ---------------------------------------------------------------- */
 
-.badge { display: inline-block; font-size: 12px; font-weight: normal; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--line); background: #eef1f6; color: var(--muted); vertical-align: middle; }
-.badge.state-confirmed { background: #e6f4ea; color: var(--ok); border-color: #b7dfc3; }
-.badge.state-draft { background: #fff4d6; color: var(--warn); border-color: #f0dba0; }
-.badge.diff { background: #fde8e7; color: var(--danger); border-color: #f2b8b5; }
+.group { min-width: 0; margin: 0 0 28px; padding: 0; border: 0; }
+.group > legend { margin-bottom: 4px; padding: 0; font-size: 15px; font-weight: 600; }
+.field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 20px; }
+.field { display: grid; align-content: start; gap: 6px; margin: 16px 0; }
+.field label { font-size: 14px; font-weight: 500; }
+.hint { font-size: 13px; color: var(--ink-soft); }
+input[type=text], textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--ink);
+  background: var(--white);
+  border: 1px solid var(--field-line);
+  border-radius: var(--radius-control);
+}
+textarea { min-height: 112px; line-height: 1.75; resize: vertical; }
+input[type=text]:focus, textarea:focus { border-color: var(--ink); outline: 2px solid var(--ink); outline-offset: 1px; }
+.has-error input, .has-error textarea { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.field-error { font-size: 13px; font-weight: 600; color: var(--ink); }
+.editor .fold { margin-bottom: 8px; }
+.editor .fold > .field:first-of-type, .editor .fold > .hint { margin-top: 0; }
+.form-actions.sticky {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  margin: 24px 0 0;
+  padding: 12px 0 16px;
+  background: var(--paper);
+  border-top: 1px solid var(--line);
+}
+.dirty-status { margin: 0; font-size: 14px; font-weight: 500; color: var(--ink); }
+.ack { display: flex; align-items: flex-start; gap: 8px; margin: 16px 0; }
 
+/* --- grouped fields on the version and confirmation pages ---------------- */
+
+.content-group { margin-top: 28px; }
+.content-group h2 { margin: 0 0 4px; }
 .fields { margin: 0; }
-.fields dt { font-weight: 600; margin-top: 12px; }
+.fields dt { margin-top: 14px; font-size: 13px; font-weight: 600; color: var(--ink-soft); }
 .fields dd { margin: 4px 0 0; }
-.text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
-.empty { color: var(--muted); font-style: italic; margin: 0; }
-.links { margin: 0; padding-left: 18px; overflow-wrap: anywhere; }
-.private { background: #f3f0fa; border: 1px solid #ddd3f2; border-radius: 8px; padding: 10px 12px; margin-top: 16px; }
+.text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.empty { margin: 0; color: var(--ink-soft); }
+.links { margin: 0; padding-left: 20px; overflow-wrap: anywhere; }
+.private { margin-top: 32px; padding: 16px 20px 20px; background: var(--page); border: 1px solid var(--line); border-radius: var(--radius-panel); }
+.private h2 { display: flex; align-items: center; gap: 8px; margin-top: 0; }
 
-.field { display: flex; flex-direction: column; gap: 4px; margin: 12px 0; }
-.field label, .private legend { font-weight: 600; }
-.hint { color: var(--muted); font-size: 13px; }
-input[type=text], textarea { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; width: 100%; background: #fff; }
-.has-error input, .has-error textarea { border-color: var(--danger); }
-.field-error { color: var(--danger); font-size: 13px; }
-.dirty-status { color: var(--warn); min-height: 1.6em; margin: 8px 0 0; }
+/* --- lists, dialogs and comparisons on the other pages -------------------- */
 
-dialog { border: 1px solid var(--line); border-radius: 10px; padding: 16px 20px; max-width: 420px; }
-dialog::backdrop { background: rgba(20, 24, 33, 0.45); }
+.item-list, .version-list, .status-list, .event-list { list-style: none; margin: 0; padding: 0; }
+.item-list li, .version-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 8px;
+  padding: 12px 16px;
+  overflow-wrap: anywhere;
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+}
+.status-list li, .event-list li { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.deleted { color: var(--ink-soft); text-decoration: line-through; }
+.points { padding-left: 20px; }
+.points li { margin: 8px 0; }
+/* A fixed width leaves room to set "放弃修改" apart from the two safe choices. */
+dialog {
+  width: min(440px, calc(100vw - 32px));
+  padding: 22px 24px;
+  color: var(--ink);
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-outcome);
+  box-shadow: 0 18px 50px rgba(48, 50, 54, 0.18);
+}
+dialog::backdrop { background: rgba(48, 50, 54, 0.4); }
+dialog h2 { margin-top: 0; }
+.compare-row { margin: 12px 0; padding: 12px 16px; background: var(--white); border: 1px solid var(--line); border-radius: var(--radius-panel); }
+.compare-row.differs { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.compare-row h3 { margin: 0 0 8px; }
+.compare-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 
-.compare-row { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin: 8px 0; background: var(--card); }
-.compare-row.differs { border-color: #f2b8b5; }
-.compare-row h3 { margin: 0 0 6px; font-size: 15px; }
-.compare-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+/* --- motion: a skeleton while a page loads, and blocks that rise in -------- */
 
-.points li { margin: 6px 0; }
-.ack { display: block; margin: 12px 0; }
+/* Only shown by motion.js while the browser really waits for a workspace
+   page; the breathing is a slow, whole-shape change of grey. */
+.pane-skeleton { padding-top: 2px; }
+.sk { border-radius: 8px; background: var(--skeleton); animation: sk-breathe 1.8s ease-in-out infinite; }
+.sk-title { width: 62%; height: 30px; margin-bottom: 14px; }
+.sk-meta { width: 44%; height: 14px; margin-bottom: 30px; }
+.sk-block { height: 132px; margin-bottom: 30px; border-radius: var(--radius-outcome); }
+.sk-line { height: 16px; margin-bottom: 14px; }
+.sk-short { width: 58%; }
+@keyframes sk-breathe {
+  0%, 100% { background-color: var(--skeleton); }
+  50% { background-color: var(--page); }
+}
 
-@media (max-width: 600px) {
+/* Reveal on scroll. Blocks are hidden only while <html> has the motion class,
+   which motion.js sets before the first paint and only when motion is
+   allowed; without JavaScript every block is simply visible. */
+.motion [data-reveal] {
+  transition: opacity 380ms cubic-bezier(0.2, 0.7, 0.2, 1), transform 380ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.motion [data-reveal]:not(.is-revealed) { opacity: 0; transform: translateY(10px); }
+.motion [data-reveal].is-instant { transition: none; }
+
+/* --- narrower screens ------------------------------------------------------- */
+
+@media (max-width: 1023px) {
+  .workspace { grid-template-columns: 224px minmax(0, 1fr); }
+  .pane { padding: 28px 28px 44px; }
+}
+
+@media (max-width: 719px) {
+  .dev-banner { padding: 6px 16px; }
+  .topbar { gap: 4px 18px; padding: 8px 16px; }
+  .who { width: 100%; margin-left: 0; justify-content: space-between; }
+  .nav a, .link-button { display: inline-flex; align-items: center; min-height: 44px; }
+  .button, button { min-height: 44px; }
+  h1 { font-size: 24px; }
+  .prose { font-size: 16px; }
+  .record-outcome { padding: 18px 18px 20px; }
+  .record-outcome .prose { font-size: 18px; }
+  .field-grid { grid-template-columns: minmax(0, 1fr); }
+  .workspace { display: block; min-height: 0; }
+  .library { padding: 16px; border-bottom: 1px solid var(--line); }
+  .workspace-focus .library-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; margin: 0; }
+  .workspace-focus .library-head h2,
+  .workspace-focus .library-list,
+  .workspace-focus .library-empty { display: none; }
+  .workspace-focus .library-head .button { width: auto; }
+  .workspace-focus .library-back { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; }
+  .workspace-focus .library-unavailable { margin: 12px 0 0; }
+  .pane { padding: 20px 16px 32px; border-left: 0; }
+  .page { margin: 0; padding: 20px 16px 32px; border: 0; border-radius: 0; }
   .compare-cols { grid-template-columns: 1fr; }
-  .who { margin-left: 0; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .button, button, .library-item, .nav a { transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease; }
+  .chevron { transition: transform 0.16s ease; }
+}
+
+/* Reduced motion: a still skeleton, a still backdrop (motion.js stops moving
+   it) and every block shown at once, also when the setting changes later. */
+@media (prefers-reduced-motion: reduce) {
+  .sk { animation: none; }
+  .motion [data-reveal], .motion [data-reveal]:not(.is-revealed) { opacity: 1; transform: none; transition: none; }
 }

@@ -1,50 +1,72 @@
-{% extends "base.html" %}
+{% extends "workspace.html" %}
 {% import "_macros.html" as m with context %}
 {% block title %}{% if item_id %}编辑项目/作品{% else %}记录一段项目/作品{% endif %}{% endblock %}
 {% block content %}
-<h1>{% if item_id %}编辑项目/作品{% else %}记录一段项目/作品{% endif %}</h1>
-<p class="muted">所有栏目都可以留空，只写一句话也能保存。保存后是“待核对”的草稿，不等于确认属实。</p>
-{% if item and item.state == "confirmed" %}
-<p class="warning">这条经历目前是“已确认”。保存修改后会变成“已修改，待核对”，需要你再次确认；之前的确认版本会留在历史里，但不再代表当前事实。</p>
+{% set confirmed = item and item.state == "confirmed" %}
+{# A page shown again after a failed save is read at once: nothing on it waits for an animation. #}
+<header class="pane-head"{% if not error %} data-reveal{% endif %}>
+  <h1>{% if item_id %}编辑项目/作品{% else %}记录一段项目/作品{% endif %}</h1>
+  {% if not confirmed %}
+  <p class="lede">保存后是“待核对”的草稿，不等于确认属实。</p>
+  {% endif %}
+</header>
+{% if confirmed %}
+<p class="warning">这条经历目前是“已确认”。保存修改后会变成“已修改，待核对”，需要你再次确认。</p>
 {% endif %}
 {% if error %}
 <p class="error" role="alert">{{ error }}</p>
 {% endif %}
-<form method="post" action="{{ action }}" data-leave-guard{% if unsaved_input %} data-initially-dirty{% endif %}>
+<form method="post" action="{{ action }}" class="editor" data-leave-guard{% if unsaved_input %} data-initially-dirty{% endif %}>
   <input type="hidden" name="csrf_token" value="{{ user.csrf_token }}">
   {% if expected_revision is not none %}
   <input type="hidden" name="expected_revision" value="{{ expected_revision }}">
   {% endif %}
   <input type="hidden" name="next" value="{{ next_path }}">
   <input type="hidden" name="after_save" value="">
-  {% for field in FIELDS %}
-  <div class="field{% if field_errors.get(field.name) %} has-error{% endif %}">
-    <label for="f-{{ field.name }}">{{ field.label }}</label>
-    <span class="hint" id="h-{{ field.name }}">{{ field.hint }}</span>
-    {% if field.multiline %}
-    <textarea id="f-{{ field.name }}" name="{{ field.name }}" rows="{{ 3 if field.name == 'links' else 4 }}" maxlength="{{ field.max_length }}" aria-describedby="h-{{ field.name }}">{{ values[field.name] }}</textarea>
-    {% else %}
-    <input id="f-{{ field.name }}" type="text" name="{{ field.name }}" value="{{ values[field.name] }}" maxlength="{{ field.max_length }}" aria-describedby="h-{{ field.name }}">
-    {% endif %}
-    {% if field_errors.get(field.name) %}
-    <span class="field-error">{{ field_errors[field.name] }}</span>
-    {% endif %}
-  </div>
+  {% for group_label, fields in FIELD_GROUPS %}
+  {% if group_label in FOLDED_GROUPS %}
+  {% set fold = namespace(open=False) %}
+  {% for field in fields %}
+  {% if values[field.name] or field_errors.get(field.name) %}
+  {% set fold.open = True %}
+  {% endif %}
   {% endfor %}
-  <fieldset class="private">
-    <legend>{{ NOTE_FIELD.label }}</legend>
-    <span class="hint" id="h-note">{{ NOTE_FIELD.hint }}</span>
-    <textarea id="f-note" name="{{ NOTE_FIELD.name }}" rows="3" maxlength="{{ NOTE_FIELD.max_length }}" aria-describedby="h-note">{{ values[NOTE_FIELD.name] }}</textarea>
-    {% if field_errors.get(NOTE_FIELD.name) %}
-    <span class="field-error">{{ field_errors[NOTE_FIELD.name] }}</span>
-    {% endif %}
+  {# Folded while empty; open as soon as it holds something or an error. #}
+  <details class="fold"{% if fold.open %} open{% endif %}{% if not error %} data-reveal{% endif %}>
+    {{ m.fold_summary(group_label) }}
+    {% for field in fields %}
+    {{ m.form_field(field, values[field.name], field_errors.get(field.name)) }}
+    {% endfor %}
+  </details>
+  {% else %}
+  <fieldset class="group"{% if not error %} data-reveal{% endif %}>
+    <legend>{{ group_label }}</legend>
+    <div{% if not fields|selectattr("multiline")|list %} class="field-grid"{% endif %}>
+      {% for field in fields %}
+      {{ m.form_field(field, values[field.name], field_errors.get(field.name)) }}
+      {% endfor %}
+    </div>
   </fieldset>
-  <p class="dirty-status" id="dirty-status" aria-live="polite"></p>
-  <div class="form-actions">
+  {% endif %}
+  {% endfor %}
+  {% set note_error = field_errors.get(NOTE_FIELD.name) %}
+  {# Private: folded unless it needs attention after a failed save. #}
+  <details class="fold fold-private"{% if note_error or (error and values[NOTE_FIELD.name]) %} open{% endif %}{% if not error %} data-reveal{% endif %}>
+    {{ m.fold_summary(NOTE_FIELD.label, private=True) }}
+    <div class="field{% if note_error %} has-error{% endif %}">
+      <span class="hint" id="h-note">{{ NOTE_FIELD.hint }}。分享导出文件之前请先检查。</span>
+      <textarea id="f-note" name="{{ NOTE_FIELD.name }}" rows="3" maxlength="{{ NOTE_FIELD.max_length }}" aria-label="{{ NOTE_FIELD.label }}" aria-describedby="h-note{% if note_error %} e-note{% endif %}"{% if note_error %} aria-invalid="true"{% endif %}>{{ values[NOTE_FIELD.name] }}</textarea>
+      {% if note_error %}
+      <span class="field-error" id="e-note">{{ note_error }}</span>
+      {% endif %}
+    </div>
+  </details>
+  <p class="muted small">直接关闭或刷新页面时，浏览器的提醒不一定出现，离开前请先保存草稿。</p>
+  <div class="form-actions sticky">
     <button type="submit" data-save-button>保存草稿</button>
     <a href="{% if item_id %}/experiences/{{ item_id }}{% else %}/experiences{% endif %}">取消</a>
+    <p class="dirty-status" id="dirty-status" aria-live="polite"></p>
   </div>
-  <p class="muted small">在站内点链接离开时，会先问你要保存草稿、继续编辑还是放弃修改。直接关闭或刷新页面时，浏览器可能弹出它自己的通用提示，但不一定出现；离开前请先保存草稿。</p>
 </form>
 {{ m.leave_dialog() }}
 {% endblock %}

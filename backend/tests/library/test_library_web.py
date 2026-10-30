@@ -138,7 +138,7 @@ def test_static_files_hold_no_user_data_and_are_public(app):
     names = sorted(path.name for path in (PACKAGE_DIR / "static").iterdir())
     anonymous = Browser(app)
 
-    assert names == ["leave_guard.js", "library.css"]
+    assert names == ["leave_guard.js", "library.css", "motion.js"]
 
     for name in names:
         assert anonymous.get(f"/static/{name}").status_code == 200
@@ -310,7 +310,8 @@ def test_one_sentence_saves_as_a_draft_that_is_not_yet_confirmed(browser_a):
     assert "已保存（待核对）" in page
     assert "保存不等于确认" in page
     assert "确认这些内容属实" in page
-    assert page.count("未填写") >= 7
+    # Every empty field is named, once, in the reading page's merged line.
+    assert "尚未填写：标题、场景或组织、我的角色、时间、结果与产出、收获与反思、相关资料。" in page
 
 
 def test_an_empty_form_is_refused_with_a_chinese_hint(browser_a):
@@ -453,7 +454,8 @@ def test_saving_from_the_leave_dialog_continues_to_the_chosen_page(browser_a):
         next="/experiences?tab=trash",
     )
 
-    assert response.headers["location"] == "/experiences?tab=trash&notice=saved"
+    assert response.headers["location"] == "/experiences?tab=trash&notice=saved_before_leaving"
+    assert "已保存你刚才编辑的内容（待核对）。" in browser_a.get(response.headers["location"]).text
 
 
 @pytest.mark.parametrize(

@@ -1,42 +1,108 @@
+{% import "_icons.html" as i %}
 {% macro csrf() %}<input type="hidden" name="csrf_token" value="{{ user.csrf_token }}">{% endmacro %}
 
-{% macro state_badge(item) %}<span class="badge state-{{ item.state }}">{{ state_label(item) }}</span>{% endmacro %}
+{% macro state_badge(item) %}<span class="badge state-{{ item.state }}{% if item.state == 'draft' and item.last_confirmed_at %} state-modified{% endif %}">{{ state_label(item) }}</span>{% endmacro %}
 
-{% macro field_value(field, value) %}
-{% if not value %}
-<p class="empty">{{ NOT_FILLED }}</p>
-{% elif field.name == "links" %}
+{% macro link_list(value) %}
 <ul class="links">
   {% for text, href in link_lines(value) %}
   <li>{% if href %}<a href="{{ href }}" rel="noopener noreferrer">{{ text }}</a>{% else %}{{ text }} <span class="muted small">（不是 http/https 链接，没有生成可点击的链接）</span>{% endif %}</li>
   {% endfor %}
 </ul>
+{% endmacro %}
+
+{% macro field_value(field, value) %}
+{% if not value %}
+<p class="empty">{{ NOT_FILLED }}</p>
+{% elif field.name == "links" %}
+{{ link_list(value) }}
 {% else %}
 <p class="text">{{ value }}</p>
 {% endif %}
 {% endmacro %}
 
 {% macro content_block(content) %}
-<dl class="fields">
-  {% for field in FIELDS %}
-  <dt>{{ field.label }}</dt>
-  <dd>{{ field_value(field, content.get(field.name, "")) }}</dd>
-  {% endfor %}
-</dl>
+{% for group_label, fields in FIELD_GROUPS %}
+<section class="content-group">
+  <h2>{{ group_label }}</h2>
+  <dl class="fields">
+    {% for field in fields %}
+    <dt>{{ field.label }}</dt>
+    <dd>{{ field_value(field, content.get(field.name, "")) }}</dd>
+    {% endfor %}
+  </dl>
+</section>
+{% endfor %}
 {% endmacro %}
 
 {% macro note_block(title, note) %}
 <section class="private">
-  <h2>{{ title }}</h2>
+  <h2>{{ i.icon("lock-keyhole") }}{{ title }}</h2>
   {{ caller() }}
   {% if note %}<p class="text">{{ note }}</p>{% else %}<p class="empty">{{ NOT_FILLED }}</p>{% endif %}
 </section>
 {% endmacro %}
 
+{# The arrow shows that a row opens; the title alone names what is inside. #}
+{% macro fold_summary(title, private=False) %}
+<summary>{% if private %}{{ i.icon("lock-keyhole") }}{% endif %}<span class="fold-title">{{ title }}</span><span class="chevron">{{ i.icon("chevron-right") }}</span></summary>
+{% endmacro %}
+
+{# A field with an error says so in words, also to a screen reader that lands on it. #}
+{% macro form_field(field, value, error) %}
+{% set described = "h-" ~ field.name ~ (" e-" ~ field.name if error else "") %}
+<div class="field{% if error %} has-error{% endif %}">
+  <label for="f-{{ field.name }}">{{ field.label }}</label>
+  <span class="hint" id="h-{{ field.name }}">{{ field.hint }}</span>
+  {% if field.multiline %}
+  <textarea id="f-{{ field.name }}" name="{{ field.name }}" rows="{{ 3 if field.name == 'links' else 4 }}" maxlength="{{ field.max_length }}" aria-describedby="{{ described }}"{% if error %} aria-invalid="true"{% endif %}>{{ value }}</textarea>
+  {% else %}
+  <input id="f-{{ field.name }}" type="text" name="{{ field.name }}" value="{{ value }}" maxlength="{{ field.max_length }}" aria-describedby="{{ described }}"{% if error %} aria-invalid="true"{% endif %}>
+  {% endif %}
+  {% if error %}
+  <span class="field-error" id="e-{{ field.name }}">{{ error }}</span>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{% macro library_nav(items, selected_id) %}
+<aside class="library" aria-label="项目与作品">
+  <div class="library-head">
+    <a class="library-back" href="/experiences">{{ i.icon("arrow-left") }}返回经历库{% if items %}（{{ items|length }} 条）{% endif %}</a>
+    <h2>项目与作品</h2>
+    {# An empty library invites the first record in the page itself. #}
+    {% if items is none or items %}
+    <a class="button secondary" href="/experiences/new">{{ i.icon("plus") }}新建记录</a>
+    {% endif %}
+  </div>
+  {% if items is none %}
+  <p class="library-unavailable" role="status">经历列表暂时无法显示，请稍后刷新页面。这一页的内容不受影响。</p>
+  {% elif items %}
+  <nav aria-label="我的项目与作品" data-reveal>
+    <ul class="library-list">
+      {% for entry in items %}
+      <li>
+        <a class="library-item" href="/experiences/{{ entry.id }}"{% if entry.id == selected_id %} aria-current="page"{% endif %}>
+          <span class="library-title">{{ display_title(entry.content) }}</span>
+          {% set summary = summary_line(entry.content) %}
+          {% if summary %}
+          <span class="library-summary">{{ summary }}</span>
+          {% endif %}
+          <span class="library-meta">{{ state_badge(entry) }}<span>最近保存 {{ entry.updated_at|shorttime }}</span></span>
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+  </nav>
+  {% else %}
+  <p class="library-empty">还没有记录。</p>
+  {% endif %}
+</aside>
+{% endmacro %}
+
 {% macro leave_dialog() %}
 <dialog id="leave-dialog" aria-labelledby="leave-title">
   <h2 id="leave-title">有还没保存的修改</h2>
-  <p>离开这个页面之前，要怎么处理这些修改？</p>
   <div class="dialog-actions">
     <button type="button" data-leave-choice="save">保存草稿</button>
     <button type="button" data-leave-choice="stay" class="secondary">继续编辑</button>

@@ -1,35 +1,31 @@
-{% extends "base.html" %}
+{% extends "workspace.html" %}
 {% import "_macros.html" as m with context %}
-{% block title %}我的经历{% endblock %}
+{% import "_icons.html" as i %}
+{% set section = "trash" if tab == "trash" else "library" %}
+{% block title %}{% if tab == "trash" %}回收站{% else %}经历库{% endif %}{% endblock %}
 {% block content %}
-<h1>我的经历</h1>
-<nav class="tabs">
-  <a href="/experiences"{% if tab == "current" %} aria-current="page"{% endif %}>当前经历（{{ items|length }}）</a>
-  <a href="/experiences?tab=trash"{% if tab == "trash" %} aria-current="page"{% endif %}>回收站</a>
-</nav>
 {% if tab == "current" %}
-<div class="actions">
-  <a class="button" href="/experiences/new">记录一段项目/作品</a>
-  <a class="button secondary" href="/export/all.zip" download>导出全部（ZIP）</a>
-</div>
-<p class="muted">这一批只支持“项目/作品”一类，其他经历类型会在后续批次加入。只写一句话也能保存，以后再慢慢补充。</p>
+{# The records, "新建记录" and "导出全部" are already beside and above this pane. #}
 {% if items %}
-<ul class="item-list">
-  {% for item in items %}
-  <li>
-    <a href="/experiences/{{ item.id }}">{{ display_title(item.content) }}</a>
-    {{ m.state_badge(item) }}
-    <span class="muted small">最近保存：{{ item.updated_at|localtime }}</span>
-  </li>
-  {% endfor %}
-</ul>
+<header class="pane-head" data-reveal>
+  <h1>经历库</h1>
+</header>
 {% else %}
-<p class="empty-state">还没有记录。可以先写一句话，之后再补充。</p>
+<header class="pane-head" data-reveal>
+  <h1>先记下一段经历</h1>
+  <p class="lede">不用写成简历，也不用一次写完。</p>
+</header>
+<div class="actions" data-reveal>
+  <a class="button primary" href="/experiences/new">{{ i.icon("plus") }}记录第一段经历</a>
+</div>
 {% endif %}
 {% else %}
-<p class="muted">回收站里的经历已经停止使用：不会出现在经历列表里，也不能编辑、确认或查看历史。删除后 {{ RESTORE_DAYS }} 天内可以恢复，也可以提前永久删除；导出全部时会单独列出，并写明恢复期限。</p>
+<header class="pane-head" data-reveal>
+  <h1>回收站</h1>
+  <p class="lede">回收站里的经历已停止使用，不能编辑、确认或查看历史。删除后 {{ RESTORE_DAYS }} 天内可以恢复；导出全部时会单独列出。</p>
+</header>
 {% if trash.items %}
-<ul class="item-list">
+<ul class="item-list" data-reveal>
   {% for item in trash.items %}
   <li>
     <strong>{{ display_title(item.content) }}</strong>

@@ -25,7 +25,6 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from app.library.clock import Clock
 from app.library.config import LibraryConfig
 from app.library.content import (
-    CATEGORY_LABELS,
     NOT_FILLED,
     NOTE_FIELD,
     PROJECT_FIELDS,
@@ -76,10 +75,16 @@ from app.library.lifecycle import (
 )
 from app.library.models import User
 from app.library.presentation import (
+    FIELD_GROUPS,
+    FOLDED_GROUPS,
+    READING_LABELS,
     event_label,
     format_local,
     format_remaining,
+    format_short,
     state_label,
+    summary_line,
+    unfilled_labels,
     version_label,
 )
 from app.library.service import (
@@ -113,9 +118,15 @@ GONE_WHILE_EDITING = (
     "可以另存为一条新的经历，或者复制到别处。"
 )
 NOTICES = {
-    "created": "已保存（待核对）。保存不等于确认：核对无误后，可以点「确认这些内容属实」。",
+    # The record page right below says that saving is not confirming.
+    "created": "已保存（待核对）。",
     "saved": "已保存修改（待核对）。",
     "unchanged": "内容没有变化，这次没有产生新的保存。",
+    # After saving from the leave dialog the user lands on the page they
+    # chose, which may show another record: say what was saved.
+    "created_before_leaving": "已保存你刚才新建的记录（待核对）。",
+    "saved_before_leaving": "已保存你刚才编辑的内容（待核对）。",
+    "unchanged_before_leaving": "你刚才编辑的内容没有变化，这次没有产生新的保存。",
     "confirmed": "已确认属实：这一版已记为新的确认版本，可以在历史里查看。",
     "deleted": "已移到回收站：它已停止在经历列表和导出的当前部分中使用，7 天内可以恢复。",
     "restored": "已从回收站恢复。",
@@ -185,11 +196,14 @@ def build_templates(config: LibraryConfig) -> Jinja2Templates:
         lstrip_blocks=True,
     )
     env.filters["localtime"] = format_local
+    env.filters["shorttime"] = format_short
     env.globals.update(
         FIELDS=PROJECT_FIELDS,
+        FIELD_GROUPS=FIELD_GROUPS,
+        FOLDED_GROUPS=FOLDED_GROUPS,
+        READING_LABELS=READING_LABELS,
         NOTE_FIELD=NOTE_FIELD,
         NOT_FILLED=NOT_FILLED,
-        CATEGORY_LABELS=CATEGORY_LABELS,
         RESTORE_DAYS=RESTORE_WINDOW.days,
         clock_note=_clock_note(config),
         display_title=display_title,
@@ -198,6 +212,8 @@ def build_templates(config: LibraryConfig) -> Jinja2Templates:
         version_label=version_label,
         event_label=event_label,
         format_remaining=format_remaining,
+        summary_line=summary_line,
+        unfilled_labels=unfilled_labels,
     )
 
     return Jinja2Templates(env=env)
@@ -468,6 +484,31 @@ def confirm_page(
     )
 
 
+def library_sidebar(
+    request: Request,
+    user: CurrentUser,
+    *,
+    selected_id: str | None = None,
+    focus: bool = False,
+    items: list | None = None,
+) -> dict:
+    """Context for the list of the user's records on the left of the workspace.
+
+    The list only helps finding records. If it cannot be read, sidebar_items
+    is None and the page still shows its own content, its error and the
+    user's unsaved input unchanged; the list shows a short note instead.
+    """
+    if items is None:
+        try:
+            with runtime(request).database.transaction() as db:
+                items = list_experiences(db, user.id)
+        except StorageError as error:
+            logger.error("reading the record list failed (%s)", type(error.__cause__).__name__)
+            items = None
+
+    return {"sidebar_items": items, "selected_id": selected_id, "focus": focus}
+
+
 def form_page(
     request: Request,
     user: CurrentUser,
@@ -479,6 +520,7 @@ def form_page(
     error: str | None = None,
     field_errors: dict[str, str] | None = None,
     next_path: str = "",
+    notice: str | None = None,
     status_code: int = 200,
 ) -> Response:
     """The new/edit form. Without item_id the form creates a new experience."""
@@ -493,10 +535,12 @@ def form_page(
             "error": error,
             "field_errors": field_errors or {},
             "next_path": safe_next(next_path) or "",
+            "notice": notice,
             # A page shown again after a failed save may hold text that exists
             # nowhere else yet; the leave guard must treat it as unsaved.
             "unsaved_input": bool(error) and any(value.strip() for value in values.values()),
             "action": f"/experiences/{item_id}/draft" if item_id else "/experiences",
+            **library_sidebar(request, user, selected_id=item_id, focus=True),
         },
         user=user,
         status_code=status_code,
@@ -546,9 +590,12 @@ def with_notice(path: str, notice: str) -> str:
 
 
 def redirect_after_save(form: dict[str, str], default_path: str, notice: str) -> RedirectResponse:
-    target = safe_next(form.get("next", "")) or default_path
+    target = safe_next(form.get("next", ""))
 
-    return RedirectResponse(with_notice(target, notice), status_code=303)
+    if target is None:
+        return RedirectResponse(with_notice(default_path, notice), status_code=303)
+
+    return RedirectResponse(with_notice(target, f"{notice}_before_leaving"), status_code=303)
 
 
 def logout_response(rt: LibraryRuntime, user: CurrentUser, notice: str) -> RedirectResponse:
@@ -804,14 +851,16 @@ def experience_list(
             "trash": trash,
             "now": now,
             "notice": NOTICES.get(notice),
+            **library_sidebar(request, user, items=items, focus=trash is not None),
         },
         user=user,
     )
 
 
 @router.get("/experiences/new")
-def new_experience(request: Request, user: CurrentUser = Depends(current_user)):
-    return form_page(request, user, values=stored_values())
+def new_experience(request: Request, notice: str = "", user: CurrentUser = Depends(current_user)):
+    # The leave dialog can save another record and continue here.
+    return form_page(request, user, values=stored_values(), notice=NOTICES.get(notice))
 
 
 @router.post("/experiences")
@@ -863,7 +912,16 @@ def experience_detail(
     with rt.database.transaction() as db:
         item = active_item(db, user.id, item_id)
 
-    return render(request, "detail.html", {"item": item, "notice": NOTICES.get(notice)}, user=user)
+    return render(
+        request,
+        "detail.html",
+        {
+            "item": item,
+            "notice": NOTICES.get(notice),
+            **library_sidebar(request, user, selected_id=item.id, focus=True),
+        },
+        user=user,
+    )
 
 
 @router.get("/experiences/{item_id}/edit")

@@ -1,21 +1,43 @@
-{% extends "base.html" %}
+{% extends "workspace.html" %}
 {% import "_macros.html" as m with context %}
+{% import "_icons.html" as i %}
 {% block title %}{{ display_title(item.content) }}{% endblock %}
 {% block content %}
-<p class="crumbs"><a href="/experiences">我的经历</a> / {{ CATEGORY_LABELS[item.category] }}</p>
-<h1>{{ display_title(item.content) }} {{ m.state_badge(item) }}</h1>
-<div class="state-explain">
-  {% if item.state == "confirmed" %}
-  <p>你已于 {{ item.last_confirmed_at|localtime }} 确认这些内容属实。之后如果修改并保存，会回到“待核对”。</p>
-  {% elif item.last_confirmed_at %}
-  <p>这些内容在上次确认（{{ item.last_confirmed_at|localtime }}）之后有过修改，还没有重新确认。之前的确认版本只保留在历史里，不再代表当前事实。</p>
-  {% else %}
-  <p>这些内容已经保存，但你还没有确认属实。保存不等于确认。</p>
+{% set content = item.content %}
+{# A project record, read top to bottom: what it was, what came out of it,
+   then the user's own part. The text is shown exactly as written. #}
+<header class="record-head" data-reveal>
+  <h1>{{ display_title(content) }}</h1>
+  {% if content.context %}
+  <p class="record-context">{{ content.context }}</p>
   {% endif %}
-  <p class="muted small">最近一次保存：{{ item.updated_at|localtime }} · 修订号 {{ item.revision }}</p>
-</div>
-<div class="actions">
-  <a class="button" href="/experiences/{{ item.id }}/edit">编辑</a>
+  {% if content.role or content.period %}
+  <dl class="record-meta">
+    {% if content.role %}
+    <div><dt>我的角色</dt><dd>{{ content.role }}</dd></div>
+    {% endif %}
+    {% if content.period %}
+    <div><dt>时间</dt><dd>{{ content.period }}</dd></div>
+    {% endif %}
+  </dl>
+  {% endif %}
+  {# The badge names the state; the line after it only adds what the badge cannot say. #}
+  <p class="state-line">
+    {{ m.state_badge(item) }}
+    {% if item.state == "confirmed" %}
+    <span>确认于 {{ item.last_confirmed_at|shorttime }}</span>
+    {% else %}
+    <span>最近保存 {{ item.updated_at|shorttime }}</span>
+    {% endif %}
+  </p>
+  {% if item.state != "confirmed" and item.last_confirmed_at %}
+  <p class="state-explain">上次确认于 {{ item.last_confirmed_at|shorttime }}。之前的确认版本只留在历史里，不再代表当前事实。</p>
+  {% elif item.state != "confirmed" %}
+  <p class="state-explain">还没有确认属实，保存不等于确认。</p>
+  {% endif %}
+</header>
+<div class="actions record-actions">
+  <a class="button primary" href="/experiences/{{ item.id }}/edit">编辑</a>
   {% if item.state != "confirmed" %}
   <form method="post" action="/experiences/{{ item.id }}/confirm" class="inline">
     {{ m.csrf() }}
@@ -23,14 +45,47 @@
     <button type="submit" class="confirm">确认这些内容属实</button>
   </form>
   {% endif %}
-  <a class="button secondary" href="/experiences/{{ item.id }}/history">查看历史</a>
+  <a class="button secondary" href="/experiences/{{ item.id }}/history">{{ i.icon("rotate-ccw-clock") }}查看历史</a>
   <a class="button secondary" href="/experiences/{{ item.id }}/export.md" download>导出为 Markdown</a>
   <a class="danger-link" href="/experiences/{{ item.id }}/delete">删除…</a>
 </div>
-<h2>内容</h2>
-{{ m.content_block(item.content) }}
-{% call m.note_block(NOTE_FIELD.label, item.private_note) %}
-<p class="muted small">只给你自己看；不会进入资料快照或简历。导出时会包含，分享导出文件之前请检查。</p>
-{% endcall %}
-<p class="muted small">“未填写”只表示还没写，不代表你没有做过或不具备。</p>
+{% if content.outcome %}
+<section class="record-outcome" data-reveal aria-labelledby="read-outcome">
+  <h2 class="section-label" id="read-outcome">{{ READING_LABELS.outcome }}</h2>
+  <p class="prose">{{ content.outcome }}</p>
+</section>
+{% endif %}
+{% if content.actions %}
+<section class="record-contribution" data-reveal aria-labelledby="read-actions">
+  <h2 class="section-label" id="read-actions">{{ READING_LABELS.actions }}</h2>
+  <p class="prose">{{ content.actions }}</p>
+</section>
+{% endif %}
+{% if content.reflection or content.links %}
+<div class="record-more" data-reveal>
+  {% if content.reflection %}
+  <details class="fold">
+    {{ m.fold_summary(READING_LABELS.reflection) }}
+    <p class="prose">{{ content.reflection }}</p>
+  </details>
+  {% endif %}
+  {% if content.links %}
+  <details class="fold">
+    {{ m.fold_summary(READING_LABELS.links) }}
+    {{ m.link_list(content.links) }}
+  </details>
+  {% endif %}
+</div>
+{% endif %}
+{% if item.private_note %}
+<details class="fold fold-private" data-reveal>
+  {{ m.fold_summary(NOTE_FIELD.label, private=True) }}
+  <p class="private-notice">只给你自己看；不会进入资料快照或简历。导出时会包含，分享导出文件之前请检查。</p>
+  <p class="prose">{{ item.private_note }}</p>
+</details>
+{% endif %}
+{% set unfilled = unfilled_labels(content) %}
+{% if unfilled %}
+<p class="record-unfilled">尚未填写：{{ unfilled|join("、") }}。</p>
+{% endif %}
 {% endblock %}

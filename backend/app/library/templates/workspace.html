@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block layout %}
+<div class="workspace{% if focus %} workspace-focus{% endif %}">
+  {{ m.library_nav(sidebar_items, selected_id) }}
+  <main id="main" class="pane" tabindex="-1">
+    <div class="pane-body" data-pane-body>
+      {% if notice %}
+      <p class="notice" role="status">{{ notice }}</p>
+      {% endif %}
+      {% block content %}{% endblock %}
+    </div>
+    {# Shown by motion.js only while the next workspace page is really loading. #}
+    <div class="pane-skeleton" data-pane-skeleton hidden aria-hidden="true">
+      <div class="sk sk-title"></div>
+      <div class="sk sk-meta"></div>
+      <div class="sk sk-block"></div>
+      <div class="sk sk-line"></div>
+      <div class="sk sk-line"></div>
+      <div class="sk sk-line sk-short"></div>
+    </div>
+    <p class="visually-hidden" data-pane-status role="status"></p>
+  </main>
+</div>
+{% endblock %}
