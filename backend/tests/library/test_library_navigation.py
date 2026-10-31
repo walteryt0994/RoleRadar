@@ -16,7 +16,8 @@ from app.library.content import CATEGORY_LABELS, EXPERIENCE_CATEGORIES
 from library_helpers import PDF, Browser, form_for
 
 SENTINEL = "总览外哨兵-nav1-3b7e"
-FUTURE_MODULES = ("方向探索", "岗位机会", "我的简历", "投递跟踪")
+# 岗位机会 has its one part, 岗位分析, since U2-A2; the others still get no entry.
+FUTURE_MODULES = ("方向探索", "我的简历", "投递跟踪")
 # One record of each category, named by its title field.
 TITLED = {
     "project": {"title": "合成项目", "actions": "项目里做了什么"},
@@ -100,7 +101,8 @@ def test_my_data_has_three_parts_and_keeps_the_bin_and_the_export_in_a_disclosur
         parts = region(page, '<nav class="subnav"', "</nav>")
         menu = region(page, '<details class="manage" data-menu>', "</details>")
 
-        assert re.findall(r">([^<>]+)</a>", top) == ["我的资料"], path
+        assert re.findall(r">([^<>]+)</a>", top) == ["我的资料", "岗位机会"], path
+        assert '<a href="/experiences" aria-current="true">我的资料</a>' in top, path
         assert re.findall(r'href="([^"]+)"', parts) == ["/experiences", "/basic-profile", "/job-preferences"], path
         assert re.findall(r">([^<>]+)</a>", parts) == ["经历库", "基本资料", "求职偏好"], path
         # A native disclosure: findable and usable by keyboard and touch, also without JavaScript.

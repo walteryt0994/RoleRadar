@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% set area = "jobs" %}
+{% block title %}核对发送内容{% endblock %}
+{% block layout %}
+<main id="main" class="job-page job-reading" tabindex="-1">
+  {% if notice %}
+  <p class="notice" role="status">{{ notice }}</p>
+  {% endif %}
+  <header class="job-head">
+    <h1>核对发送内容</h1>
+  </header>
+  {% if error %}
+  <p class="error" role="alert">{{ error }}</p>
+  {% endif %}
+  <form method="post" action="/job-analysis/tasks/{{ task.id }}/confirm" class="review">
+    {{ m.csrf() }}
+    <input type="hidden" name="fingerprint" value="{{ task.fingerprint }}">
+    <section class="review-section"{% if not error %} data-reveal{% endif %} aria-labelledby="who-title">
+      <h2 id="who-title">交给谁，怎样处理</h2>
+      <dl class="facts">
+        <div><dt>接收方</dt><dd>本机模拟服务：RoleRadar 内置的固定规则，不是 AI。在这台电脑上运行，不联网，不保存请求。</dd></div>
+        <div><dt>用途</dt><dd>只用于对照这一份岗位描述分析所选经历{% if plan.sent_preferences %}和求职偏好{% endif %}。</dd></div>
+        <div><dt>步骤</dt><dd>确认后连续进行两步：先解析岗位描述，再对照分析。中途不再逐步询问，随时可以取消。</dd></div>
+        <div><dt>结果</dt><dd>只临时显示 {{ TASK_TTL_MINUTES }} 分钟，服务重启后也会清除；不会存进经历库，不会投递，也不会发给任何人。</dd></div>
+      </dl>
+    </section>
+
+    <section class="review-section"{% if not error %} data-reveal{% endif %} aria-labelledby="sources-title">
+      <h2 id="sources-title">会发送的经历</h2>
+      <p class="hint">勾选的栏目会原样发送。去掉勾选后点“更新核对”。</p>
+      {% for source in plan.sources %}
+      <fieldset class="review-source">
+        <legend>{{ source.title }}</legend>
+        <p class="review-meta"><span>{{ CATEGORY_LABELS[source.entry.category] }}</span><span>确认版 {{ source.entry.version_number }}</span></p>
+        {% for field in source.fields %}
+        {% if field.status == BLOCKED %}
+        <div class="review-field is-blocked">
+          <p class="review-label">{{ field.label }}</p>
+          <p class="review-note">不会发送：含有疑似{{ found_labels(field.blocked) }}。需要使用这一栏时，请修改这段经历并重新确认。</p>
+        </div>
+        {% else %}
+        <div class="review-field">
+          <label class="check review-label"><input type="checkbox" name="send" value="{{ source.entry.item_id }}:{{ field.name }}"{% if field.status == SEND %} checked{% endif %}>{{ field.label }}</label>
+          <p class="text review-text{% if field.status == LEFT_OUT %} is-left-out{% endif %}">{{ field.text }}</p>
+        </div>
+        {% endif %}
+        {% endfor %}
+      </fieldset>
+      {% endfor %}
+    </section>
+
+    <section class="review-section"{% if not error %} data-reveal{% endif %} aria-labelledby="posting-title">
+      <h2 id="posting-title">会发送的岗位描述</h2>
+      {% if plan.posting_hidden %}
+      <p class="hint">其中的{{ found_labels(plan.posting_hidden) }}已换成“［已隐去…］”，下面就是会发送的文字。</p>
+      {% endif %}
+      <div class="review-posting text">{{ plan.posting }}</div>
+    </section>
+
+    <section class="review-section"{% if not error %} data-reveal{% endif %} aria-labelledby="preferences-title">
+      <h2 id="preferences-title">求职偏好</h2>
+      {% if not plan.use_preferences %}
+      <p>本次不参考求职偏好。</p>
+      {% elif not plan.preferences %}
+      <p>你还没有保存求职偏好，本次不参考偏好。</p>
+      {% else %}
+      <p class="hint">勾选的偏好会发送，用来和岗位描述对照；它们只是意愿，不会当成硬性筛选，也不影响技能覆盖。</p>
+      {% for item in plan.preferences %}
+      {% if item.status == BLOCKED %}
+      <div class="review-field is-blocked">
+        <p class="review-label">{{ item.topic }}{% if item.stance %}：{{ item.stance }}{% endif %}</p>
+        <p class="review-note">不会发送：含有疑似{{ found_labels(item.blocked) }}。</p>
+      </div>
+      {% else %}
+      <div class="review-field">
+        <label class="check review-label"><input type="checkbox" name="send" value="{{ PREFERENCES_KEY }}:{{ item.field }}"{% if item.status == SEND %} checked{% endif %}>{{ item.topic }}{% if item.stance %}：{{ item.stance }}{% endif %}</label>
+        <p class="text review-text{% if item.status == LEFT_OUT %} is-left-out{% endif %}">{{ item.text }}</p>
+      </div>
+      {% endif %}
+      {% endfor %}
+      {% endif %}
+    </section>
+
+    <section class="review-section"{% if not error %} data-reveal{% endif %} aria-labelledby="kept-title">
+      <h2 id="kept-title">不会发送</h2>
+      <ul class="points">
+        <li>基本资料：姓名、电话、邮箱、所在城市</li>
+        <li>私有备注和附件</li>
+        <li>没有选择的经历，以及上面没有勾选或被拦下的栏目</li>
+        <li>以前的分析结果</li>
+      </ul>
+      <p class="hint">自动检查只认得出常见写法的邮箱、电话、证件号、地址和“保密”一类字样，可能漏掉别的敏感内容，也可能误拦。确认前请自己再看一遍上面的文字。</p>
+    </section>
+
+    <div class="form-actions review-actions">
+      <button type="submit" name="action" value="start" class="primary">确认并开始分析</button>
+      <button type="submit" name="action" value="update" class="secondary">更新核对</button>
+      <a href="/job-analysis?from={{ task.id }}">返回修改</a>
+    </div>
+  </form>
+</main>
+{% endblock %}

@@ -15,6 +15,8 @@ sending anywhere.
 
 read_selected_confirmations reads the experiences a user chose for one task
 again, each as the confirmed version that was chosen, by the same rules.
+current_preferences reads the job preferences as saved: they are a wish
+list, never confirmed, and a task compares only the fields its user chose.
 
 list_references says what the library knows about other modules using a
 record. No other module keeps references yet, so the answer says exactly
@@ -27,7 +29,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.library.content import CATEGORY_FIELDS, EXPERIENCE_CATEGORIES
+from app.library.content import CATEGORY_FIELDS, EXPERIENCE_CATEGORIES, PREFERENCES
 from app.library.errors import InconsistentRecord, NotFound
 from app.library.models import ExperienceItem, ExperienceVersion, ItemState, VersionKind
 from app.library.service import is_expired, new_id
@@ -167,10 +169,13 @@ UNAVAILABLE = "unavailable"
 NOT_CONFIRMED = "not_confirmed"
 # Confirmed again since: the chosen version is no longer the current one.
 VERSION_CHANGED = "version_changed"
+# The chosen preference fields no longer hold the words that were chosen.
+PREFERENCES_CHANGED = "preferences_changed"
 
 
 @dataclass(frozen=True)
 class SelectionProblem:
+    # The experience's id; PREFERENCES for the chosen job preferences.
     item_id: str
     reason: str
 
@@ -218,6 +223,26 @@ def read_selected_confirmations(
             entries.append(_as_confirmed(item, version))
 
     return tuple(entries), tuple(problems)
+
+
+def current_preferences(db: Session, owner_id: str) -> dict[str, str]:
+    """The filled fields of the owner's job preferences outside the recycle bin ({} without any)."""
+    item = db.scalar(
+        select(ExperienceItem).where(
+            ExperienceItem.owner_id == owner_id,
+            ExperienceItem.category == PREFERENCES,
+            ExperienceItem.deleted_at.is_(None),
+        )
+    )
+
+    if item is None or not isinstance(item.content, dict):
+        return {}
+
+    return {
+        field.name: item.content[field.name]
+        for field in CATEGORY_FIELDS[PREFERENCES]
+        if isinstance(item.content.get(field.name), str) and item.content[field.name]
+    }
 
 
 @dataclass(frozen=True)

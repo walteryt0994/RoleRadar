@@ -851,6 +851,53 @@ def test_identity_does_not_hardcode_the_provider_name():
     assert renamed.identity().provider == "renamed-provider"
 
 
+def test_identity_names_a_fixed_endpoint_and_none_otherwise(provider):
+    assert provider.identity().endpoint is None
+
+    with patch("app.ai_provider.OpenAI") as client:
+        fixed = OpenAIProvider(
+            config=OpenAIProviderConfig(
+                api_key="test-key-not-real",
+                model="test-model",
+                base_url="https://api.example.invalid/v1",
+            )
+        )
+
+    assert fixed.identity().endpoint == "https://api.example.invalid/v1"
+    assert client.call_args.kwargs["base_url"] == "https://api.example.invalid/v1"
+
+
+def test_proxies_from_the_environment_are_ignored_when_asked():
+    with patch("app.ai_provider.OpenAI") as client, patch(
+        "app.ai_provider.DefaultHttpxClient"
+    ) as http:
+        OpenAIProvider(
+            config=OpenAIProviderConfig(
+                api_key="test-key-not-real",
+                model="test-model",
+                use_environment_proxies=False,
+            )
+        )
+
+    assert http.call_args.kwargs["trust_env"] is False
+    assert client.call_args.kwargs["http_client"] is http.return_value
+
+    with patch("app.ai_provider.OpenAI") as client:
+        OpenAIProvider(config=TEST_CONFIG)
+
+    assert "http_client" not in client.call_args.kwargs
+
+
+@pytest.mark.parametrize(
+    "base_url", ["http://api.example.invalid/v1", "api.example.invalid", 5]
+)
+def test_config_rejects_an_endpoint_that_is_not_https(base_url):
+    with pytest.raises(AIProviderConfigError):
+        OpenAIProviderConfig(
+            api_key="test-key-not-real", model="test-model", base_url=base_url
+        )
+
+
 def test_a_provider_that_cannot_tell_has_no_identity():
     class UnnamedProvider(AIProvider):
         def generate_text(self, prompt, **options):

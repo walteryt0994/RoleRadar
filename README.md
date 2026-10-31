@@ -529,14 +529,19 @@ roleradar/
 ├── backend/
 │   ├── app/
 │   │   ├── ai_provider.py
+│   │   ├── analysis_contracts.py  # U2 evidence analysis: what a task asks and gets back
 │   │   ├── analyzer.py
 │   │   ├── database.py
+│   │   ├── experience_analysis.py # U2 evidence analysis of chosen experiences
 │   │   ├── jd_outcome.py
 │   │   ├── jd_record.py
 │   │   ├── jd_service.py
+│   │   ├── job_analysis/   # v0.1 U2-A2 job analysis pages and temporary tasks
 │   │   ├── library/        # v0.1 U1 experience library: own database and pages
 │   │   ├── main.py
+│   │   ├── match_service.py
 │   │   ├── models.py
+│   │   ├── outbound_review.py     # what must not go out to an analysis service
 │   │   ├── parser.py
 │   │   ├── resume_service.py
 │   │   ├── routers.py
@@ -839,9 +844,11 @@ cd backend
 
 Then open http://127.0.0.1:8765 and stop the app with Ctrl+C.
 
-U2-A1 adds an internal evidence analysis (`app/experience_analysis.py`, with its contracts in `app/analysis_contracts.py`): chosen, confirmed experiences, named by id and confirmed version, against one job posting. Every conclusion names the posting's words and the experience, version, field and words it rests on; a choice that changed or names an experience twice, a missing confirmation of the task, a provider configured for another service or model than the task names, a rule fallback or an answer whose citations are not in the chosen text never comes back as a complete analysis. A quote is read with its clause and what leads up to it in its sentence, so a short quote cannot drop a "did not" said there, and support next to a denial of the same requirement is left to be confirmed. It runs only against a simulated service in tests: no page, no stored result and no real network call yet. "No evidence" means nothing in the chosen material shows it, not that the user lacks it; the skill coverage score is not a hiring probability, and a conflict with a hard constraint is reported apart from it.
+U2-A1 adds an internal evidence analysis (`app/experience_analysis.py`, with its contracts in `app/analysis_contracts.py`): chosen, confirmed experiences, named by id and confirmed version, against one job posting. Every conclusion names the posting's words and the experience, version, field and words it rests on; a choice that changed or names an experience twice, a missing confirmation of the task, a provider configured for another service or model than the task names, a rule fallback or an answer whose citations are not in the chosen text never comes back as a complete analysis. A quote is read with its clause and what leads up to it in its sentence, so a short quote cannot drop a "did not" said there, and support next to a denial of the same requirement is left to be confirmed. In U2-A1 it ran only in tests; U2-A2 puts it on a page (below), still without any real network call. "No evidence" means nothing in the chosen material shows it, not that the user lacks it; the skill coverage score is not a hiring probability, and a conflict with a hard constraint is reported apart from it.
 
 The pages are grouped under 我的资料 (UI-NAV1): 经历库, 基本资料 and 求职偏好 side by side, and 资料管理 for the recycle bin and the "export all" download. 经历库 (`/experiences`) is an overview of your experiences with the search and the category filter; a record opens on its own page, with the filtered list beside it and a way back. The addresses of all pages are unchanged.
+
+U2-A2 adds 岗位机会 → 岗位分析 (`/job-analysis`, code in `app/job_analysis/`): choose confirmed experiences, paste one job posting, optionally use your saved job preferences, review exactly what would be sent and to whom, then confirm. The review is kept on the server as a temporary task of your user and session; only confirming it starts it, once, and any change after the review needs a new one. Fields that look like contact details, identity numbers, addresses or confidential content are not sent. In the posting, email addresses, phone numbers and identity numbers are masked; a posting with an address or confidential content is refused before any preview, with the input kept, until that part is removed. These few patterns are no anonymisation. Results show the posting's conditions, the support in your experiences and your preferences, each with its sources; they are temporary (30 minutes, gone when the app restarts) and never saved, sent or applied anywhere. The app sweeps the tasks every 30 seconds and checks a running one before each request and when its result comes back, so time limits hold even when no page is open. The analysis runs on a simulated service inside the app: fixed rules, not AI, and the pages say so. No real service is connected: `app/job_analysis/live.py` holds the checks a real run would need (an explicit model and official endpoint, no proxies or retries, a request budget), and none of it is used until the service's data rules are checked and the Owner approves samples, requests and a cost limit.
 
 - `--db` must be an absolute path outside the repository. Start-up is refused if it is the legacy database (also through a symlink or hard link), lies inside `backend/records/`, or belongs to another program.
 - The entry point only binds to 127.0.0.1 and turns proxy headers off; any other `--host` is refused.
@@ -849,6 +856,7 @@ The pages are grouped under 我的资料 (UI-NAV1): 经历库, 基本资料 and 
 - While the app runs, expired recycle-bin content is cleaned up every 10 minutes, and once at every start-up. The same pass removes what interrupted uploads and exports left behind.
 - Data files of earlier versions (U1-A: structure version 1, U1-B: version 2) are refused and left unchanged: there is no migration tool yet, so start with a new file and a new attachment folder.
 - `--dev-clock-offset-days N` moves the app's clock forward to check the 7-day restore window locally; a banner at the top shows the offset. Use a separate database for it, because sessions and timestamps created under the shifted clock stay in that file.
+- `--simulation-delay S` (with `--dev-login`, at most 60) makes each step of the simulated job analysis wait S seconds, to see waiting, cancelling and late answers locally; a banner at the top says so.
 
 ## V1 Demo Flow
 

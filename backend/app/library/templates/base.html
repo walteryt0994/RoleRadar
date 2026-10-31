@@ -10,6 +10,7 @@
 </head>
 <body>
   {% set section = section|default("library") %}
+  {% set area = area|default("profile") %}
   {% import "_icons.html" as i %}
   <div class="backdrop" aria-hidden="true"><div class="backdrop-layer" data-parallax></div></div>
   <a class="skip-link" href="#main" data-skip-leave-guard>跳到正文</a>
@@ -17,11 +18,15 @@
   {% if clock_note %}
   <div class="dev-banner clock">{{ clock_note }}</div>
   {% endif %}
+  {% if simulation_note %}
+  <div class="dev-banner clock">{{ simulation_note }}</div>
+  {% endif %}
   <header class="topbar">
     <a class="brand" href="/experiences"><span class="brand-mark">{{ i.icon("radar") }}</span>RoleRadar</a>
     {% if user %}
     <nav class="nav" aria-label="主要导航">
-      <a href="/experiences" aria-current="true">我的资料</a>
+      <a href="/experiences"{% if area == "profile" %} aria-current="true"{% endif %}>我的资料</a>
+      <a href="/job-analysis"{% if area == "jobs" %} aria-current="true"{% endif %}>岗位机会</a>
     </nav>
     <div class="who">
       <span>当前：{{ user.label }}</span>
@@ -32,7 +37,14 @@
     </div>
     {% endif %}
   </header>
-  {% if user %}
+  {% if user and area == "jobs" %}
+  {# 岗位机会 has one part so far; later parts get no entry until they exist. #}
+  <div class="subbar">
+    <nav class="subnav" aria-label="岗位机会">
+      <a href="/job-analysis" aria-current="page">岗位分析</a>
+    </nav>
+  </div>
+  {% elif user %}
   {# The parts of 我的资料. The recycle bin and the export are kept in a native
      disclosure, which opens by click, touch or keyboard, also without JavaScript. #}
   <div class="subbar">

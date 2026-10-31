@@ -587,6 +587,89 @@ dialog h2 { margin-top: 0; }
 .compare-row h3 { margin: 0 0 8px; }
 .compare-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 
+/* --- 岗位机会 → 岗位分析 (U2-A2) -------------------------------------------- */
+
+/* The input page: choosing experiences on the left, the posting on the
+   right; the review, the running task and the result read as one sheet. */
+.job-page { max-width: 1120px; margin: 28px auto 64px; padding: 0 32px; }
+.job-page:focus { outline: none; }
+.job-reading { max-width: 880px; padding: 32px 40px 40px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius-panel); }
+.job-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; margin-bottom: 20px; }
+.job-head h1 { margin: 0; }
+/* Which service makes the result: always said, never hidden for looks. */
+.job-mode { margin: 0; padding: 2px 10px; font-size: 13px; color: var(--ink); background: var(--tag); border-radius: var(--radius-tag); }
+.job-columns { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); align-items: start; gap: 24px; }
+.job-panel { min-width: 0; padding: 22px 24px 24px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius-panel); }
+.job-panel h2 { margin-top: 0; }
+.job-panel.has-problem { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.job-panel textarea { min-height: 280px; }
+.job-option { margin: 8px 0 0; }
+.check { display: flex; align-items: flex-start; gap: 10px; }
+.check input[type=checkbox], .pick-choice input[type=checkbox] { flex: none; width: 18px; height: 18px; margin: 4px 0 0; accent-color: var(--ink); }
+
+.pick-list { list-style: none; margin: 8px 0 12px; padding: 0; border-top: 1px solid var(--line); }
+.pick { padding: 12px 0 0; border-bottom: 1px solid var(--line); }
+.pick-choice { display: flex; align-items: flex-start; gap: 12px; }
+.pick-choice label { min-width: 0; cursor: pointer; }
+.pick-title { display: block; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.pick-meta { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 13px; color: var(--ink-soft); }
+.pick-content { margin-left: 30px; border-bottom: 0; }
+.pick-content > summary { min-height: 40px; font-size: 13px; font-weight: 500; color: var(--ink-soft); }
+.pick-content .fields dt:first-child { margin-top: 0; }
+
+.review-section { margin: 0 0 30px; }
+.review-section h2 { margin: 0 0 10px; }
+.facts { margin: 0; }
+.facts div { display: grid; grid-template-columns: 5em minmax(0, 1fr); gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.facts dt { font-size: 13px; font-weight: 500; color: var(--ink-soft); }
+.facts dd { margin: 0; }
+.review-source { min-width: 0; margin: 0 0 14px; padding: 14px 20px 6px; background: var(--white); border: 1px solid var(--line); border-radius: var(--radius-panel); }
+.review-source legend { padding: 0 6px; font-weight: 600; overflow-wrap: anywhere; }
+.review-meta { display: flex; flex-wrap: wrap; gap: 2px 12px; margin: 0 0 4px; font-size: 13px; color: var(--ink-soft); }
+.review-field { padding: 10px 0; border-top: 1px solid var(--line); }
+.review-label { margin: 0 0 4px; font-size: 14px; font-weight: 500; }
+.review-text { padding-left: 28px; }
+.review-text.is-left-out { color: var(--ink-soft); text-decoration: line-through; }
+.review-note { margin: 0; font-size: 14px; font-weight: 500; }
+.review-posting { padding: 14px 16px; background: var(--white); border: 1px solid var(--line); border-radius: var(--radius-control); }
+.review-actions { position: sticky; bottom: 0; z-index: 1; margin: 24px 0 0; padding: 12px 0 14px; background: var(--paper); border-top: 1px solid var(--line); }
+
+.steps { display: flex; flex-wrap: wrap; gap: 6px 24px; margin: 0 0 12px; padding: 0; list-style: none; color: var(--ink-soft); }
+.steps li { padding: 4px 0; border-bottom: 2px solid transparent; }
+.steps li[aria-current="step"] { color: var(--ink); font-weight: 600; border-bottom-color: var(--ink); }
+.task-status { font-size: 16px; font-weight: 500; }
+
+.result-section { margin: 30px 0 0; }
+.result-section h2 { margin: 0 0 8px; }
+.result-group { margin: 18px 0 2px; font-size: 14px; color: var(--ink); }
+.result-group span { margin-left: 10px; font-weight: 400; color: var(--ink-soft); }
+/* A conflict stands apart: its words and a heavier dark border, never colour. */
+.result-alert { padding: 10px 14px; font-weight: 600; background: var(--white); border: 1px solid var(--ink); border-radius: var(--radius-control); box-shadow: inset 0 0 0 1px var(--ink); }
+.finding > summary { gap: 12px; }
+.finding-text { min-width: 0; overflow-wrap: anywhere; }
+.finding-verdict { flex: none; padding: 1px 10px; font-size: 14px; font-weight: 600; background: var(--tag); border-radius: var(--radius-tag); }
+.finding-label { display: flex; flex-wrap: wrap; gap: 2px 12px; margin: 12px 0 6px; font-size: 13px; color: var(--ink-soft); }
+.quote { margin: 0; padding: 10px 14px; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--outcome); border-radius: 10px; }
+.finding-context { margin: 6px 0 0; font-size: 13px; color: var(--ink-soft); overflow-wrap: anywhere; }
+.reasons { margin: 10px 0 0; padding-left: 20px; font-size: 14px; }
+.coverage-score { margin: 0 0 4px; font-size: 28px; font-weight: 600; line-height: 1.3; }
+.result-foot { margin-top: 30px; }
+
+/* Below this the two input panels read better one after the other (also at 200% zoom). */
+@media (max-width: 899px) {
+  .job-columns { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 719px) {
+  .job-page { margin: 0 auto 40px; padding: 16px 16px 0; }
+  .job-reading { margin: 0; padding: 20px 16px 32px; border: 0; border-radius: 0; }
+  .job-panel { padding: 18px 16px 20px; }
+  .facts div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .finding > summary { flex-wrap: wrap; }
+  .review-text { padding-left: 0; }
+  .steps li { min-height: 44px; display: inline-flex; align-items: center; }
+}
+
 /* --- motion: a skeleton while a page loads, and blocks that rise in -------- */
 
 /* Only shown by motion.js while the browser really waits for a workspace

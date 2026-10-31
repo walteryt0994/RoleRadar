@@ -34,8 +34,11 @@ LEGACY_MODULES = (
     "app.models",
     "app.routers",
     "app.services",
-    "app.schemas",
 )
+# Since U2-A2 the app also mounts the job analysis, which uses the shared job
+# description contracts in app.schemas (data models only, no database) and
+# the provider code. The library package itself still loads none of them.
+SHARED_CONTRACTS = ("app.schemas", "app.experience_analysis", "app.job_analysis", "openai")
 
 
 def test_launcher_points_every_database_variable_into_the_test_root(test_root):
@@ -79,6 +82,51 @@ def test_importing_and_building_the_app_never_loads_legacy_modules(tmp_path, tes
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == [[], []]
     assert (tmp_path / "child.db").exists()
+
+
+def test_the_library_package_itself_loads_no_analysis_or_legacy_code():
+    script = "\n".join(
+        [
+            "import importlib, json, pkgutil, sys",
+            "import app.library",
+            "for module in pkgutil.iter_modules(app.library.__path__):",
+            "    importlib.import_module(f'app.library.{module.name}')",
+            f"names = {LEGACY_MODULES + SHARED_CONTRACTS!r}",
+            "print(json.dumps([name for name in names if name in sys.modules]))",
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", script], cwd=BACKEND_DIR, env=os.environ.copy(), capture_output=True, text=True, timeout=60
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == []
+
+
+def test_building_the_app_builds_no_service_client(tmp_path, test_root):
+    script = "\n".join(
+        [
+            "import sys",
+            "from pathlib import Path",
+            "import openai",
+            "def refuse(*args, **kwargs):",
+            "    raise AssertionError('a service client was built')",
+            "openai.OpenAI.__init__ = refuse",
+            "import app.web_main",
+            "from app.library.config import LibraryConfig",
+            f"config = LibraryConfig(db_path=Path({str(tmp_path / 'child.db')!r}), dev_login=True,",
+            f"    files_dir=Path({str(tmp_path / 'child-files')!r}),",
+            f"    test_root=Path({str(test_root)!r}), purge_interval_seconds=None)",
+            "built = app.web_main.create_app(config)",
+            "print('app.job_analysis.web' in sys.modules, built.state.job_analysis is not None)",
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", script], cwd=BACKEND_DIR, env=os.environ.copy(), capture_output=True, text=True, timeout=60
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["True", "True"]
 
 
 @pytest.fixture

@@ -11,6 +11,12 @@ so a confirmation given for one task (TaskApproval) does not cover another:
 adding a source, changing the purpose, the job posting or the recipient
 makes a new task that needs its own confirmation. In U2-A1 confirmations
 are only built by tests; they are not a user's real permission.
+
+U2-A2 adds what the job analysis page lets the user decide: which fields of
+each chosen version go out, which saved job preferences are compared, and
+the version of what the page said about the task. They are covered by the
+fingerprint too. The page's server keeps the confirmation (see
+app.job_analysis); a browser never supplies one.
 """
 import hashlib
 import json
@@ -32,18 +38,33 @@ SIMULATION_PROVIDER = "simulation"
 
 @dataclass(frozen=True)
 class SelectedSource:
-    """One chosen experience and the confirmed version that was chosen."""
+    """One chosen experience and the confirmed version that was chosen.
+
+    fields names the fields of that version that may go out; None lets every
+    field go (U2-A1). A field outside it is never sent, and never cited.
+    """
 
     item_id: str
     version_id: str
+    fields: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True)
+class SelectedPreference:
+    """A field of the job preferences chosen for this task, with the words it held then."""
+
+    field: str
+    text: str
 
 
 @dataclass(frozen=True)
 class Recipient:
-    """Who receives the material: the service, and the model the task names."""
+    """Who receives the material: the service, the model the task names and,
+    for a real service, the address its requests go to."""
 
     provider: str
     model: str
+    endpoint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -60,6 +81,10 @@ class AnalysisRequest:
     recipient: Recipient
     purpose: str = JOB_MATCH
     mode: str = SINGLE_REQUEST
+    # Preferences to compare with the posting; none means they are not used.
+    preferences: tuple[SelectedPreference, ...] = ()
+    # The version of what the page told the user before they confirmed.
+    notice_version: str = ""
 
 
 def task_fingerprint(request: AnalysisRequest) -> str:
@@ -68,15 +93,21 @@ def task_fingerprint(request: AnalysisRequest) -> str:
     The order in which sources were chosen does not matter; which sources
     and versions, the job posting, the purpose, the mode and the recipient
     all do. A task that runs names each experience once, so these sorted
-    pairs are exactly the versions it reads.
+    pairs are exactly the versions it reads. So do the fields of each that
+    may go out, the preferences with their words, and the notice version.
     """
     scope = {
         "owner_id": request.owner_id,
         "purpose": request.purpose,
         "mode": request.mode,
-        "recipient": [request.recipient.provider, request.recipient.model],
-        "sources": sorted([source.item_id, source.version_id] for source in request.selection),
+        "recipient": [request.recipient.provider, request.recipient.model, request.recipient.endpoint],
+        "sources": sorted(
+            [source.item_id, source.version_id, "*" if source.fields is None else json.dumps(sorted(source.fields))]
+            for source in request.selection
+        ),
         "job_posting_sha256": fingerprint_job_posting(request.job_posting),
+        "preferences": sorted([preference.field, preference.text] for preference in request.preferences),
+        "notice_version": request.notice_version,
     }
     encoded = json.dumps(scope, sort_keys=True, ensure_ascii=False).encode("utf-8")
 
@@ -117,6 +148,9 @@ class RejectionReason(StrEnum):
     RECIPIENT_UNVERIFIED = "recipient_unverified"
     # The same experience chosen more than once, in one version or several.
     REPEATED_SELECTION = "repeated_selection"
+    # Something about to go out looks like contact details, an identity
+    # number, an address or confidential content (app.outbound_review).
+    OUTBOUND_BLOCKED = "outbound_blocked"
     SELECTION_INVALID = "selection_invalid"
     SOURCES_CHANGED = "sources_changed"
 
@@ -179,6 +213,28 @@ class ConditionConclusion(StrEnum):
     UNKNOWN = "unknown"
 
 
+class PreferenceRelation(StrEnum):
+    """How the posting stands to one preference, as the model reads it (a suggestion)."""
+
+    CONSISTENT = "consistent"
+    CONFLICTS = "conflicts"
+    UNCLEAR = "unclear"
+    NOT_STATED = "not_stated"
+
+
+class PreferenceConclusion(StrEnum):
+    """A chosen preference against the posting. Never a skill, never scored."""
+
+    CONSISTENT = "consistent"
+    # Goes against something the user would like or could accept: a wish, not a filter.
+    DIFFERENT = "different"
+    # Goes against what the user cannot accept or must have: shown apart.
+    CONFLICT = "conflict"
+    NEEDS_CONFIRMATION = "needs_confirmation"
+    # The posting does not say; nothing is inferred from the company or the title.
+    NOT_STATED = "not_stated"
+
+
 @dataclass(frozen=True)
 class SourceBasis:
     item_id: str
@@ -187,6 +243,8 @@ class SourceBasis:
     version_number: int
     confirmed_at: datetime
     source_revision: int
+    # The fields of this version that went out (all of its filled fields in U2-A1).
+    fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -208,6 +266,8 @@ class AnalysisBasis:
     provider: str
     requested_model: str
     returned_model: str
+    # Set when preferences were compared.
+    preference_rules_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -239,6 +299,22 @@ class RequirementFinding:
 
 
 @dataclass(frozen=True)
+class PreferenceFinding:
+    preference_id: str
+    # The preferences field, such as cities_ideal or must_haves.
+    field: str
+    # The user's own words in that field.
+    text: str
+    # A PreferenceConclusion.
+    conclusion: str
+    # The posting's words it rests on, each found word for word in the posting sent.
+    job_quotes: tuple[str, ...]
+    reasons: tuple[str, ...]
+    # Whether the field says what the user cannot accept or must have.
+    firm: bool
+
+
+@dataclass(frozen=True)
 class AnalysisResult:
     """A temporary result: never saved, confirmed or sent anywhere."""
 
@@ -259,8 +335,9 @@ class AnalysisResult:
     # The rejection reason or failure category, or the posting's failure when degraded.
     problem: str | None = None
     selection_problems: tuple[SelectionProblem, ...] = ()
-    # Preferences are not part of this analysis (U2-A2 chooses them per task).
+    # "not_analyzed" unless the task chose preferences; then "compared".
     preferences: str = "not_analyzed"
+    preference_findings: tuple[PreferenceFinding, ...] = ()
 
     @property
     def is_current(self) -> bool:
@@ -274,4 +351,11 @@ class AnalysisResult:
             for finding in self.findings
             if finding.group is RequirementGroup.HARD_CONSTRAINT
             and finding.conclusion == ConditionConclusion.CONFLICT
+        )
+
+    @property
+    def preference_conflicts(self) -> tuple[PreferenceFinding, ...]:
+        """What the user cannot accept or must have, which the posting goes against."""
+        return tuple(
+            finding for finding in self.preference_findings if finding.conclusion == PreferenceConclusion.CONFLICT
         )

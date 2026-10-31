@@ -65,6 +65,16 @@ POST_ROUTES = {
 }
 # The upload takes a multipart body; test_library_attachments.py checks its access rules.
 UPLOAD_ROUTES = {"/experiences/{item_id}/attachments": {"item_id": "item"}}
+# The job analysis pages (U2-A2); test_job_analysis_pages.py checks their access rules.
+JOB_ROUTES = {
+    ("GET", "/job-analysis"),
+    ("POST", "/job-analysis/review"),
+    ("GET", "/job-analysis/tasks/{task_id}"),
+    ("GET", "/job-analysis/tasks/{task_id}/status"),
+    ("POST", "/job-analysis/tasks/{task_id}/confirm"),
+    ("POST", "/job-analysis/tasks/{task_id}/cancel"),
+    ("POST", "/job-analysis/tasks/{task_id}/again"),
+}
 # One field each kind of record accepts, so the same post is valid for every route.
 SOME_CONTENT = {"actions": "", "name": "", "cities_ideal": ""}
 SENTINEL = "哨兵-c41f"
@@ -190,6 +200,7 @@ def test_every_route_is_either_public_or_listed_as_protected(app):
         | {("GET", path) for path in GET_ROUTES}
         | {("POST", path) for path in POST_ROUTES}
         | {("POST", path) for path in UPLOAD_ROUTES}
+        | JOB_ROUTES
     )
 
     assert found == expected
@@ -199,7 +210,7 @@ def test_static_files_hold_no_user_data_and_are_public(app):
     names = sorted(path.name for path in (PACKAGE_DIR / "static").iterdir())
     anonymous = Browser(app)
 
-    assert names == ["leave_guard.js", "library.css", "menu.js", "motion.js", "upload.js"]
+    assert names == ["job_analysis.js", "leave_guard.js", "library.css", "menu.js", "motion.js", "upload.js"]
 
     for name in names:
         assert anonymous.get(f"/static/{name}").status_code == 200

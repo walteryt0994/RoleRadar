@@ -357,7 +357,8 @@ def test_the_navigation_marks_the_part_of_my_data_you_are_in(browser_a):
         parts = anchors_in(region('<nav class="subnav"', "</nav>"))
         menu = anchors_in(region('<details class="manage"', "</details>"))
 
-        assert [a.get("aria-current") for a in top] == ["true"], path
+        # 我的资料 is the current area; 岗位机会 beside it is not.
+        assert [(a["href"], a.get("aria-current")) for a in top] == [("/experiences", "true"), ("/job-analysis", None)], path
         return (
             [a["href"] for a in parts if a.get("aria-current") == "page"],
             [a["href"] for a in menu if a.get("aria-current") == "page"],

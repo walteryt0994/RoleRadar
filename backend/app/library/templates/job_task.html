@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% import "_icons.html" as i %}
+{% set area = "jobs" %}
+{% block title %}{% if task.stage == "running" %}正在分析{% elif task.stage == "cancelled" %}分析已取消{% else %}岗位分析结果{% endif %}{% endblock %}
+
+{# One requirement: its conclusion in the row, the posting's words and the cited experiences when opened. #}
+{% macro finding_row(finding) %}
+<details class="fold finding">
+  <summary><span class="fold-title finding-text">{{ finding.text }}</span><span class="finding-verdict">{{ conclusion_label(finding) }}</span><span class="chevron">{{ i.icon("chevron-right") }}</span></summary>
+  <div class="finding-body">
+    <p class="finding-label">岗位原文</p>
+    <blockquote class="quote">{{ finding.job_posting_quote }}</blockquote>
+    {% for citation in finding.citations %}
+    <p class="finding-label">{{ titles[citation.item_id].title }}<span>{{ CATEGORY_LABELS[citation.category] }}</span><span>确认版 {{ versions[citation.item_id] }}</span><span>{{ field_label(citation.category, citation.field) }}</span><span>{{ BASIS_LABELS[citation.basis] }}</span></p>
+    <blockquote class="quote">{{ citation.quote }}</blockquote>
+    {% if citation.context|list != [citation.quote] %}
+    <p class="finding-context">所在句子：{{ citation.context|join("／") }}</p>
+    {% endif %}
+    {% endfor %}
+    <ul class="reasons">
+      {% for reason in reason_labels(finding.reasons) %}
+      <li>{{ reason }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+</details>
+{% endmacro %}
+
+{% block layout %}
+<main id="main" class="job-page job-reading" tabindex="-1"{% if task.stage == "running" %} data-task-running data-task-status="/job-analysis/tasks/{{ task.id }}/status"{% endif %}>
+  {% if notice %}
+  <p class="notice" role="status">{{ notice }}</p>
+  {% endif %}
+
+  {% if task.stage == "running" %}
+  <header class="job-head">
+    <h1>正在分析</h1>
+    <p class="job-mode">本机模拟服务：由固定规则生成结果，不是 AI。</p>
+  </header>
+  <ol class="steps">
+    {% for step, label in STEP_LABELS.items() %}
+    <li{% if step == task.step %} aria-current="step"{% endif %}>{{ label }}</li>
+    {% endfor %}
+  </ol>
+  <p class="task-status" role="status" data-task-step>正在{{ STEP_LABELS[task.step] }}。已交给服务的请求：{{ task.requests_sent }} 次。</p>
+  <p class="hint">完成后这一页会自动更新；没有更新时可以<a href="/job-analysis/tasks/{{ task.id }}" data-skip-leave-guard>刷新状态</a>。</p>
+  <form method="post" action="/job-analysis/tasks/{{ task.id }}/cancel" data-task-cancel>
+    {{ m.csrf() }}
+    <input type="hidden" name="next" value="">
+    <button type="submit">取消分析</button>
+  </form>
+  <p class="hint">取消会停止之后的发送；已经交给服务的请求无法撤回。</p>
+  <section class="review-section" aria-labelledby="scope-title">
+    <h2 id="scope-title">正在使用</h2>
+    <ul class="points">
+      {% for source in task.plan.sources %}
+      <li>{{ source.title }}（{{ source.sent|length }} 栏）</li>
+      {% endfor %}
+      <li>岗位描述（{{ task.plan.posting|length }} 字）</li>
+      <li>{% if task.plan.sent_preferences %}求职偏好 {{ task.plan.sent_preferences|length }} 项{% else %}不参考求职偏好{% endif %}</li>
+    </ul>
+  </section>
+  <dialog id="task-leave-dialog" aria-labelledby="task-leave-title">
+    <h2 id="task-leave-title">分析还在进行</h2>
+    <div class="dialog-actions">
+      <button type="button" data-task-choice="stay" class="secondary">继续查看</button>
+      <button type="button" data-task-choice="cancel" class="danger">取消分析并离开</button>
+    </div>
+  </dialog>
+
+  {% elif task.stage == "cancelled" %}
+  <header class="job-head">
+    <h1>分析已取消</h1>
+  </header>
+  <p>{{ cancelled_by }}之后没有再发送。已交给服务的请求：{{ task.requests_sent }} 次，这些请求无法撤回。</p>
+  <div class="actions">
+    <form method="post" action="/job-analysis/tasks/{{ task.id }}/again" class="inline">
+      {{ m.csrf() }}
+      <button type="submit" class="primary">重新分析</button>
+    </form>
+    <a href="/job-analysis?from={{ task.id }}">修改输入</a>
+  </div>
+
+  {% else %}
+  <header class="job-head">
+    <h1>岗位分析结果</h1>
+    <p class="job-mode">{% if result.mode == "simulation" %}本机模拟服务的结果：由固定规则生成，不是 AI 的判断。{% else %}真实服务的结果。{% endif %}</p>
+  </header>
+  {% if outcome %}
+  <p class="{% if result.status in (Status.FAILED, Status.REJECTED) %}error{% else %}warning{% endif %}" role="alert">{{ outcome }}</p>
+  {% endif %}
+  {% if changed_since %}
+  <p class="warning" role="alert">分析之后，所选的资料有了变化（修改、重新确认、删除或偏好改动）。这份结果按核对时的版本得出，不是当前有效的分析；需要时请重新分析。</p>
+  {% endif %}
+  {% if result.selection_problems %}
+  <ul class="points">
+    {% for problem in result.selection_problems %}
+    <li>{% if problem.item_id == "preferences" %}求职偏好{% else %}{{ titles[problem.item_id].title if problem.item_id in titles else "一段经历" }}{% endif %}：{{ SELECTION_PROBLEMS.get(problem.reason, problem.reason) }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if result.status == Status.DEGRADED %}
+  <section class="result-section" aria-labelledby="rule-title">
+    <h2 id="rule-title">按规则找到的技能词</h2>
+    {% if result.rule_skills %}
+    <p>{{ result.rule_skills|join("、") }}</p>
+    {% else %}
+    <p class="empty">没有找到常见的技能词。</p>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if result.status in (Status.COMPLETE, Status.STALE) %}
+  <section class="result-section" aria-labelledby="conditions-title">
+    <h2 id="conditions-title">招聘条件</h2>
+    {% set conflicts = result.condition_conflicts %}
+    {% if conflicts %}
+    <p class="result-alert">有 {{ conflicts|length }} 项招聘条件和所选资料冲突。技能覆盖再高，也请先看这一项。</p>
+    {% endif %}
+    {% for finding in conditions %}
+    {{ finding_row(finding) }}
+    {% else %}
+    <p class="empty">岗位描述里没有找到明确的硬性条件。</p>
+    {% endfor %}
+  </section>
+
+  <section class="result-section" aria-labelledby="skills-title">
+    <h2 id="skills-title">经历支持</h2>
+    {% for group, items in skill_groups.items() %}
+    {% if items %}
+    <h3 class="result-group">{{ GROUP_HEADINGS[group] }}{% if group == Group.UNCERTAIN %}<span>不计入技能覆盖</span>{% endif %}</h3>
+    {% for finding in items %}
+    {{ finding_row(finding) }}
+    {% endfor %}
+    {% endif %}
+    {% endfor %}
+    {% if not result.findings or (not skill_groups[Group.REQUIRED] and not skill_groups[Group.PREFERRED] and not skill_groups[Group.UNCERTAIN]) %}
+    <p class="empty">岗位描述里没有找到技能要求。</p>
+    {% endif %}
+    <p class="hint">“目前未找到支持材料”只说明所选的经历里没有写到，不代表你不会。</p>
+  </section>
+
+  <section class="result-section" aria-labelledby="preferences-title">
+    <h2 id="preferences-title">工作偏好</h2>
+    {% if result.preferences != "compared" %}
+    <p>本次未参考偏好。</p>
+    {% else %}
+    {% set firm = result.preference_conflicts %}
+    {% if firm %}
+    <p class="result-alert">有 {{ firm|length }} 项和你“不能接受”或“必须满足”的条件冲突。</p>
+    {% endif %}
+    {% for finding in result.preference_findings %}
+    {% set topic = PREFERENCE_TOPICS[finding.field] %}
+    <details class="fold finding">
+      <summary><span class="fold-title finding-text">{{ topic[0] }}{% if topic[2] %}（{{ topic[2] }}）{% endif %}</span><span class="finding-verdict">{{ preference_label(finding) }}</span><span class="chevron">{{ i.icon("chevron-right") }}</span></summary>
+      <div class="finding-body">
+        <p class="finding-label">你的偏好</p>
+        <blockquote class="quote">{{ finding.text }}</blockquote>
+        {% for quote in finding.job_quotes %}
+        <p class="finding-label">岗位原文</p>
+        <blockquote class="quote">{{ quote }}</blockquote>
+        {% endfor %}
+        <ul class="reasons">
+          {% for reason in reason_labels(finding.reasons) %}
+          <li>{{ reason }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    </details>
+    {% endfor %}
+    <p class="hint">偏好是你的意愿，不是硬性筛选；“岗位未说明”表示岗位描述没有提到，不按公司或职位名称猜测。</p>
+    {% endif %}
+  </section>
+
+  <section class="result-section coverage" aria-labelledby="coverage-title">
+    <h2 id="coverage-title">技能覆盖</h2>
+    {% set score = result.coverage %}
+    {% if score.overall_score is none %}
+    <p>不适用：岗位描述里没有找到必要要求或加分项。</p>
+    {% else %}
+    <p class="coverage-score">{{ score_text(score.overall_score) }}</p>
+    <p class="hint">必要要求 {{ score.required_total }} 项中 {{ score.required_matched }} 项有经历支持{% if score.required_uncertain %}、{{ score.required_uncertain }} 项待确认{% endif %}；加分项 {{ score.preferred_total }} 项中 {{ score.preferred_matched }} 项有经历支持{% if score.preferred_uncertain %}、{{ score.preferred_uncertain }} 项待确认{% endif %}。按必要 80%、加分 20% 计算，待确认和未找到的都不计入。它只说明所选资料覆盖了多少技能要求，不是录用的可能性。</p>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  <p class="hint result-foot">这是临时结果：保留 {{ TASK_TTL_MINUTES }} 分钟，服务重启后需要重做；不会保存，也不会投递。已交给服务的请求：{{ task.requests_sent }} 次。</p>
+  <div class="actions">
+    <form method="post" action="/job-analysis/tasks/{{ task.id }}/again" class="inline">
+      {{ m.csrf() }}
+      <button type="submit"{% if result.status != Status.COMPLETE or changed_since %} class="primary"{% endif %}>重新分析</button>
+    </form>
+    <a href="/job-analysis?from={{ task.id }}">修改输入</a>
+    <a href="/job-analysis">开始新的分析</a>
+  </div>
+  {% endif %}
+</main>
+{% endblock %}
+{% block scripts %}
+{% if task.stage == "running" %}
+<script src="/static/job_analysis.js"></script>
+{% endif %}
+{% endblock %}

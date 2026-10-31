@@ -16,8 +16,8 @@ from app.analysis_contracts import (
     TaskApproval,
     task_fingerprint,
 )
-from app.library.content import parse_experience_form
-from app.library.service import active_item, confirm_experience, create_experience
+from app.library.content import PREFERENCES, parse_experience_form
+from app.library.service import active_item, confirm_experience, create_document, create_experience
 
 SIMULATION = Recipient(provider=SIMULATION_PROVIDER, model="simulation")
 
@@ -127,6 +127,12 @@ def confirmed(database, owner, clock, category, private_note="", **fields) -> tu
 
     with database.transaction() as db:
         return item.id, active_item(db, owner, item.id).confirmed_version_id
+
+
+def saved_preferences(database, owner, clock, **fields) -> str:
+    """Save the owner's job preferences; return the record's id."""
+    with database.transaction() as db:
+        return create_document(db, owner, parse_experience_form(fields, PREFERENCES), clock.now()).id
 
 
 def request_for(owner, chosen, posting=POSTING, recipient=SIMULATION, **task) -> AnalysisRequest:

@@ -22,7 +22,7 @@ import logging
 import re
 import secrets
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
@@ -290,9 +290,16 @@ class LibraryRuntime:
     clock: Clock
     templates: Jinja2Templates
     files: FileStore
+    # Told the token hash of a session that ended here (logging out, or
+    # signing in as another user), so work tied to it stops (U2-A2).
+    session_end_listeners: list = field(default_factory=list)
 
     def now(self):
         return self.clock.now()
+
+    def session_ended(self, session_token_hash: str) -> None:
+        for listener in self.session_end_listeners:
+            listener(session_token_hash)
 
     def run_cleanup(self) -> PurgeReport | None:
         """One clean-up pass: due purge jobs, what unfinished uploads left
@@ -374,6 +381,8 @@ def build_templates(config: LibraryConfig) -> Jinja2Templates:
         field_label=field_label,
         RESTORE_DAYS=RESTORE_WINDOW.days,
         clock_note=_clock_note(config),
+        # Set by the job analysis pages when the local simulation is slowed down on purpose.
+        simulation_note=None,
         display_title=display_title,
         link_lines=link_lines,
         state_label=state_label,
@@ -857,6 +866,7 @@ def logout_response(rt: LibraryRuntime, user: CurrentUser, notice: str) -> Redir
     with rt.database.transaction() as db:
         end_session(db, user.token_hash)
 
+    rt.session_ended(user.token_hash)
     response = see_other(f"/login?notice={notice}")
     response.delete_cookie(SESSION_COOKIE, path="/")
 
@@ -1110,6 +1120,9 @@ def dev_login(request: Request, form: dict[str, str] = Depends(submitted_form)):
             end_session(db, token_hash(previous))
 
         token = start_session(db, user.id, rt.now(), rt.config.session_lifetime)
+
+    if previous:
+        rt.session_ended(token_hash(previous))
 
     response = see_other("/experiences")
     response.set_cookie(

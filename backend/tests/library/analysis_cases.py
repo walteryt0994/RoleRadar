@@ -10,12 +10,18 @@ reason, and bump CASE_VERSION when you do.
 CASE_VERSION 2 (U2-A1 R1) adds the last five cases: the review's two
 reproductions, the control it asked for, and two more of the same rules.
 No earlier expectation changed.
+
+CASE_VERSION 3 (U2-A2) adds six cases of job preferences compared with the
+posting. No earlier expectation changed.
 """
 import json
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-CASE_VERSION = "2"
+CASE_VERSION = "3"
+CONSISTENT = "consistent"
+DIFFERENT = "different"
+NOT_STATED = "not_stated"
 SUPPORTED = "supported"
 NEEDS_CONFIRMATION = "needs_confirmation"
 NO_EVIDENCE = "no_evidence"
@@ -42,6 +48,13 @@ class SemanticCase:
     # Written for every case: a forgotten one fails rather than defaulting.
     expected_overall: Decimal | None | object = UNWRITTEN
     expected_conflicts: tuple = ()
+    # Job preferences chosen for the task (field -> words), what the scripted
+    # model says of each (preference id -> (relation, posting quotes)), and
+    # the conclusions expected. Ids follow the order of the preferences page.
+    preferences: dict = field(default_factory=dict)
+    preference_answer: dict = field(default_factory=dict)
+    expected_preferences: dict = field(default_factory=dict)
+    expected_preference_conflicts: tuple = ()
 
     def parsed(self) -> str:
         def requirements(pairs):
@@ -72,7 +85,17 @@ class SemanticCase:
                         ],
                     }
                     for requirement_id, citations in self.answer.items()
-                ]
+                ],
+                **(
+                    {
+                        "preferences": [
+                            {"preference_id": preference_id, "relation": relation, "job_quotes": list(quotes)}
+                            for preference_id, (relation, quotes) in self.preference_answer.items()
+                        ]
+                    }
+                    if self.preferences
+                    else {}
+                ),
             },
             ensure_ascii=False,
         )
@@ -267,5 +290,76 @@ CASES = (
         ]},
         expected={"H1": NEEDS_CONFIRMATION},
         expected_overall=None,
+    ),
+    SemanticCase(
+        name="preference_city_named",
+        why="理想城市是上海，岗位写明工作地点上海，并引了这句原文：一致。",
+        experiences=(("project", {"title": "问卷分析", "actions": "用 Python 写脚本清洗了问卷数据。"}),),
+        posting="工作地点：上海",
+        preferences={"cities_ideal": "上海"},
+        preference_answer={"F1": (CONSISTENT, ["工作地点：上海"])},
+        expected_preferences={"F1": CONSISTENT},
+        expected_overall=None,
+    ),
+    SemanticCase(
+        name="preference_ideal_city_differs_is_no_filter",
+        why="理想是北京，岗位在上海：只是和理想不一致，不当成冲突或硬性筛选。",
+        experiences=(("project", {"title": "问卷分析", "actions": "用 Python 写脚本清洗了问卷数据。"}),),
+        posting="工作地点：上海",
+        preferences={"cities_ideal": "北京"},
+        preference_answer={"F1": ("conflicts", ["工作地点：上海"])},
+        expected_preferences={"F1": DIFFERENT},
+        expected_overall=None,
+    ),
+    SemanticCase(
+        name="preference_cannot_accept_travel",
+        why="写明不能接受频繁出差，岗位要求经常出差：冲突，单独列出。",
+        experiences=(("project", {"title": "问卷分析", "actions": "用 Python 写脚本清洗了问卷数据。"}),),
+        posting="岗位说明：需要经常出差",
+        preferences={"work_style_no": "频繁出差"},
+        preference_answer={"F1": ("conflicts", ["需要经常出差"])},
+        expected_preferences={"F1": CONFLICT},
+        expected_overall=None,
+        expected_preference_conflicts=("F1",),
+    ),
+    SemanticCase(
+        name="preference_not_stated_stays_unknown",
+        why="想远程办公，岗位没提工作方式：岗位未说明，不按公司或职位猜。",
+        experiences=(("project", {"title": "问卷分析", "actions": "用 Python 写脚本清洗了问卷数据。"}),),
+        posting="岗位要求：熟练使用 Python",
+        required=(("Python", "熟练使用 Python"),),
+        answer={"R1": [("S1", "actions", "用 Python 写脚本清洗了问卷数据", "practice")]},
+        preferences={"work_style_ideal": "远程办公"},
+        preference_answer={"F1": (NOT_STATED, [])},
+        expected={"R1": SUPPORTED},
+        expected_preferences={"F1": NOT_STATED},
+        expected_overall=Decimal("100"),
+    ),
+    SemanticCase(
+        name="preference_claim_without_posting_words",
+        why="模型说城市一致却没给岗位原文：没有原文依据的判断只能待确认。",
+        experiences=(("project", {"title": "问卷分析", "actions": "用 Python 写脚本清洗了问卷数据。"}),),
+        posting="岗位要求：熟练使用 Python",
+        required=(("Python", "熟练使用 Python"),),
+        answer={"R1": [("S1", "actions", "用 Python 写脚本清洗了问卷数据", "practice")]},
+        preferences={"cities_ideal": "上海"},
+        preference_answer={"F1": (CONSISTENT, [])},
+        expected={"R1": SUPPORTED},
+        expected_preferences={"F1": NEEDS_CONFIRMATION},
+        expected_overall=Decimal("100"),
+    ),
+    SemanticCase(
+        name="preference_must_have_conflict_beside_full_score",
+        why="技能全有支持，但现实必要条件（入职时间）与岗位冲突：冲突单独列出，不被满分掩盖，也不改变分数。",
+        experiences=(("project", {"title": "问卷分析", "actions": "用 Python 写脚本清洗了问卷数据。"}),),
+        posting="岗位要求：熟练使用 Python；需在 2027 年 3 月前到岗",
+        required=(("Python", "熟练使用 Python"),),
+        answer={"R1": [("S1", "actions", "用 Python 写脚本清洗了问卷数据", "practice")]},
+        preferences={"must_haves": "2027 年 7 月之后才能入职"},
+        preference_answer={"F1": ("conflicts", ["需在 2027 年 3 月前到岗"])},
+        expected={"R1": SUPPORTED},
+        expected_preferences={"F1": CONFLICT},
+        expected_overall=Decimal("100"),
+        expected_preference_conflicts=("F1",),
     ),
 )

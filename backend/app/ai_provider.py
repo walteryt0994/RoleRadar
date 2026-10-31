@@ -11,6 +11,7 @@ from openai import (
     APIError,
     APIStatusError,
     APITimeoutError,
+    DefaultHttpxClient,
     OpenAI,
     RateLimitError,
 )
@@ -66,10 +67,15 @@ class GenerationResult:
 class ProviderIdentity:
     """Where a provider's requests go, as it is configured: the service and
     the model a request asks for. That model may be an alias; the version a
-    service answers with (GenerationResult.model) can be more specific."""
+    service answers with (GenerationResult.model) can be more specific.
+
+    endpoint is the address requests go to when the configuration fixes it;
+    None when it does not (the SDK then picks one, also from environment
+    variables), so a task that names an endpoint refuses such a provider."""
 
     provider: str
     requested_model: str
+    endpoint: str | None = None
 
 
 SCHEMA_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -123,6 +129,10 @@ class OpenAIProviderConfig:
     model: str
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     max_retries: int = DEFAULT_MAX_RETRIES
+    # A fixed address for the requests; None leaves the choice to the SDK.
+    base_url: str | None = None
+    # False keeps proxy settings in the environment from rerouting requests.
+    use_environment_proxies: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.api_key, str) or not self.api_key.strip():
@@ -149,6 +159,14 @@ class OpenAIProviderConfig:
         ):
             raise AIProviderConfigError(
                 "OPENAI_MAX_RETRIES must be an integer 0 or greater."
+            )
+
+        if self.base_url is not None and (
+            not isinstance(self.base_url, str)
+            or not self.base_url.startswith("https://")
+        ):
+            raise AIProviderConfigError(
+                "The provider address must be an https:// URL."
             )
 
 
@@ -209,16 +227,29 @@ class OpenAIProvider(AIProvider):
             config = load_openai_config()
 
         self._config = config
+        options = {}
+
+        if config.base_url is not None:
+            options["base_url"] = config.base_url
+
+        if not config.use_environment_proxies:
+            options["http_client"] = DefaultHttpxClient(
+                timeout=config.timeout_seconds,
+                trust_env=False,
+            )
+
         self._client = OpenAI(
             api_key=config.api_key,
             timeout=config.timeout_seconds,
             max_retries=config.max_retries,
+            **options,
         )
 
     def identity(self) -> ProviderIdentity:
         return ProviderIdentity(
             provider=self.PROVIDER_NAME,
             requested_model=self._config.model,
+            endpoint=self._config.base_url,
         )
 
     def generate_text(

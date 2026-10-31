@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% import "_icons.html" as i %}
+{% set area = "jobs" %}
+{% block title %}岗位分析{% endblock %}
+{% block layout %}
+<main id="main" class="job-page" tabindex="-1">
+  {% if notice %}
+  <p class="notice" role="status">{{ notice }}</p>
+  {% endif %}
+  <header class="job-head">
+    <h1>岗位分析</h1>
+    <p class="job-mode">使用本机模拟服务：由固定规则生成结果，不是 AI。</p>
+  </header>
+  {% if error %}
+  <p class="error" role="alert">{{ error }}</p>
+  {% endif %}
+  {% if dropped %}
+  <p class="warning" role="status">之前选择的 {{ dropped }} 段经历已经修改、重新确认或删除，没有自动选上；请按当前内容重新选择。</p>
+  {% endif %}
+  {# Nothing is sent from this page: the next step only works out and shows what would go out. #}
+  <form method="post" action="/job-analysis/review" class="job-columns" data-leave-guard{% if unsaved_input %} data-initially-dirty{% endif %}>
+    {{ m.csrf() }}
+    <section{% if not error %} data-reveal{% endif %} class="job-panel{% if problem and problem.where == 'sources' %} has-problem{% endif %}" aria-labelledby="pick-title">
+      <h2 id="pick-title">选择经历</h2>
+      {% if experiences %}
+      <p class="hint">只能选择已确认的经历，一次最多 {{ MAX_EXPERIENCES }} 段。</p>
+      <ul class="pick-list">
+        {% for entry in experiences %}
+        <li class="pick">
+          <div class="pick-choice">
+            <input type="checkbox" id="pick-{{ loop.index }}" name="source" value="{{ entry.item_id }}:{{ entry.version_id }}"{% if entry.item_id in ticked %} checked{% endif %}>
+            <label for="pick-{{ loop.index }}">
+              <span class="pick-title">{{ display_title(entry.content, entry.category) }}</span>
+              <span class="pick-meta"><span>{{ CATEGORY_LABELS[entry.category] }}</span><span>已确认，确认版 {{ entry.version_number }}</span></span>
+            </label>
+          </div>
+          <details class="fold pick-content">
+            {{ m.fold_summary("确认的内容") }}
+            <dl class="fields">
+              {% for field in CATEGORY_FIELDS[entry.category] %}
+              {% if entry.content.get(field.name) %}
+              <dt>{{ field_label(entry.category, field.name) }}</dt>
+              <dd><p class="text">{{ entry.content[field.name] }}</p></dd>
+              {% endif %}
+              {% endfor %}
+            </dl>
+          </details>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="empty-state">还没有已确认的经历。分析只使用你核对并确认过的内容。</p>
+      {% endif %}
+      {% if unconfirmed > 0 %}
+      <p class="hint">另有 {{ unconfirmed }} 段经历还没有确认，确认后才能用于分析。</p>
+      {% endif %}
+      {% if not experiences or unconfirmed > 0 %}
+      <p><a href="/experiences">去经历库</a></p>
+      {% endif %}
+    </section>
+    <section{% if not error %} data-reveal{% endif %} class="job-panel{% if problem and problem.where == 'posting' %} has-problem{% endif %}" aria-labelledby="posting-title">
+      <h2 id="posting-title">岗位描述</h2>
+      {% set posting_error = problem and problem.where == "posting" %}
+      <div class="field{% if posting_error %} has-error{% endif %}">
+        <label for="f-posting">粘贴一份岗位描述</label>
+        <span class="hint" id="h-posting">中文、英文或混合都可以，最多 {{ MAX_POSTING_CHARS }} 字。只用这段文字，不会打开其中的链接。</span>
+        <textarea id="f-posting" name="posting" rows="14" aria-describedby="h-posting"{% if posting_error %} aria-invalid="true"{% endif %}>{{ inputs.posting }}</textarea>
+      </div>
+      <div class="job-option">
+        <label class="check"><input type="checkbox" name="use_preferences" value="yes"{% if inputs.use_preferences %} checked{% endif %}>参考我的求职偏好</label>
+        <p class="hint">{% if has_preferences %}核对时会列出要用的偏好，可以逐项去掉。{% else %}你还没有填写求职偏好；不填也可以分析经历。{% endif %}</p>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="primary">核对发送内容</button>
+      </div>
+      <p class="hint">下一步只列出会发送的内容，确认之前不会发送。</p>
+    </section>
+  </form>
+  <dialog id="leave-dialog" aria-labelledby="leave-title">
+    <h2 id="leave-title">离开后，这里填写的内容不会保留</h2>
+    <div class="dialog-actions">
+      <button type="button" data-leave-choice="stay" class="secondary">继续填写</button>
+      <button type="button" data-leave-choice="discard" class="danger">放弃并离开</button>
+    </div>
+  </dialog>
+</main>
+{% endblock %}
+{% block scripts %}
+<script src="/static/leave_guard.js"></script>
+{% endblock %}
