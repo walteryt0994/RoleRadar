@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from typing import Annotated
 
@@ -198,3 +199,64 @@ class StructuredJobDescription(JobDescriptionBaseModel):
     preferred_skills: list[JobRequirement]
     hard_constraints: list[JobRequirement]
     uncertain_requirements: list[JobRequirement]
+
+
+class MatchConclusion(str, Enum):
+    MATCHED = "matched"
+    MISSING = "missing"
+    UNCERTAIN = "uncertain"
+
+
+class MatchInputs(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    profile_id: int
+    profile_updated_at: datetime
+    job_posting_sha256: NonEmptyStr
+    prompt_version: NonEmptyStr
+    parser_version: NonEmptyStr
+    schema_version: NonEmptyStr
+
+
+class RequirementMatch(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    requirement: JobRequirement
+    conclusion: MatchConclusion
+    # Position of the supporting entry in profile_data.skill_evidence;
+    # None unless the conclusion is matched.
+    evidence_index: int | None
+
+
+class CoverageScore(BaseModel):
+    """Skill coverage of a job's required and preferred groups (0-100).
+
+    A group's score is the share of its requirements with supporting
+    evidence; uncertain and missing ones are counted but not matched. The
+    overall score weighs the two groups 80 / 20, or uses the one group that
+    has requirements. A score is None when there is nothing to score: not
+    applicable, never 0 or 100. It is not a hiring probability.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    required_total: int
+    required_matched: int
+    required_uncertain: int
+    preferred_total: int
+    preferred_matched: int
+    preferred_uncertain: int
+    required_score: Decimal | None
+    preferred_score: Decimal | None
+    overall_score: Decimal | None
+
+
+class MatchResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    match_version: NonEmptyStr
+    scoring_version: NonEmptyStr
+    inputs: MatchInputs
+    required: tuple[RequirementMatch, ...]
+    preferred: tuple[RequirementMatch, ...]
+    score: CoverageScore

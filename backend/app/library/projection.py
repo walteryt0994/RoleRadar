@@ -13,10 +13,14 @@ record in use that the user has since changed or deleted. Free text in it
 can still hold personal details the user wrote; it is not filtered for
 sending anywhere.
 
+read_selected_confirmations reads the experiences a user chose for one task
+again, each as the confirmed version that was chosen, by the same rules.
+
 list_references says what the library knows about other modules using a
 record. No other module keeps references yet, so the answer says exactly
 that, never "no references".
 """
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -153,6 +157,67 @@ def _as_confirmed(item: ExperienceItem, version: ExperienceVersion | None) -> Co
         source_revision=version.source_revision,
         content=content,
     )
+
+
+# Why a selected experience cannot be used as it was selected.
+# Not found for this owner: also another owner's, deleted, or past its
+# deadline, which are deliberately not told apart.
+UNAVAILABLE = "unavailable"
+# Saved again since its confirmation, and waiting for review.
+NOT_CONFIRMED = "not_confirmed"
+# Confirmed again since: the chosen version is no longer the current one.
+VERSION_CHANGED = "version_changed"
+
+
+@dataclass(frozen=True)
+class SelectionProblem:
+    item_id: str
+    reason: str
+
+
+def read_selected_confirmations(
+    db: Session,
+    owner_id: str,
+    selection: Mapping[str, str],
+) -> tuple[tuple[ConfirmedExperience, ...], tuple[SelectionProblem, ...]]:
+    """The chosen experiences, each as the confirmed version that was chosen.
+
+    selection maps each chosen experience id to the id of its confirmed
+    version at the time of choosing. Everything is read again here: what a
+    caller holds of a record, or says about it, is never taken as proof.
+    An experience that is unavailable, waiting for review again, or
+    confirmed in another version comes back as a problem, never swapped
+    for what is current now. Entries keep the selection's order and follow
+    the rules of project_confirmed_library.
+    """
+    entries, problems = [], []
+
+    for item_id, version_id in selection.items():
+        item = db.scalar(
+            select(ExperienceItem).where(
+                ExperienceItem.id == item_id,
+                ExperienceItem.owner_id == owner_id,
+                ExperienceItem.category.in_(EXPERIENCE_CATEGORIES),
+                ExperienceItem.deleted_at.is_(None),
+            )
+        )
+
+        if item is None:
+            problems.append(SelectionProblem(item_id, UNAVAILABLE))
+        elif not _is_confirmed(item):
+            problems.append(SelectionProblem(item_id, NOT_CONFIRMED))
+        elif item.confirmed_version_id != version_id:
+            problems.append(SelectionProblem(item_id, VERSION_CHANGED))
+        else:
+            version = db.scalar(
+                select(ExperienceVersion).where(
+                    ExperienceVersion.id == item.confirmed_version_id,
+                    ExperienceVersion.owner_id == owner_id,
+                )
+            )
+            entries.append(_as_confirmed(item, version))
+
+    return tuple(entries), tuple(problems)
 
 
 @dataclass(frozen=True)

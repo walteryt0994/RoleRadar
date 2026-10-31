@@ -62,6 +62,16 @@ class GenerationResult:
     total_tokens: int | None = None
 
 
+@dataclass(frozen=True)
+class ProviderIdentity:
+    """Where a provider's requests go, as it is configured: the service and
+    the model a request asks for. That model may be an alias; the version a
+    service answers with (GenerationResult.model) can be more specific."""
+
+    provider: str
+    requested_model: str
+
+
 SCHEMA_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
@@ -95,6 +105,12 @@ class AIProvider(ABC):
         json_schema_format: JsonSchemaFormat | None = None,
     ) -> GenerationResult:
         pass
+
+    def identity(self) -> ProviderIdentity | None:
+        """The service and model the next request would go to, from the
+        configuration alone: nothing is sent and no key is read. None when
+        the provider cannot tell."""
+        return None
 
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -197,6 +213,12 @@ class OpenAIProvider(AIProvider):
             api_key=config.api_key,
             timeout=config.timeout_seconds,
             max_retries=config.max_retries,
+        )
+
+    def identity(self) -> ProviderIdentity:
+        return ProviderIdentity(
+            provider=self.PROVIDER_NAME,
+            requested_model=self._config.model,
         )
 
     def generate_text(

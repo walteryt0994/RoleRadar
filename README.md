@@ -761,7 +761,7 @@ The launcher sets up isolation before pytest starts, so it is already in force w
 - It removes `OPENAI_*` and proxy variables, turns plugin auto-loading off and writes no `.pyc` or `.pytest_cache` files.
 - It loads an audit plugin that blocks network access and records SQLite connections and file writes; the run fails if any of them left the temporary root. The audit covers the pytest process only.
 
-Extra arguments go to pytest, for example `tests/library -q`. The temporary root is kept and its path printed. The experience library tests refuse to run without the launcher. Four failures in `tests/test_match_service.py` (Day 28 match-input validation) are known and left for U2.
+Extra arguments go to pytest, for example `tests/library -q`. The temporary root is kept and its path printed. The experience library tests refuse to run without the launcher. Since U2-A1 the Day 28 matching tests in `tests/test_match_service.py` pass as well.
 
 ## Run Backend
 
@@ -838,6 +838,8 @@ cd backend
 ```
 
 Then open http://127.0.0.1:8765 and stop the app with Ctrl+C.
+
+U2-A1 adds an internal evidence analysis (`app/experience_analysis.py`, with its contracts in `app/analysis_contracts.py`): chosen, confirmed experiences, named by id and confirmed version, against one job posting. Every conclusion names the posting's words and the experience, version, field and words it rests on; a choice that changed or names an experience twice, a missing confirmation of the task, a provider configured for another service or model than the task names, a rule fallback or an answer whose citations are not in the chosen text never comes back as a complete analysis. A quote is read with its clause and what leads up to it in its sentence, so a short quote cannot drop a "did not" said there, and support next to a denial of the same requirement is left to be confirmed. It runs only against a simulated service in tests: no page, no stored result and no real network call yet. "No evidence" means nothing in the chosen material shows it, not that the user lacks it; the skill coverage score is not a hiring probability, and a conflict with a hard constraint is reported apart from it.
 
 The pages are grouped under 我的资料 (UI-NAV1): 经历库, 基本资料 and 求职偏好 side by side, and 资料管理 for the recycle bin and the "export all" download. 经历库 (`/experiences`) is an overview of your experiences with the search and the category filter; a record opens on its own page, with the filtered list beside it and a way back. The addresses of all pages are unchanged.
 

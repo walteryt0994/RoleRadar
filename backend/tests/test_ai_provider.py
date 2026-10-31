@@ -14,6 +14,7 @@ from openai import (
 from app.ai_provider import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_TIMEOUT_SECONDS,
+    AIProvider,
     AIProviderConfigError,
     AIProviderConnectionError,
     AIProviderEmptyResponseError,
@@ -25,6 +26,7 @@ from app.ai_provider import (
     JsonSchemaFormat,
     OpenAIProvider,
     OpenAIProviderConfig,
+    ProviderIdentity,
     load_openai_config,
 )
 
@@ -811,6 +813,50 @@ def test_generate_text_separates_requested_and_returned_model(provider):
     assert result.requested_model == "test-model"
     assert result.model == "test-model-2026-01-01"
     assert result.requested_model != result.model
+
+
+def test_identity_names_the_configured_service_and_model_without_a_request(
+    provider,
+):
+    assert provider.identity() == ProviderIdentity(
+        provider="openai",
+        requested_model="test-model",
+    )
+    provider._client.responses.create.assert_not_called()
+
+
+def test_identity_is_what_a_request_then_asks_for(provider):
+    provider._client.responses.create.return_value = _fake_response()
+
+    identity = provider.identity()
+    result = provider.generate_text("Parse this job description.")
+    sent = provider._client.responses.create.call_args.kwargs
+
+    assert identity.requested_model == sent["model"]
+    assert (result.provider, result.requested_model) == (
+        identity.provider,
+        identity.requested_model,
+    )
+    # The version the service answers with is not part of the identity.
+    assert result.model != identity.requested_model
+
+
+def test_identity_does_not_hardcode_the_provider_name():
+    class RenamedProvider(OpenAIProvider):
+        PROVIDER_NAME = "renamed-provider"
+
+    with patch("app.ai_provider.OpenAI"):
+        renamed = RenamedProvider(config=TEST_CONFIG)
+
+    assert renamed.identity().provider == "renamed-provider"
+
+
+def test_a_provider_that_cannot_tell_has_no_identity():
+    class UnnamedProvider(AIProvider):
+        def generate_text(self, prompt, **options):
+            raise AssertionError("nothing is sent")
+
+    assert UnnamedProvider().identity() is None
 
 
 def test_generate_text_reports_the_options_it_actually_sent(provider):
