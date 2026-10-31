@@ -819,7 +819,7 @@ U1-C adds private attachments to saved experiences (not to the profile or the pr
 U1-D closes U1:
 
 - Saving from the leave dialog continues to where you were going, also when that was a search: the words and the category stay in the address and the list.
-- For the modules that come next, `app/library/projection.py` has two internal, read-only functions. Nothing calls them yet; they add no page, route, stored copy or network call.
+- For the modules that come next, `app/library/projection.py` has two internal, read-only functions. No analysis or résumé module consumes them yet, and `list_references` already feeds the deletion pages; they add no page, route, stored copy or network call.
   - `project_confirmed_library(db, owner_id, now)` copies the owner's confirmed experiences as they were confirmed, each from the version its confirmation points to. Drafts (also experiences edited after confirming), the recycle bin, private notes, the profile, the preferences and attachments are left out, and a broken confirmation raises an error instead of being guessed at. A copy is not permission to send anything: U2 has to ask the user what each task may use, and check each entry again before using it.
   - `list_references(db, owner_id, item_id, now)` answers `not_established` for the analysis and résumé modules: they keep no references yet, which is not the same as having checked that there are none. The deletion pages say exactly that.
 - Known limits of this local, synthetic-data stage: a dev login instead of real accounts, no migration of earlier data files, a type check but no virus scan on attachments, no AI, analysis or résumés yet, no deployment, and browser checks in Chrome only.
@@ -838,6 +838,8 @@ cd backend
 ```
 
 Then open http://127.0.0.1:8765 and stop the app with Ctrl+C.
+
+The pages are grouped under 我的资料 (UI-NAV1): 经历库, 基本资料 and 求职偏好 side by side, and 资料管理 for the recycle bin and the "export all" download. 经历库 (`/experiences`) is an overview of your experiences with the search and the category filter; a record opens on its own page, with the filtered list beside it and a way back. The addresses of all pages are unchanged.
 
 - `--db` must be an absolute path outside the repository. Start-up is refused if it is the legacy database (also through a symlink or hard link), lies inside `backend/records/`, or belongs to another program.
 - The entry point only binds to 127.0.0.1 and turns proxy headers off; any other `--host` is refused.

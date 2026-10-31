@@ -145,6 +145,7 @@ from app.library.presentation import (
     format_size,
     record_page,
     reference_note,
+    section_of,
     state_label,
     summary_line,
     unfilled_labels,
@@ -605,6 +606,10 @@ def render(
 ) -> Response:
     context = {"user": user, "notice": None, "error": None, **(context or {})}
 
+    # A page about one record shows the part of 我的资料 it belongs to.
+    if "section" not in context and context.get("item") is not None:
+        context["section"] = section_of(context["item"])
+
     return runtime(request).templates.TemplateResponse(
         request,
         name,
@@ -644,6 +649,7 @@ def confirm_page(
     acknowledge: str | None = None,
     error: str | None = None,
     status_code: int = 200,
+    section: str = "library",
 ) -> Response:
     return render(
         request,
@@ -657,6 +663,7 @@ def confirm_page(
             "hidden": hidden or {},
             "acknowledge": acknowledge,
             "error": error,
+            "section": section,
         },
         user=user,
         status_code=status_code,
@@ -689,6 +696,7 @@ def library_sidebar(
     selected_id: str | None = None,
     focus: bool = False,
     items: list | None = None,
+    overview: bool = False,
 ) -> dict:
     """Context for the list of the user's records on the left of the workspace.
 
@@ -699,6 +707,9 @@ def library_sidebar(
     The list follows the filter in the page's own address (?category=…&q=…).
     Its record links keep that filter, so the list stays filtered while the
     records found are opened one after another.
+
+    overview: the page is the overview of the library, which shows this
+    same filtered list in its main area instead of beside it.
     """
     category, query = list_filter(request)
     filtering = bool(category or query)
@@ -727,6 +738,7 @@ def library_sidebar(
         "filter_category": category,
         "filter_query": query,
         "filter_suffix": f"?{urlencode(asked)}" if asked else "",
+        "overview": overview,
     }
 
 
@@ -1125,23 +1137,36 @@ def experience_list(
     notice: str = "",
     user: CurrentUser = Depends(current_user),
 ):
+    """The overview of the user's experiences, or (tab=trash) the recycle bin.
+
+    The overview shows the list that library_sidebar finds for the address's
+    filter, in the main area. A list that cannot be read is said to be
+    unreadable there, never shown as an empty library.
+    """
     rt = runtime(request)
     now = rt.now()
 
+    if tab != "trash":
+        return render(
+            request,
+            "list.html",
+            {"tab": "current", "notice": NOTICES.get(notice), **library_sidebar(request, user, overview=True)},
+            user=user,
+        )
+
     with rt.database.transaction() as db:
         items = list_experiences(db, user.id)
-        trash = trash_view(db, user.id, now) if tab == "trash" else None
+        trash = trash_view(db, user.id, now)
 
     return render(
         request,
         "list.html",
         {
-            "tab": "trash" if trash is not None else "current",
-            "items": items,
+            "tab": "trash",
             "trash": trash,
             "now": now,
             "notice": NOTICES.get(notice),
-            **library_sidebar(request, user, items=items, focus=trash is not None),
+            **library_sidebar(request, user, items=items, focus=True),
         },
         user=user,
     )
@@ -1470,6 +1495,7 @@ def version_delete_page(
         button="删除这个历史版本",
         cancel=f"/experiences/{item.id}/history",
         hidden={"expected_state": state},
+        section=section_of(item),
     )
 
 
@@ -1539,6 +1565,7 @@ def _version_purge_confirm(request, user, item, version, state, error=None, stat
         acknowledge="我了解永久删除后无法恢复",
         error=error,
         status_code=status_code,
+        section=section_of(item),
     )
 
 
@@ -1656,6 +1683,7 @@ def delete_page(item_id: str, request: Request, user: CurrentUser = Depends(curr
         button="移到回收站",
         cancel=record_page(item),
         hidden={"expected_revision": str(item.revision)},
+        section=section_of(item),
     )
 
 
@@ -1735,6 +1763,7 @@ def _purge_confirm(request, user, item, attachments, references, error=None, sta
         acknowledge="我了解永久删除后无法恢复",
         error=error,
         status_code=status_code,
+        section="trash",
     )
 
 

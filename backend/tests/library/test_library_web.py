@@ -199,7 +199,7 @@ def test_static_files_hold_no_user_data_and_are_public(app):
     names = sorted(path.name for path in (PACKAGE_DIR / "static").iterdir())
     anonymous = Browser(app)
 
-    assert names == ["leave_guard.js", "library.css", "motion.js", "upload.js"]
+    assert names == ["leave_guard.js", "library.css", "menu.js", "motion.js", "upload.js"]
 
     for name in names:
         assert anonymous.get(f"/static/{name}").status_code == 200
@@ -387,7 +387,7 @@ def test_an_empty_form_is_refused_with_a_chinese_hint(browser_a):
     assert "请至少在经历栏目里写一项内容" in response.text
     assert "私有备注不算经历内容" in response.text
     assert "只有备注" in response.text
-    assert "还没有记录" in browser_a.get("/experiences").text
+    assert "先记下一段经历" in browser_a.get("/experiences").text
 
 
 def test_a_failed_save_never_shows_success_and_keeps_both_texts(app, browser_a):
@@ -427,7 +427,7 @@ def test_a_failed_first_save_keeps_the_input_and_creates_nothing(app, browser_a)
     assert response.status_code == 500
     assert "已保存" not in response.text
     assert "第一次保存就失败的内容" in response.text
-    assert "还没有记录" in browser_a.get("/experiences").text
+    assert "先记下一段经历" in browser_a.get("/experiences").text
 
 
 def test_two_tabs_cannot_silently_overwrite_each_other(browser_a):
@@ -685,7 +685,7 @@ def test_oversized_posts_are_refused_before_the_form_is_read(browser_a):
     response = browser_a.post("/experiences", {**form.fields, "actions": "字" * 100_000})
 
     assert response.status_code == 413
-    assert "还没有记录" in browser_a.get("/experiences").text
+    assert "先记下一段经历" in browser_a.get("/experiences").text
 
 
 # --- recycle bin pages ----------------------------------------------------

@@ -140,8 +140,61 @@ code { background: var(--tag); padding: 0 4px; border-radius: 4px; }
 .nav { display: flex; flex-wrap: wrap; gap: 4px 22px; }
 .nav a { padding: 6px 0; color: var(--ink-soft); text-decoration: none; border-bottom: 2px solid transparent; }
 .nav a:hover { color: var(--ink); }
-.nav a[aria-current="page"] { color: var(--ink); font-weight: 600; border-bottom-color: var(--ink); }
+.nav a[aria-current] { color: var(--ink); font-weight: 600; border-bottom-color: var(--ink); }
 .who { display: flex; align-items: center; gap: 12px; margin-left: auto; font-size: 14px; color: var(--ink-soft); }
+
+/* The parts of 我的资料, under the top bar: one current part among three
+   plain-word links, and the recycle bin and the export kept in 资料管理. */
+.subbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 10px 24px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+}
+.subnav { display: flex; gap: 2px; padding: 3px; background: var(--outcome); border: 1px solid var(--line); border-radius: var(--radius-control); }
+.subnav a { padding: 5px 14px; border-radius: 6px; font-size: 14px; color: var(--ink-soft); text-decoration: none; white-space: nowrap; }
+.subnav a:hover { color: var(--ink); background: var(--hover); }
+.subnav a[aria-current="page"] { color: var(--ink); font-weight: 500; background: var(--white); box-shadow: 0 1px 2px rgba(48, 50, 54, 0.14); }
+/* A native disclosure: it opens by click, touch or keyboard, also without
+   JavaScript; menu.js only closes it on Escape or a click elsewhere. */
+.manage { position: relative; }
+.manage > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 4px;
+  font-size: 14px;
+  color: var(--ink-soft);
+  list-style: none;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.manage > summary::-webkit-details-marker { display: none; }
+.manage > summary:hover, .manage[open] > summary { color: var(--ink); }
+.manage > summary.is-current { color: var(--ink); font-weight: 600; }
+.manage > summary .chevron { transform: rotate(90deg); }
+.manage[open] > summary .chevron { transform: rotate(-90deg); }
+.manage-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  min-width: 168px;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  box-shadow: 0 12px 32px rgba(48, 50, 54, 0.14);
+}
+.manage-menu a { display: block; padding: 8px 12px; border-radius: 6px; font-size: 14px; color: var(--ink); text-decoration: none; white-space: nowrap; }
+.manage-menu a:hover { background: var(--hover); }
+.manage-menu a[aria-current="page"] { font-weight: 600; }
 
 /* Pages outside the workspace (history, versions, confirmations, sign-in)
    sit on one sheet of paper. */
@@ -163,7 +216,9 @@ code { background: var(--tag); padding: 0 4px; border-radius: 4px; }
 .library-head { display: grid; gap: 12px; margin: 0 8px 16px; }
 .library-head h2 { margin: 0; font-size: 13px; font-weight: 500; color: var(--ink-soft); }
 .library-head .button { width: 100%; }
-.library-back { display: none; }
+/* Back to the overview, with the list's filter. */
+.library-back { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ink-soft); text-decoration: none; }
+.library-back:hover { color: var(--ink); }
 /* minmax(0, 1fr): a long unbroken summary must not widen the list past the sidebar. */
 .library-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
 .library-item {
@@ -246,6 +301,40 @@ code { background: var(--tag); padding: 0 4px; border-radius: 4px; }
 .crumbs { margin: 0; font-size: 13px; color: var(--ink-soft); }
 .crumbs a { color: var(--ink-soft); }
 .state-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: 4px 0 8px; font-size: 13px; color: var(--ink-soft); }
+
+/* --- the overview: the library's list as the page itself ------------------- */
+
+/* Nothing beside it: one centred column on the grey page. */
+.workspace-overview { display: block; }
+.workspace-overview .pane { padding: 36px 32px 64px; background: none; border-left: 0; }
+.workspace-overview .pane > :not(dialog) { max-width: 960px; margin-right: auto; margin-left: auto; }
+.overview-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin-bottom: 20px; }
+.overview-head h1 { margin: 0; }
+.overview-count { margin: 0; font-size: 15px; color: var(--ink-soft); }
+.overview-head .button { align-self: center; margin-left: auto; }
+.workspace-overview .library-filter { flex-wrap: nowrap; margin: 0 0 16px; }
+.workspace-overview .library-filter input[type=search] { flex: 0 1 320px; }
+.workspace-overview .library-filter select { flex: 0 1 180px; }
+.workspace-overview .library-clear { flex: none; }
+.overview-list { margin: 0; padding: 0; list-style: none; overflow: hidden; background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius-panel); }
+.overview-list li + li { border-top: 1px solid var(--line); }
+.overview-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px 28px; padding: 16px 22px; color: var(--ink); text-decoration: none; }
+.overview-item:hover { color: var(--ink); background: var(--hover); }
+.overview-item:focus-visible { outline-offset: -2px; }
+.overview-main { display: grid; gap: 3px; min-width: 0; }
+/* Shortened on screen only: the record keeps every word. */
+.overview-title, .overview-summary {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.overview-title { font-size: 16px; font-weight: 600; line-height: 1.5; }
+.overview-summary { font-size: 14px; color: var(--ink-soft); }
+.overview-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; font-size: 13px; color: var(--ink-soft); white-space: nowrap; }
+.overview-empty { margin: 0; padding: 28px 22px; color: var(--ink-soft); text-align: center; background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius-panel); }
+.overview-unavailable { margin: 0; padding: 14px 18px; color: var(--ink); background: var(--white); border: 1px solid var(--field-line); border-radius: var(--radius-control); }
 
 /* The kind of a new record: one current choice among six plain-word links. */
 .kind-switch { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 14px; padding: 3px; background: var(--outcome); border: 1px solid var(--line); border-radius: var(--radius-control); width: fit-content; max-width: 100%; }
@@ -535,6 +624,15 @@ dialog h2 { margin-top: 0; }
   .topbar { gap: 4px 18px; padding: 8px 16px; }
   .who { width: 100%; margin-left: 0; justify-content: space-between; }
   .nav a, .link-button { display: inline-flex; align-items: center; min-height: 44px; }
+  .subbar { padding: 6px 16px; }
+  .subnav a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 10px; }
+  .manage > summary { min-height: 44px; }
+  .workspace-overview .pane { padding: 20px 16px 40px; }
+  .workspace-overview .library-filter { flex-wrap: wrap; }
+  .workspace-overview .library-filter input[type=search] { flex: 1 1 100%; }
+  .workspace-overview .library-filter select { flex: 1 1 0; }
+  .overview-item { grid-template-columns: minmax(0, 1fr); padding: 14px 16px; }
+  .overview-meta { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px 10px; white-space: normal; }
   .button, button { min-height: 44px; }
   .library-filter select, .library-filter input[type=search] { min-height: 44px; }
   .kind-switch a, .kind-switch span { display: inline-flex; align-items: center; min-height: 44px; }
@@ -560,7 +658,7 @@ dialog h2 { margin-top: 0; }
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .button, button, .library-item, .nav a, .kind-switch a { transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease; }
+  .button, button, .library-item, .nav a, .kind-switch a, .subnav a, .manage-menu a, .overview-item { transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease; }
   .chevron { transition: transform 0.16s ease; }
 }
 

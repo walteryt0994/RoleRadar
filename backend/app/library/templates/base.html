@@ -6,6 +6,7 @@
   <title>{% block title %}经历库{% endblock %} · RoleRadar 本地开发版</title>
   <link rel="stylesheet" href="/static/library.css">
   <script src="/static/motion.js"></script>
+  <script src="/static/menu.js" defer></script>
 </head>
 <body>
   {% set section = section|default("library") %}
@@ -20,11 +21,7 @@
     <a class="brand" href="/experiences"><span class="brand-mark">{{ i.icon("radar") }}</span>RoleRadar</a>
     {% if user %}
     <nav class="nav" aria-label="主要导航">
-      <a href="/experiences"{% if section == "library" %} aria-current="page"{% endif %}>经历库</a>
-      <a href="/basic-profile"{% if section == "profile" %} aria-current="page"{% endif %}>基本资料</a>
-      <a href="/job-preferences"{% if section == "preferences" %} aria-current="page"{% endif %}>求职偏好</a>
-      <a href="/experiences?tab=trash"{% if section == "trash" %} aria-current="page"{% endif %}>回收站</a>
-      <a href="/export/all.zip" download>导出全部</a>
+      <a href="/experiences" aria-current="true">我的资料</a>
     </nav>
     <div class="who">
       <span>当前：{{ user.label }}</span>
@@ -35,6 +32,24 @@
     </div>
     {% endif %}
   </header>
+  {% if user %}
+  {# The parts of 我的资料. The recycle bin and the export are kept in a native
+     disclosure, which opens by click, touch or keyboard, also without JavaScript. #}
+  <div class="subbar">
+    <nav class="subnav" aria-label="我的资料">
+      <a href="/experiences"{% if section == "library" %} aria-current="page"{% endif %}>经历库</a>
+      <a href="/basic-profile"{% if section == "profile" %} aria-current="page"{% endif %}>基本资料</a>
+      <a href="/job-preferences"{% if section == "preferences" %} aria-current="page"{% endif %}>求职偏好</a>
+    </nav>
+    <details class="manage" data-menu>
+      <summary{% if section == "trash" %} class="is-current"{% endif %}>资料管理<span class="chevron">{{ i.icon("chevron-right") }}</span></summary>
+      <ul class="manage-menu">
+        <li><a href="/experiences?tab=trash"{% if section == "trash" %} aria-current="page"{% endif %}>回收站</a></li>
+        <li><a href="/export/all.zip" download>导出全部资料</a></li>
+      </ul>
+    </details>
+  </div>
+  {% endif %}
   {% block layout %}
   <main id="main" class="page" tabindex="-1">
     {% if notice %}

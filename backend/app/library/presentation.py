@@ -163,6 +163,11 @@ def record_page(item) -> str:
     return DOCUMENT_PAGES.get(item.category, f"/experiences/{item.id}")
 
 
+def section_of(item) -> str:
+    """The part of 我的资料 that a record's pages belong to in the navigation."""
+    return item.category if item.category in DOCUMENT_PAGES else "library"
+
+
 def format_local(value: datetime | None) -> str:
     """An exact instant in this computer's local time, with its UTC offset."""
     if value is None:

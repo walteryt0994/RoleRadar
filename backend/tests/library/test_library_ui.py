@@ -53,6 +53,11 @@ def library_aside(html: str) -> str:
     return html[start: html.index("</aside>", start)]
 
 
+def record_list(html: str) -> str:
+    """Where a page lists the records: beside a record, or the overview itself."""
+    return library_aside(html) if '<aside class="library"' in html else main_of(html)
+
+
 def main_of(html: str) -> str:
     start = html.index('<main id="main"')
 
@@ -275,10 +280,12 @@ def test_each_action_and_label_is_offered_once_and_the_layout_carries_the_rest(b
     assert detail.count(f'href="/experiences/{item_id}/edit"') == 1
     assert "修订号" not in detail
     assert 'name="expected_revision"' in main_of(detail)
-    # Beside the records, the list page adds only its title; an empty library invites
-    # the first record in the page and not again in the list.
-    assert re.findall(r"<(a|button)\b", main_of(pages["listing"])) == []
-    assert 'href="/experiences/new"' not in library_aside(pages["empty"])
+    # The overview is the list itself: one way to start a record, then each record
+    # once, with nothing beside it. An empty library invites the first record once.
+    assert '<aside class="library"' not in pages["listing"]
+    assert [a["href"] for a in anchors_in(main_of(pages["listing"]))] == ["/experiences/new", f"/experiences/{item_id}"]
+    assert [a["href"] for a in anchors_in(main_of(pages["empty"]))] == ["/experiences/new"]
+    assert 'class="library-filter"' not in pages["empty"]
 
 
 def test_what_must_be_said_is_still_said_where_it_matters(browser_a):
@@ -319,7 +326,7 @@ def test_workspace_pages_list_my_records_and_mark_the_open_one(browser_a):
     }
 
     for path, selected in pages.items():
-        aside = library_aside(browser_a.get(path).text)
+        aside = record_list(browser_a.get(path).text)
         current = [a for a in anchors_in(aside) if a.get("aria-current") == "page"]
 
         assert "第一条经历" in aside and "做了第一件事" in aside, path
@@ -332,26 +339,51 @@ def test_workspace_pages_list_my_records_and_mark_the_open_one(browser_a):
     assert "/experiences" in hrefs
 
 
-def test_the_navigation_marks_the_section_you_are_in(browser_a):
-    def current_nav(path):
+def test_the_navigation_marks_the_part_of_my_data_you_are_in(browser_a):
+    item_id = browser_a.create(title="合成经历", actions="合成内容")
+    profile = browser_a.submit("/basic-profile/edit", "/basic-profile", city="合成城")
+    assert profile.status_code == 303
+    [profile_id] = re.findall(r'href="/experiences/([0-9a-f-]{36})/history"', browser_a.get("/basic-profile").text)
+    binned = browser_a.create(title="回收站里的", actions="x")
+    assert browser_a.submit(f"/experiences/{binned}/delete", f"/experiences/{binned}/delete").status_code == 303
+
+    def marks(path):
         page = browser_a.get(path).text
-        nav = page[page.index('<nav class="nav"'): page.index("</nav>", page.index('<nav class="nav"'))]
 
-        return [a["href"] for a in anchors_in(nav) if a.get("aria-current") == "page"]
+        def region(start, end):
+            return page[page.index(start): page.index(end, page.index(start))]
 
-    assert current_nav("/experiences") == ["/experiences"]
-    assert current_nav("/experiences/new") == ["/experiences"]
-    assert current_nav("/experiences?tab=trash") == ["/experiences?tab=trash"]
+        top = anchors_in(region('<nav class="nav"', "</nav>"))
+        parts = anchors_in(region('<nav class="subnav"', "</nav>"))
+        menu = anchors_in(region('<details class="manage"', "</details>"))
+
+        assert [a.get("aria-current") for a in top] == ["true"], path
+        return (
+            [a["href"] for a in parts if a.get("aria-current") == "page"],
+            [a["href"] for a in menu if a.get("aria-current") == "page"],
+        )
+
+    for path in ("/experiences", "/experiences/new", f"/experiences/{item_id}", f"/experiences/{item_id}/history"):
+        assert marks(path) == (["/experiences"], []), path
+
+    # The profile's own pages, also its history and deletion, belong to 基本资料.
+    for path in ("/basic-profile", f"/experiences/{profile_id}/history", f"/experiences/{profile_id}/delete"):
+        assert marks(path) == (["/basic-profile"], []), path
+
+    assert marks("/job-preferences/edit") == (["/job-preferences"], [])
+    # The recycle bin is under 资料管理, and so is purging what it holds.
+    assert marks("/experiences?tab=trash") == ([], ["/experiences?tab=trash"])
+    assert marks(f"/experiences/{binned}/purge") == ([], ["/experiences?tab=trash"])
 
 
 def test_the_record_list_never_shows_another_users_records(browser_a, browser_b):
     item_id = browser_a.create(title="A 的合成标题-9f2c")
 
     for path in ("/experiences", "/experiences/new", "/experiences?tab=trash"):
-        aside = library_aside(browser_b.get(path).text)
+        page = browser_b.get(path).text
 
-        assert "A 的合成标题-9f2c" not in aside
-        assert "还没有记录" in aside
+        assert "A 的合成标题-9f2c" not in page
+        assert ("先记下一段经历" if path == "/experiences" else "还没有记录") in record_list(page)
 
     assert browser_b.get(f"/experiences/{item_id}").status_code == 404
 
@@ -656,7 +688,8 @@ def test_each_icon_sits_beside_the_words_of_its_control(browser_a, browser_b, ic
     lock = icon("lock-keyhole")
 
     assert f'<a class="brand" href="/experiences"><span class="brand-mark">{icon("radar")}</span>RoleRadar</a>' in listing
-    assert f'<a class="button secondary" href="/experiences/new">{icon("plus")}新建记录</a>' in library_aside(listing)
+    assert f'<a class="button primary" href="/experiences/new">{icon("plus")}记录经历</a>' in main_of(listing)
+    assert f'<summary>资料管理{chevron}</summary>' in listing
     assert f'<a class="button secondary" href="/experiences/new">{icon("plus")}新建记录</a>' in detail
     assert f'<a class="library-back" href="/experiences">{icon("arrow-left")}返回经历库（1 条）</a>' in detail
     assert f'<a class="button secondary" href="/experiences/{item_id}/history">{icon("rotate-ccw-clock")}查看历史</a>' in detail

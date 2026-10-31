@@ -5,11 +5,43 @@
 {% block title %}{% if tab == "trash" %}回收站{% else %}经历库{% endif %}{% endblock %}
 {% block content %}
 {% if tab == "current" %}
-{# The records, "新建记录" and "导出全部" are already beside and above this pane. #}
-{% if items %}
-<header class="pane-head" data-reveal>
+{# The overview: the experiences the address's filter finds (sidebar_items,
+   not the unfiltered whole), each opening its own page with the filter kept.
+   A list that cannot be read says so, and is never shown as an empty library. #}
+{% if sidebar_items is none %}
+<header class="overview-head">
   <h1>经历库</h1>
+  <a class="button primary" href="{{ m.new_record_href() }}">{{ i.icon("plus") }}记录经历</a>
 </header>
+{{ m.library_filter() }}
+<p class="overview-unavailable" role="status">经历列表暂时无法显示，请稍后<a href="/experiences{{ filter_suffix }}">重新加载</a>。</p>
+{% elif sidebar_total %}
+<header class="overview-head" data-reveal>
+  <h1>经历库</h1>
+  <p class="overview-count">{% if filter_category or filter_query %}找到 {{ sidebar_items|length }} 条，共 {{ sidebar_total }} 条{% else %}共 {{ sidebar_total }} 条{% endif %}</p>
+  <a class="button primary" href="{{ m.new_record_href() }}">{{ i.icon("plus") }}记录经历</a>
+</header>
+{{ m.library_filter() }}
+{% if sidebar_items %}
+<ul class="overview-list" data-reveal>
+  {% for entry in sidebar_items %}
+  <li>
+    <a class="overview-item" href="/experiences/{{ entry.id }}{{ filter_suffix }}">
+      <span class="overview-main">
+        <span class="overview-title">{{ display_title(entry.content, entry.category) }}</span>
+        {% set summary = summary_line(entry.content, entry.category) %}
+        {% if summary %}
+        <span class="overview-summary">{{ summary }}</span>
+        {% endif %}
+      </span>
+      <span class="overview-meta"><span>{{ CATEGORY_LABELS[entry.category] }}</span>{{ m.state_badge(entry) }}</span>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="overview-empty" role="status">没有符合条件的记录。</p>
+{% endif %}
 {% else %}
 <header class="pane-head" data-reveal>
   <h1>先记下一段经历</h1>

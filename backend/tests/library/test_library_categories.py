@@ -52,17 +52,18 @@ def stored(app, item_id) -> ExperienceItem:
         return db.get(ExperienceItem, item_id)
 
 
-def sidebar(html: str) -> str:
-    start = html.index('<aside class="library"')
+def record_list(html: str) -> str:
+    """Where a page lists the records: beside a record, or the overview's main area."""
+    start, end = ('<aside class="library"', "</aside>") if '<aside class="library"' in html else ('<main id="main"', "</main>")
 
-    return html[start: html.index("</aside>", start)]
+    return html[html.index(start): html.index(end, html.index(start))]
 
 
 def listed_titles(html: str) -> str:
-    """The record list on the left, without its filter form."""
-    aside = sidebar(html)
+    """The records a page lists, without the filter form above them."""
+    records = record_list(html)
 
-    return aside[aside.index("</form>") if "</form>" in aside else 0:]
+    return records[records.index("</form>") if "</form>" in records else 0:]
 
 
 def unzip(response) -> dict[str, bytes]:
@@ -293,9 +294,9 @@ def test_no_records_and_no_matches_are_told_apart(browser_a, browser_b):
     no_match = browser_a.get("/experiences?q=不存在的词").text
     empty = browser_b.get("/experiences?q=任何词").text
 
-    assert "没有符合条件的记录" in no_match and "还没有记录" not in sidebar(no_match)
+    assert "没有符合条件的记录" in no_match and "先记下一段经历" not in no_match
     assert '<a class="library-clear" href="/experiences">清空筛选</a>' in no_match
-    assert "还没有记录" in sidebar(empty) and "没有符合条件的记录" not in empty
+    assert "先记下一段经历" in record_list(empty) and "没有符合条件的记录" not in empty
 
 
 def test_search_words_are_echoed_as_text_and_cut_to_a_hundred_characters(browser_a):
@@ -320,7 +321,7 @@ def test_a_new_record_from_a_filtered_list_starts_in_that_category(browser_a):
     browser_a.create(actions="x")
     page = browser_a.get("/experiences?category=education").text
 
-    assert 'href="/experiences/new?kind=education&amp;category=education"' in sidebar(page)
+    assert 'href="/experiences/new?kind=education&amp;category=education"' in record_list(page)
 
 
 def test_the_filter_form_needs_no_session_token_and_changes_nothing(app, browser_a):

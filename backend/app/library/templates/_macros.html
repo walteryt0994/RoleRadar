@@ -117,6 +117,26 @@
 </div>
 {% endmacro %}
 
+{# A new record starts in the category the list is filtered by, and the filter stays. #}
+{% macro new_record_href() %}/experiences/new{% if filter_category %}?kind={{ filter_category }}&amp;{{ filter_suffix[1:] }}{% endif %}{% endmacro %}
+
+{# Finding records: words and a category, sent together as a plain GET form. #}
+{% macro library_filter() %}
+<form class="library-filter" method="get" action="/experiences" role="search" aria-label="查找经历">
+  <input type="search" name="q" value="{{ filter_query }}" maxlength="100" placeholder="搜索" aria-label="搜索经历">
+  <select name="category" aria-label="类别">
+    <option value="">全部类别</option>
+    {% for category in EXPERIENCE_CATEGORIES %}
+    <option value="{{ category }}"{% if category == filter_category %} selected{% endif %}>{{ CATEGORY_LABELS[category] }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit" class="secondary">查找</button>
+  {% if filter_category or filter_query %}
+  <a class="library-clear" href="/experiences">清空筛选</a>
+  {% endif %}
+</form>
+{% endmacro %}
+
 {# items is the list as filtered by the address (?category=…&q=…); its links keep the filter. #}
 {% macro library_nav(items, selected_id) %}
 <aside class="library" aria-label="我的经历">
@@ -125,23 +145,11 @@
     <h2>我的经历</h2>
     {# An empty library invites the first record in the page itself. #}
     {% if items is none or sidebar_total %}
-    <a class="button secondary" href="/experiences/new{% if filter_category %}?kind={{ filter_category }}&amp;{{ filter_suffix[1:] }}{% endif %}">{{ i.icon("plus") }}新建记录</a>
+    <a class="button secondary" href="{{ new_record_href() }}">{{ i.icon("plus") }}新建记录</a>
     {% endif %}
   </div>
   {% if items is not none and sidebar_total %}
-  <form class="library-filter" method="get" action="/experiences" role="search" aria-label="查找经历">
-    <input type="search" name="q" value="{{ filter_query }}" maxlength="100" placeholder="搜索" aria-label="搜索经历">
-    <select name="category" aria-label="类别">
-      <option value="">全部类别</option>
-      {% for category in EXPERIENCE_CATEGORIES %}
-      <option value="{{ category }}"{% if category == filter_category %} selected{% endif %}>{{ CATEGORY_LABELS[category] }}</option>
-      {% endfor %}
-    </select>
-    <button type="submit" class="secondary">查找</button>
-    {% if filter_category or filter_query %}
-    <a class="library-clear" href="/experiences">清空筛选</a>
-    {% endif %}
-  </form>
+  {{ library_filter() }}
   {% endif %}
   {% if items is none %}
   <p class="library-unavailable" role="status">经历列表暂时无法显示，请稍后刷新页面。这一页的内容不受影响。</p>
