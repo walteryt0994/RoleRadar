@@ -133,6 +133,9 @@ class OpenAIProviderConfig:
     base_url: str | None = None
     # False keeps proxy settings in the environment from rerouting requests.
     use_environment_proxies: bool = True
+    # The most output tokens any one request may ask for; None leaves the
+    # limit to each request.
+    max_output_tokens: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.api_key, str) or not self.api_key.strip():
@@ -167,6 +170,15 @@ class OpenAIProviderConfig:
         ):
             raise AIProviderConfigError(
                 "The provider address must be an https:// URL."
+            )
+
+        if self.max_output_tokens is not None and (
+            isinstance(self.max_output_tokens, bool)
+            or not isinstance(self.max_output_tokens, int)
+            or self.max_output_tokens < 1
+        ):
+            raise AIProviderConfigError(
+                "The output token limit must be an integer 1 or greater."
             )
 
 
@@ -265,8 +277,18 @@ class OpenAIProvider(AIProvider):
             "store": False,
         }
 
+        # The caller's limit, never above the configured one.
+        output_limit = self._config.max_output_tokens
+
         if max_output_tokens is not None:
-            request["max_output_tokens"] = max_output_tokens
+            output_limit = (
+                max_output_tokens
+                if output_limit is None
+                else min(max_output_tokens, output_limit)
+            )
+
+        if output_limit is not None:
+            request["max_output_tokens"] = output_limit
 
         if reasoning_effort is not None:
             request["reasoning"] = {"effort": reasoning_effort}

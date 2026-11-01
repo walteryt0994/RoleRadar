@@ -222,6 +222,33 @@ class PreferenceRelation(StrEnum):
     NOT_STATED = "not_stated"
 
 
+# The model names both aspects of a comparison (a suggestion); a relation stands only where
+# they are the same aspect (U2-A2 R5). The docstring below is the description the model reads
+# in the answer's JSON Schema (R7), so it defines each value for the model.
+class PostingAspect(StrEnum):
+    """What a job preference is about, and what the posting's words compared with it speak of:
+    location, where the work is; work_mode, remote, on site or hybrid; travel; schedule, hours,
+    pace and overtime; start_date, when the job starts or by when the hire must be available, as
+    the posting states it; employment_type, full-time, internship or part-time, and how long;
+    direction, the industry, field or team; work_content, what the daily work is; compensation;
+    qualification, what the posting asks of the candidate, such as an education, a graduation
+    date or year, skills, experience or a work authorisation: never what a preference is about,
+    and never a start date; other, anything else.
+    """
+
+    LOCATION = "location"
+    WORK_MODE = "work_mode"
+    TRAVEL = "travel"
+    SCHEDULE = "schedule"
+    START_DATE = "start_date"
+    EMPLOYMENT_TYPE = "employment_type"
+    DIRECTION = "direction"
+    WORK_CONTENT = "work_content"
+    COMPENSATION = "compensation"
+    QUALIFICATION = "qualification"
+    OTHER = "other"
+
+
 class PreferenceConclusion(StrEnum):
     """A chosen preference against the posting. Never a skill, never scored."""
 

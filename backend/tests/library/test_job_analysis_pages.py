@@ -645,6 +645,8 @@ def test_preferences_are_listed_for_review_and_compared_only_when_chosen(inline,
     # The posting names Shanghai; it says nothing about travelling.
     assert "目标城市（理想） 一致" in result and "工作方式（不能接受） 岗位未说明" in result
     assert "不是硬性筛选" in result
+    # "Not stated" says the posting leaves the condition open, nothing more (R7).
+    assert "岗位未明确说明这一条件" in result and "需要时可向招聘方确认" in result
 
 
 def test_preferences_changed_after_the_review_are_not_sent(inline, browser_a, recorder):

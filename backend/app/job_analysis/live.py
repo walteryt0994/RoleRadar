@@ -13,7 +13,9 @@ whatever is missing or doubtful, including proxy settings or an
 OPENAI_BASE_URL in the environment that could send requests elsewhere.
 make_live_provider fixes the endpoint, ignores proxies from the environment
 and turns the SDK's retries off, so one logical request is at most one paid
-request. RequestBudget hands out requests before they are sent, never after.
+request; it also caps the output of every request at the policy's limit,
+whatever the caller asks for. RequestBudget hands out requests before they
+are sent, never after.
 The key is read from the environment when the provider is built, and is
 never shown, logged or written anywhere.
 """
@@ -130,7 +132,7 @@ def _whole(raw: str, low: int, high: int, name: str) -> int:
 
 
 def make_live_provider(policy: LivePolicy, environ=None) -> OpenAIProvider:
-    """The provider of a checked policy: fixed endpoint, no proxies from the environment, no retries."""
+    """The provider of a checked policy: fixed endpoint, no proxies from the environment, no retries, capped output."""
     environ = os.environ if environ is None else environ
 
     return OpenAIProvider(
@@ -141,6 +143,7 @@ def make_live_provider(policy: LivePolicy, environ=None) -> OpenAIProvider:
             max_retries=0,
             base_url=policy.endpoint,
             use_environment_proxies=False,
+            max_output_tokens=policy.max_output_tokens,
         )
     )
 

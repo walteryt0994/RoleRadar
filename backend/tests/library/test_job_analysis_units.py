@@ -3,13 +3,15 @@ task store, the simulated service and the switch for a real one. Synthetic
 material only; the real provider is never built with a real client."""
 import json
 import threading
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from app.analysis_contracts import AnalysisStatus
+from app.analysis_contracts import AnalysisStatus, task_fingerprint
 from app.experience_analysis import analyze_selected_experiences
 from app.job_analysis import live
+from app.job_analysis.runner import run_task
 from app.job_analysis.scope import (
     BLOCKED,
     LEFT_OUT,
@@ -287,6 +289,50 @@ def test_a_real_provider_fixes_its_endpoint_ignores_proxies_and_never_retries():
     assert http.call_args.kwargs["trust_env"] is False
     assert provider.identity().endpoint == policy.recipient.endpoint == "https://api.openai.com/v1"
     assert policy.recipient.model == "synthetic-model"
+
+
+def answered_by_the_rules(**request):
+    """The SDK's create() with a well-formed reply, worked out by the simulation's rules; nothing leaves the process."""
+    schema = SimpleNamespace(name=request["text"]["format"]["name"])
+
+    return SimpleNamespace(
+        status="completed",
+        output=[],
+        output_text=SimulatedProvider().generate_text(request["input"], json_schema_format=schema).text,
+        model="synthetic-model-2026-10-01",
+        usage=SimpleNamespace(input_tokens=100, output_tokens=50, total_tokens=150),
+    )
+
+
+def test_both_requests_of_a_real_task_are_capped_at_the_policy_output_limit(database, owners, clock):
+    owner = owners[0]
+    chosen = confirmed(database, owner, clock, "project", title="合成项目", actions="用 Python 清洗了订单数据。我没有使用 SQL。")
+    policy = live.load_live_policy(READY)
+
+    with database.transaction() as db:
+        plan = build_plan(db, owner, inputs([chosen]))
+
+    request = build_request(owner, plan, policy.recipient, "1")
+    store = TaskStore()
+    task = store.create(owner, "s1", None, None, request, task_fingerprint(request))
+
+    assert store.begin(task.id, owner, "s1", task.fingerprint)[0] is Start.STARTED
+
+    with patch("app.ai_provider.OpenAI") as client, patch("app.ai_provider.DefaultHttpxClient"):
+        provider = live.make_live_provider(policy, READY)
+
+    service = client.return_value.responses.create
+    service.side_effect = answered_by_the_rules
+    # The way a real run goes: the runner, the analysis service, then this provider.
+    run_task(store, database, task.id, lambda _task: provider)
+    result = store.get(task.id, owner, "s1").result
+    sent = [call.kwargs for call in service.call_args_list]
+
+    assert result.status is AnalysisStatus.COMPLETE, result.problem
+    # Neither the parse nor the analysis asks for a limit; the provider adds the policy's to both.
+    assert [each["max_output_tokens"] for each in sent] == [policy.max_output_tokens] * 2 == [1500, 1500]
+    assert all(each["model"] == "synthetic-model" and each["store"] is False for each in sent)
+    assert client.call_args.kwargs["base_url"] == "https://api.openai.com/v1"
 
 
 def test_a_request_budget_is_taken_before_sending_and_never_overdrawn():

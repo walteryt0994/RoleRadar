@@ -402,7 +402,7 @@ def test_a_quote_is_read_with_its_clause_and_the_reading_is_kept(database, libra
     chosen = confirmed(database, library.owner, clock, "project", title="合成作业", actions=text)
     posting = parsed_posting(
         required_skills=[{"text": "Python", "evidence_text": "熟练使用 Python 进行数据处理"}],
-        preferred_skills=[], hard_constraints=[], uncertain_requirements=[],
+        preferred_skills=[], hard_constraints=[], uncertain_requirements=[], education_requirement=None,
     )
     # How a quote is read does not depend on the requirement it is cited for.
     result, _ = run(database, request_for(library.owner, [chosen]), posting, assessed(R1=[cite("S1", "actions", quote, "practice")]))

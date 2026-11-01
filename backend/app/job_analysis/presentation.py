@@ -58,7 +58,8 @@ REASONS = {
     "conflicts": "岗位原文与偏好相反",
     "unclear": "岗位原文提到了，但看不出是否符合",
     "no_quote": "没有岗位原文能说明",
-    "not_stated": "岗位描述没有提到",
+    "other_aspect": "引用的岗位原文说的是别的方面，不能作为这一项的依据",
+    "not_stated": "岗位未明确说明这一条件",
 }
 BASIS_LABELS = {
     "practice": "实践",

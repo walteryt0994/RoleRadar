@@ -539,6 +539,10 @@ def _config_values(**overrides):
         {"max_retries": -1},
         {"max_retries": 2.5},
         {"max_retries": "abc"},
+        {"max_output_tokens": 0},
+        {"max_output_tokens": -1},
+        {"max_output_tokens": 2.5},
+        {"max_output_tokens": "1500"},
     ],
 )
 def test_explicit_config_rejects_invalid_values(overrides):
@@ -551,6 +555,7 @@ def test_explicit_config_rejects_invalid_values(overrides):
     [
         {"timeout_seconds": True},
         {"max_retries": True},
+        {"max_output_tokens": True},
     ],
 )
 def test_explicit_config_rejects_boolean_numbers(overrides):
@@ -929,4 +934,26 @@ def test_generate_text_reports_omitted_options_as_unknown(provider):
     assert "max_output_tokens" not in sent
     assert "reasoning" not in sent
     assert result.requested_max_output_tokens is None
+
+
+@pytest.mark.parametrize(
+    "asked, sent", [(None, 1500), (300, 300), (1500, 1500), (4000, 1500)]
+)
+def test_a_configured_output_limit_caps_every_request(asked, sent):
+    with patch("app.ai_provider.OpenAI"):
+        capped = OpenAIProvider(
+            config=OpenAIProviderConfig(
+                **_config_values(max_output_tokens=1500)
+            )
+        )
+
+    capped._client.responses.create.return_value = _fake_response()
+
+    result = capped.generate_text(
+        "Parse this job description.", max_output_tokens=asked
+    )
+    request = capped._client.responses.create.call_args.kwargs
+
+    assert request["max_output_tokens"] == sent
+    assert result.requested_max_output_tokens == sent
     assert result.requested_reasoning_effort is None

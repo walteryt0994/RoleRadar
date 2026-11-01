@@ -11,7 +11,11 @@ from app.jd_record import (
 )
 from app.schemas import SCHEMA_VERSION, StructuredJobDescription
 
-PROMPT_VERSION = "1"
+# 2 (U2-A2 R5): a graduation date or year is named as an education requirement, and a
+# mandatory one has to be listed in hard_constraints too.
+# 3 (U2-A2 R8): hard_constraints are conditions that are not skills; a required skill is never
+# listed there again, however strongly the posting words it.
+PROMPT_VERSION = "3"
 PARSER_VERSION = "1"
 
 SCHEMA_NAME = "structured_job_description"
@@ -34,8 +38,16 @@ PARSER_INSTRUCTIONS = (
     "Never put either of them in required_skills or preferred_skills. "
     "When the posting states such a requirement as mandatory, also "
     "list it in hard_constraints together with its evidence. "
+    "A graduation date or year the posting asks for is an education "
+    "requirement too; a mandatory one belongs in hard_constraints as "
+    "well, not only in education_requirement. "
     "hard_constraints is only for requirements the posting states as "
     "mandatory. "
+    "It is for conditions that are not skills, such as a graduation date, "
+    "an education or a work authorization: a skill, tool or technology the "
+    "posting requires stays in required_skills however strongly it is "
+    "worded, as with \"must\", and is never listed again in "
+    "hard_constraints. "
     "Never treat a preferred, optional, alternative, vague, or "
     "contradictory statement as a hard constraint. "
     "hard_constraints records what the posting demands, not a "

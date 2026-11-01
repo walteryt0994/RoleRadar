@@ -214,8 +214,12 @@ def _compare(preference: dict, posting_lines: list[str]) -> dict:
     words = [word for word in WORDS.split(preference["text"]) if len(word) >= 2]
     quotes = [line for line in posting_lines if line and any(word.casefold() in line.casefold() for word in words)][:2]
 
+    # Rules cannot tell what a preference or a line is about: both are "other", so the
+    # relation stands or falls as before.
     return {
         "preference_id": preference["preference_id"],
+        "aspect": "other",
         "relation": RELATIONS[preference["stance"]] if quotes else "not_stated",
         "job_quotes": quotes,
+        "job_quotes_aspect": "other",
     }

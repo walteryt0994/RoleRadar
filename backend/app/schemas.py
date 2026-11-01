@@ -195,8 +195,12 @@ class StructuredJobDescription(JobDescriptionBaseModel):
     education_requirement: str | None
     work_authorization: str | None
     responsibilities: list[str]
+    # Skills, tools and technologies the posting requires, however strongly it words them.
     required_skills: list[JobRequirement]
+    # Skills, tools and technologies the posting counts as a plus.
     preferred_skills: list[JobRequirement]
+    # Mandatory conditions that are not skills: a graduation date, an education, a work
+    # authorisation. A required skill is never listed here again (U2-A2 R8; the parse prompt).
     hard_constraints: list[JobRequirement]
     uncertain_requirements: list[JobRequirement]
 
