@@ -670,6 +670,30 @@ dialog h2 { margin-top: 0; }
   .steps li { min-height: 44px; display: inline-flex; align-items: center; }
 }
 
+/* --- resume imports (U2-B1): one form, then what was read as it was found --- */
+
+.import-form { margin-top: 8px; }
+.import-form input[type=file] { min-width: 0; max-width: 100%; font: inherit; font-size: 14px; }
+.import-form textarea { min-height: 200px; }
+/* What keeping the material means is said once, right where the user agrees to it. */
+.import-consent { margin: 20px 0 0; padding: 14px 16px; background: var(--page); border: 1px solid var(--line); border-radius: var(--radius-control); }
+.import-consent p { margin: 0 0 10px; font-size: 14px; }
+.import-list { margin-top: 40px; }
+.import-name { flex: 1 1 14em; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.import-meta { margin: 0; font-size: 13px; color: var(--ink-soft); overflow-wrap: anywhere; }
+.import-title { overflow-wrap: anywhere; }
+.import-explain { margin: 16px 0 0; font-size: 14px; color: var(--ink-soft); }
+.import-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 20px; margin: 12px 0 0; }
+.error p:last-child, .warning p:last-child { margin-bottom: 0; }
+.import-text { margin-top: 28px; padding-top: 4px; border-top: 1px solid var(--line); }
+.import-text h2 { margin: 24px 0 8px; font-size: 13px; font-weight: 500; color: var(--ink-soft); }
+.import-paragraph { display: grid; grid-template-columns: 2.4em minmax(0, 1fr); gap: 10px; padding: 6px 0; }
+.import-number { padding-top: 3px; font-size: 12px; color: var(--ink-soft); text-align: right; }
+.import-table-wrap { margin: 12px 0; overflow-x: auto; }
+.import-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.import-table caption { padding-bottom: 4px; font-size: 13px; font-weight: 500; color: var(--ink-soft); text-align: left; }
+.import-table td { min-width: 6em; padding: 6px 10px; vertical-align: top; border: 1px solid var(--line); }
+
 /* --- motion: a skeleton while a page loads, and blocks that rise in -------- */
 
 /* Only shown by motion.js while the browser really waits for a workspace

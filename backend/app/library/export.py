@@ -17,6 +17,11 @@ file is missing, unreadable or changed is listed with that status and left
 out, and the package says it is incomplete. The temporary file loses its
 name before it is sent: a clean-up running meanwhile cannot remove it, and
 nothing of it is left once the download ends.
+
+Since U2-B1 the package also holds the resume imports still kept (not
+ended, not expired): each in imports/ with the text that was read and the
+original file, said to be temporary and not part of the library. An import
+file that cannot be copied is listed like an attachment that cannot.
 """
 import hashlib
 import json
@@ -45,8 +50,17 @@ from app.library.content import (
 )
 from app.library.attachments import TYPE_LABELS
 from app.library.errors import ChangedFile, FileStoreError, MissingFile
-from app.library.files import CHUNK_BYTES, FileStore
-from app.library.models import Attachment, AttachmentState, ExperienceItem, ExperienceVersion, VersionKind
+from app.library.files import CHUNK_BYTES, IMPORTS, FileStore
+from app.library.imports import import_text, open_imports
+from app.library.models import (
+    Attachment,
+    AttachmentState,
+    ExperienceItem,
+    ExperienceVersion,
+    ImportSource,
+    ResumeImport,
+    VersionKind,
+)
 from app.library.presentation import format_local, format_size, state_label, version_label
 from app.library.service import (
     active_item,
@@ -59,7 +73,8 @@ from app.library.service import (
 EXPORT_FORMAT = "roleradar-library-export"
 # 2: six categories, the profile and the preferences; field labels per kind.
 # 3: attachment files, their list in data.json and the manifest, and "complete".
-EXPORT_FORMAT_VERSION = 3
+# 4: resume imports still kept (U2-B1), with their text and original files.
+EXPORT_FORMAT_VERSION = 4
 SHARE_WARNING = (
     "注意：这份文件包含你的私有备注或联系方式。导出文件离开 RoleRadar 后不再受平台的权限保护；"
     "分享或发送之前，请先检查并删掉不想让别人看到的内容。"
@@ -67,8 +82,11 @@ SHARE_WARNING = (
 NOT_INCLUDED = (
     "已超过恢复期限或已永久删除的内容，包括附件文件",
     "没有上传完成的附件",
+    "已放弃或已到期的简历导入",
     "分析结果、岗位简历和投递记录：这些功能还没有建立",
 )
+IMPORT_SOURCES = {ImportSource.PDF: "PDF", ImportSource.DOCX: "Word（.docx）", ImportSource.TEXT: "粘贴的文字"}
+IMPORT_STATES = {"reading": "正在读取", "read": "文字已读取", "partial": "部分读取", "failed": "读取失败"}
 FILE_PREFIXES = {PROFILE: "roleradar-profile", PREFERENCES: "roleradar-preferences"}
 # What happened to an attachment file in "export all".
 INCLUDED, MISSING, UNREADABLE, CHANGED = "included", "missing", "unreadable", "changed"
@@ -102,6 +120,8 @@ class ExportContent:
     current: list[ExportRecord]
     documents: dict[str, ExportRecord | None]
     binned: list[ExportRecord]
+    # Resume imports still kept (U2-B1); not part of the library.
+    imports: list[ResumeImport] = field(default_factory=list)
 
 
 @dataclass
@@ -319,6 +339,7 @@ def collect_export(db: Session, owner_id: str, now: datetime) -> ExportContent:
         current=[record(item) for item in current],
         documents={kind: record(item) if item else None for kind, item in documents.items()},
         binned=[record(item) for item in binned],
+        imports=open_imports(db, owner_id, now),
     )
 
 
@@ -411,8 +432,47 @@ def _write_zip(content: ExportContent, files: FileStore, owner_label: str, now: 
                 texts[f"{kind}.md"] = item_markdown(record.item, record.versions, now).encode("utf-8")
                 listing["documents"].append((f"{kind}.md", record.item))
 
+        manifest_imports = []
+
+        for index, row in enumerate(content.imports, start=1):
+            directory = f"imports/{index:02d}-{row.id[:8]}"
+            text_path = None
+            original_path = original_status = None
+
+            if row.segments:
+                text_path = f"{directory}/text.txt"
+                texts[text_path] = import_text(row).encode("utf-8")
+
+            if row.storage_key is not None:
+                target = f"{directory}/{_package_name(1, row.filename)}"
+                original_status = _copy_import(archive, files, row, f"{folder}/{target}", stamp)
+
+                if original_status == INCLUDED:
+                    original_path = target
+                    copied.append({"path": target, "bytes": row.size, "sha256": row.sha256})
+
+            manifest_imports.append(
+                {
+                    "import_id": row.id,
+                    "folder": directory,
+                    "source": row.source,
+                    "state": row.state,
+                    "filename": row.filename,
+                    "received_at": _iso(row.received_at),
+                    "expires_at": _iso(row.expires_at),
+                    "text_path": text_path,
+                    "original_path": original_path,
+                    "original_status": original_status,
+                    "bytes": row.size,
+                    "sha256": row.sha256,
+                }
+            )
+
         left_out = [entry for entry in manifest_attachments if entry["status"] != INCLUDED]
-        complete = not left_out
+        imports_left_out = [
+            entry for entry in manifest_imports if entry["original_status"] not in (None, INCLUDED)
+        ]
+        complete = not left_out and not imports_left_out
         data = {
             "format": EXPORT_FORMAT,
             "format_version": EXPORT_FORMAT_VERSION,
@@ -427,9 +487,12 @@ def _write_zip(content: ExportContent, files: FileStore, owner_label: str, now: 
             "profile": _document_record(content.documents[PROFILE]),
             "preferences": _document_record(content.documents[PREFERENCES]),
             "recycle_bin": [_item_record(record) for record in content.binned],
+            "imports": [_import_record(row, entry) for row, entry in zip(content.imports, manifest_imports)],
         }
         texts["data.json"] = _json_bytes(data)
-        texts["README.md"] = _readme(owner_label, now, listing, manifest_attachments).encode("utf-8")
+        texts["README.md"] = _readme(
+            owner_label, now, listing, manifest_attachments, list(zip(content.imports, manifest_imports))
+        ).encode("utf-8")
         texts["manifest.json"] = _json_bytes(
             {
                 "format": EXPORT_FORMAT,
@@ -441,10 +504,12 @@ def _write_zip(content: ExportContent, files: FileStore, owner_label: str, now: 
                     "profile": int(content.documents[PROFILE] is not None),
                     "preferences": int(content.documents[PREFERENCES] is not None),
                     "recycle_bin": len(content.binned),
-                    "attachments": len(copied),
+                    "attachments": sum(1 for entry in manifest_attachments if entry["status"] == INCLUDED),
+                    "imports": len(content.imports),
                 },
                 "not_included": list(NOT_INCLUDED),
                 "attachments": manifest_attachments,
+                "imports": manifest_imports,
                 "files": sorted(
                     [
                         {
@@ -499,6 +564,47 @@ def _copy_attachment(archive: zipfile.ZipFile, files: FileStore, attachment: Att
     return INCLUDED
 
 
+def _copy_import(archive: zipfile.ZipFile, files: FileStore, row: ResumeImport, name: str, stamp) -> str:
+    """Copy one import's original file into the package in chunks; return its status."""
+    try:
+        source = files.open_checked(row.owner_id, row.storage_key, row.size, row.sha256, area=IMPORTS)
+    except MissingFile:
+        return MISSING
+    except ChangedFile:
+        return CHANGED
+    except (FileStoreError, OSError, ValueError):
+        return UNREADABLE
+
+    with source:
+        info = zipfile.ZipInfo(name, date_time=stamp)
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.external_attr = 0o644 << 16
+
+        with archive.open(info, "w") as target:
+            while chunk := source.read(CHUNK_BYTES):
+                target.write(chunk)
+
+    return INCLUDED
+
+
+def _import_record(row: ResumeImport, entry: dict) -> dict:
+    return {
+        "id": row.id,
+        "source": row.source,
+        "source_label": IMPORT_SOURCES.get(row.source, row.source),
+        "state": row.state,
+        "state_label": IMPORT_STATES.get(row.state, row.state),
+        "filename": row.filename,
+        "received_at": _iso(row.received_at),
+        "expires_at": _iso(row.expires_at),
+        "details": row.details,
+        "segments": row.segments,
+        "text_path": entry["text_path"],
+        "original_path": entry["original_path"],
+        "original_status": entry["original_status"],
+    }
+
+
 def _package_name(number: int, filename: str) -> str:
     """A numbered name that every system can create; the number keeps equal names apart."""
     name = _NOT_IN_NAMES.sub("_", filename).strip(" .") or "attachment"
@@ -510,9 +616,16 @@ def _package_name(number: int, filename: str) -> str:
     return f"{number:02d}-{name}"
 
 
-def _readme(owner_label: str, now: datetime, listing: dict, attachments: list[dict]) -> str:
+def _readme(
+    owner_label: str,
+    now: datetime,
+    listing: dict,
+    attachments: list[dict],
+    imports: list[tuple[ResumeImport, dict]],
+) -> str:
     included = [entry for entry in attachments if entry["status"] == INCLUDED]
     left_out = [entry for entry in attachments if entry["status"] != INCLUDED]
+    imports_left_out = [entry for _, entry in imports if entry["original_status"] not in (None, INCLUDED)]
     current_files = sum(1 for entry in included if entry["section"] == "current")
     lines = [
         "# RoleRadar 经历库导出",
@@ -528,6 +641,12 @@ def _readme(owner_label: str, now: datetime, listing: dict, attachments: list[di
             "",
         ]
 
+    if imports_left_out:
+        lines += [
+            f"**这个导出包不完整：有 {len(imports_left_out)} 个导入的原文件没能放进来，原因见下面的“导入中的临时资料”和 manifest.json。**",
+            "",
+        ]
+
     lines += [
         "## 包含什么",
         "",
@@ -537,6 +656,8 @@ def _readme(owner_label: str, now: datetime, listing: dict, attachments: list[di
         f"- `recycle-bin/`：回收站里仍可恢复的内容，共 {len(listing['recycle-bin'])} 份，"
         f"以及仍可恢复的附件文件 {len(included) - current_files} 个；每份都写明了恢复截止时间。"
         "当前经历中单独删除的附件在 `recycle-bin/deleted-attachments/` 里，文件夹名对应 `experiences/` 里的经历。",
+        f"- `imports/`：还在暂存期内的简历导入，共 {len(imports)} 份，每份有读到的文字（`text.txt`）和原文件。"
+        "它们不属于经历库，见下面的“导入中的临时资料”。",
         "- `data.json`：同样的内容整理成结构化数据，方便以后导入其他工具。",
         "- `manifest.json`：文件清单、每个文件的 SHA-256 校验值，以及每个附件的来源和状态。",
         "",
@@ -559,6 +680,27 @@ def _readme(owner_label: str, now: datetime, listing: dict, attachments: list[di
             lines += [f"### {heading}", ""]
             lines += [f"- `{path}`：{_listing_label(item)}" for path, item in listing[section]]
             lines.append("")
+
+    if imports:
+        lines += [
+            "## 导入中的临时资料",
+            "",
+            "下面这些是导入时读到的原文和原文件，还没有加入经历库。RoleRadar 只暂存到各自的到期时间，"
+            "到期后会删除；导出包里的这份副本不受影响。",
+            "",
+        ]
+
+        for row, entry in imports:
+            name = row.filename or "粘贴的文字"
+            line = f"- `{entry['folder']}/`：{name}（{IMPORT_SOURCES.get(row.source, row.source)}，"
+            line += f"{IMPORT_STATES.get(row.state, row.state)}），暂存到 {format_local(row.expires_at)}"
+
+            if entry["original_status"] not in (None, INCLUDED):
+                line += f"；原文件{STATUS_TEXT[entry['original_status']]}"
+
+            lines.append(line + "。")
+
+        lines.append("")
 
     lines += ["## 不包含什么", ""]
     lines += [f"- {entry}" for entry in NOT_INCLUDED]

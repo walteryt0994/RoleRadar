@@ -103,8 +103,8 @@ def test_my_data_has_three_parts_and_keeps_the_bin_and_the_export_in_a_disclosur
 
         assert re.findall(r">([^<>]+)</a>", top) == ["我的资料", "岗位机会"], path
         assert '<a href="/experiences" aria-current="true">我的资料</a>' in top, path
-        assert re.findall(r'href="([^"]+)"', parts) == ["/experiences", "/basic-profile", "/job-preferences"], path
-        assert re.findall(r">([^<>]+)</a>", parts) == ["经历库", "基本资料", "求职偏好"], path
+        assert re.findall(r'href="([^"]+)"', parts) == ["/experiences", "/basic-profile", "/job-preferences", "/imports"], path
+        assert re.findall(r">([^<>]+)</a>", parts) == ["经历库", "基本资料", "求职偏好", "导入简历"], path
         # A native disclosure: findable and usable by keyboard and touch, also without JavaScript.
         assert "<summary" in menu and ">资料管理<" in menu, path
         assert '<a href="/experiences?tab=trash"' in menu, path

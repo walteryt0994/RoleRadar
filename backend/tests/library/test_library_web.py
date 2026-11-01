@@ -75,6 +75,17 @@ JOB_ROUTES = {
     ("POST", "/job-analysis/tasks/{task_id}/cancel"),
     ("POST", "/job-analysis/tasks/{task_id}/again"),
 }
+# The resume import pages (U2-B1); test_library_imports.py checks their access rules.
+IMPORT_ROUTES = {
+    ("GET", "/imports"),
+    ("POST", "/imports"),
+    ("GET", "/imports/{import_id}"),
+    ("GET", "/imports/{import_id}/original"),
+    ("GET", "/imports/{import_id}/text"),
+    ("POST", "/imports/{import_id}/retry"),
+    ("GET", "/imports/{import_id}/discard"),
+    ("POST", "/imports/{import_id}/discard"),
+}
 # One field each kind of record accepts, so the same post is valid for every route.
 SOME_CONTENT = {"actions": "", "name": "", "cities_ideal": ""}
 SENTINEL = "哨兵-c41f"
@@ -201,6 +212,7 @@ def test_every_route_is_either_public_or_listed_as_protected(app):
         | {("POST", path) for path in POST_ROUTES}
         | {("POST", path) for path in UPLOAD_ROUTES}
         | JOB_ROUTES
+        | IMPORT_ROUTES
     )
 
     assert found == expected
@@ -210,7 +222,7 @@ def test_static_files_hold_no_user_data_and_are_public(app):
     names = sorted(path.name for path in (PACKAGE_DIR / "static").iterdir())
     anonymous = Browser(app)
 
-    assert names == ["job_analysis.js", "leave_guard.js", "library.css", "menu.js", "motion.js", "upload.js"]
+    assert names == ["import.js", "job_analysis.js", "leave_guard.js", "library.css", "menu.js", "motion.js", "upload.js"]
 
     for name in names:
         assert anonymous.get(f"/static/{name}").status_code == 200

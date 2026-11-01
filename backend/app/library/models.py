@@ -11,6 +11,11 @@ their saves that changes something is kept as a version (saved).
 An Attachment row describes one file kept for an experience in the private
 attachment store (see files.py). The row holds the file's facts (display
 name, type, size, checksum) and its state; the bytes are only on disk.
+
+A ResumeImport row is one resume a user brought in (U2-B1): an uploaded
+PDF or DOCX, whose bytes are in the store's imports area, or pasted text.
+It keeps what was read for at most seven days and is not part of the
+library: nothing in it is an experience, a profile or a preference.
 """
 import uuid
 from datetime import datetime
@@ -27,7 +32,10 @@ from app.library.errors import ConfigError
 # 2: categories beyond project/portfolio, the profile and preferences,
 # saved versions, and the category on purge jobs.
 # 3: attachments, and the library id that ties a database to its attachment folder.
-SCHEMA_VERSION = "3"
+# 4: resume imports (U2-B1). A version 3 file is upgraded by app.library.migrate.
+SCHEMA_VERSION = "4"
+# The version app.library.migrate upgrades from.
+PREVIOUS_SCHEMA_VERSION = "3"
 
 
 class ItemState(StrEnum):
@@ -66,6 +74,24 @@ class JobStatus(StrEnum):
 class PurgeReason(StrEnum):
     EXPIRED = "expired"
     USER_REQUEST = "user_request"
+
+
+class ImportState(StrEnum):
+    # Reserved while an uploaded file is put in place; never shown.
+    RECEIVING = "receiving"
+    READING = "reading"
+    READ = "read"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    # Ended: what was kept is no longer shown, and its content is gone from the row.
+    DISCARDED = "discarded"
+    EXPIRED = "expired"
+
+
+class ImportSource(StrEnum):
+    PDF = "pdf"
+    DOCX = "docx"
+    TEXT = "text"
 
 
 class LibraryMeta(LibraryBase):
@@ -200,6 +226,58 @@ class Attachment(LibraryBase):
     deletion_id: Mapped[str | None] = mapped_column(String(36))
 
 
+class ResumeImport(LibraryBase):
+    """One resume brought in for an import, kept for at most seven days (U2-B1).
+
+    received_at is when the server had the whole file or text; expires_at,
+    seven days later, never moves. An uploaded file is at
+    imports/<owner_id>/<storage_key> in the file store; pasted text has no
+    file. segments hold what was read, where it was found (see
+    resume_reader.Reading); details hold facts about the reading without
+    content (pages, what made it partial).
+
+    Discarding or expiring ends an import: its content (segments, file name,
+    checksum) is removed from the row at once, its file as soon as the store
+    allows. cleared_at says when the file is really gone; until then the row
+    keeps the storage key and the clean-up retries. The ended row holds no
+    content, only that an import existed and how its clean-up went.
+    """
+
+    __tablename__ = "resume_imports"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "upload_key"),
+        Index("ix_resume_imports_state_expires", "state", "expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    source: Mapped[str] = mapped_column(String(10))
+    state: Mapped[str] = mapped_column(String(20))
+    filename: Mapped[str | None] = mapped_column(String(255))
+    media_type: Mapped[str | None] = mapped_column(String(100))
+    size: Mapped[int | None] = mapped_column(Integer)
+    sha256: Mapped[str | None] = mapped_column(String(64))
+    storage_key: Mapped[str | None] = mapped_column(String(32), unique=True)
+    # The one-time key of the import form: a repeated post finds this row.
+    upload_key: Mapped[str] = mapped_column(String(64))
+    # Why a reading failed or is partial (resume_reader's codes), or None.
+    outcome: Mapped[str | None] = mapped_column(String(30))
+    segments: Mapped[list | None] = mapped_column(JSON)
+    details: Mapped[dict | None] = mapped_column(JSON)
+    text_chars: Mapped[int | None] = mapped_column(Integer)
+    # Goes up with every change of state; the page's forms carry it.
+    revision: Mapped[int] = mapped_column(Integer)
+    received_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    read_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    ended_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    cleared_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    cleanup_attempts: Mapped[int] = mapped_column(Integer)
+    cleanup_error: Mapped[str | None] = mapped_column(String(100))
+
+
 class AuditEvent(LibraryBase):
     """What happened to an object and when. No content is stored here."""
 
@@ -236,10 +314,18 @@ def create_schema(engine: Engine) -> None:
                 meta = session.get(LibraryMeta, "schema_version")
                 stored = meta.value if meta is not None else None
 
+                if stored == PREVIOUS_SCHEMA_VERSION:
+                    # Starting the app never upgrades a file on its own.
+                    raise ConfigError(
+                        f"经历库数据库的结构版本是 {stored}，当前程序只支持 {SCHEMA_VERSION}。这个文件没有被修改。"
+                        "要继续使用它，请先备份，再在 backend 目录运行迁移命令："
+                        "python -m app.library.migrate --db <这个数据库文件的路径> --apply"
+                    )
+
                 if stored != SCHEMA_VERSION:
                     raise ConfigError(
                         f"经历库数据库的结构版本是 {stored or '未知'}，当前程序只支持 {SCHEMA_VERSION}；"
-                        "U1 还没有迁移工具。这个文件没有被修改，请换一个新文件。"
+                        "这个版本没有迁移工具。这个文件没有被修改，请换一个新文件。"
                     )
 
                 return

@@ -16,6 +16,10 @@ experience's reading page; the upload has a route of its own that reads its
 body as it streams in (upload.py), while every other post keeps the small
 form limit. A file is only ever sent back through the owner's download
 route, never as a static or public address.
+
+U2-B1 adds resume imports (imports_web.py): their upload is the second post
+that may be larger than a form, and the clean-up pass also ends expired
+imports and removes their files.
 """
 import ipaddress
 import logging
@@ -88,6 +92,7 @@ from app.library.errors import (
 )
 from app.library.export import collect_export, single_export, write_export
 from app.library.files import FileStore, read_chunks
+from app.library.imports import MAX_IMPORT_REQUEST_BYTES, cleanup_imports, referenced_import_files
 from app.library.identity import (
     DEV_PROVIDER,
     CurrentUser,
@@ -165,6 +170,7 @@ from app.library.service import (
     list_experiences,
     save_draft,
 )
+from app.library.resume_reader import Readings
 from app.library.upload import MAX_REQUEST_BYTES, receive_upload
 
 PACKAGE_DIR = Path(__file__).parent
@@ -173,8 +179,10 @@ LOGIN_COOKIE = "rr_login"
 # Sent with a save from the leave dialog when the user was logging out.
 SAVE_THEN_LOGOUT = "logout"
 ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
-# The only path whose posts may be bigger than an ordinary form: an attachment upload.
+# The only paths whose posts may be bigger than an ordinary form: an attachment
+# upload, and a resume import (a file or a long pasted text).
 UPLOAD_PATH = re.compile(r"/experiences/[0-9a-f-]{36}/attachments")
+IMPORT_PATH = re.compile(r"/imports")
 # A download is a file, never a page: if a browser shows it anyway, nothing in it may run.
 DOWNLOAD_POLICY = "default-src 'none'; sandbox"
 CONTENT_SECURITY_POLICY = (
@@ -293,6 +301,8 @@ class LibraryRuntime:
     # Told the token hash of a session that ended here (logging out, or
     # signing in as another user), so work tied to it stops (U2-A2).
     session_end_listeners: list = field(default_factory=list)
+    # The resume readings running in child processes (U2-B1).
+    readings: Readings = field(default_factory=Readings)
 
     def now(self):
         return self.clock.now()
@@ -303,7 +313,8 @@ class LibraryRuntime:
 
     def run_cleanup(self) -> PurgeReport | None:
         """One clean-up pass: due purge jobs, what unfinished uploads left
-        behind, leftover staging and export files, then expired sessions.
+        behind, expired and ended resume imports, leftover staging, export
+        and import files, then expired sessions.
 
         A step that fails is logged and retried on the next pass; the steps
         after it still run. Returns the purge report, or None if a step failed.
@@ -319,8 +330,15 @@ class LibraryRuntime:
             failed = True
 
         try:
+            cleanup_imports(self.database, self.files, now)
+        except LibraryError:
+            logger.exception("cleaning up resume imports failed; it will be retried on the next run")
+            failed = True
+
+        try:
             recover_uploads(self.database, self.files, now)
-            self.files.sweep(referenced_files(self.database))
+            # Both sets are read before the sweep: a file placed after that is too new to be removed.
+            self.files.sweep(referenced_files(self.database), imported=referenced_import_files(self.database))
         except LibraryError:
             logger.exception("cleaning up unfinished uploads failed; it will be retried on the next run")
             failed = True
@@ -426,7 +444,11 @@ def install_web(app: FastAPI, config: LibraryConfig) -> None:
     # Starlette runs the middleware added last first: LocalOnly is outermost.
     app.add_exception_handler(AttachmentConflict, _attachment_conflict)
     app.middleware("http")(_security_headers)
-    app.add_middleware(FormSizeLimit, max_bytes=config.max_form_bytes, upload_bytes=MAX_REQUEST_BYTES)
+    app.add_middleware(
+        FormSizeLimit,
+        max_bytes=config.max_form_bytes,
+        uploads=((UPLOAD_PATH, MAX_REQUEST_BYTES), (IMPORT_PATH, MAX_IMPORT_REQUEST_BYTES)),
+    )
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
     app.add_middleware(LocalOnly)
 
@@ -471,20 +493,27 @@ def _is_loopback(client) -> bool:
 class FormSizeLimit:
     """Refuse oversized posts before the form is read.
 
-    Every post must say how long it is. Only an attachment upload, on its
-    own path, may be longer than an ordinary form (up to upload_bytes); its
-    route also counts the bytes that really arrive.
+    Every post must say how long it is. Only an upload, on its own path,
+    may be longer than an ordinary form (up to the limit uploads gives that
+    path); its route also counts the bytes that really arrive.
     """
 
-    def __init__(self, app, max_bytes: int, upload_bytes: int):
+    def __init__(self, app, max_bytes: int, uploads: tuple[tuple[re.Pattern, int], ...]):
         self.app = app
         self.max_bytes = max_bytes
-        self.upload_bytes = upload_bytes
+        self.uploads = uploads
+
+    def limit_for(self, path: str) -> int:
+        for pattern, limit in self.uploads:
+            if pattern.fullmatch(path):
+                return limit
+
+        return self.max_bytes
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http" and scope["method"] == "POST":
             length = dict(scope["headers"]).get(b"content-length")
-            limit = self.upload_bytes if UPLOAD_PATH.fullmatch(scope["path"]) else self.max_bytes
+            limit = self.limit_for(scope["path"])
 
             if length is None:
                 response = PlainTextResponse("提交缺少长度信息。", status_code=411)

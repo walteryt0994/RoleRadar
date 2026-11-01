@@ -15,7 +15,8 @@
     return;
   }
 
-  const fields = Array.from(form.querySelectorAll("input[type=text], textarea"));
+  // A chosen file counts as input too (the resume import form); browsers never keep it.
+  const fields = Array.from(form.querySelectorAll("input[type=text], input[type=file], textarea"));
   const initial = new Map(fields.map((field) => [field, field.value]));
   const status = document.getElementById("dirty-status");
   const nextField = form.querySelector("input[name=next]");

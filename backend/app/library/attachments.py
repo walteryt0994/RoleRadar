@@ -102,6 +102,9 @@ class UploadRejected(Exception):
         self.message = message
         self.status_code = status_code
         self.drain = drain
+        # The form's text parts received so far (upload.receive_form fills it), so a
+        # page can show the user's typed input again.
+        self.values: dict[str, str] = {}
 
 
 class UploadTokenRejected(UploadRejected):

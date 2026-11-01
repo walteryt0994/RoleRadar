@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}{{ name }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/imports">导入简历</a></p>
+<header class="pane-head" data-reveal>
+  <h1 class="import-title">{{ name }}</h1>
+  <p class="import-meta">{% if row.filename %}{{ SOURCE_LABELS[row.source] }} · {% endif %}{{ STATE_LABELS[row.state] }} · 保留到 {{ row.expires_at|localtime }}（{{ format_remaining(row.expires_at, now) }}）</p>
+</header>
+{% if row.state == "reading" %}
+<p class="notice" role="status">正在读取。稍后<a href="/imports/{{ row.id }}">刷新</a>查看结果。</p>
+{% elif row.state == "failed" %}
+<div class="error" role="alert">
+  {% for line in problems %}<p>{{ line }}</p>{% endfor %}
+</div>
+{% elif row.state == "partial" %}
+<div class="warning" role="status">
+  {% for line in problems %}<p>{{ line }}</p>{% endfor %}
+</div>
+{% endif %}
+<p class="import-explain">还没有加入经历库。整理成经历的功能还没有建立，现在可以查看、下载或放弃。到期后自动清理，不能恢复。</p>
+<div class="import-actions">
+  {% if row.storage_key %}
+  <a href="/imports/{{ row.id }}/original" download>下载原文件</a>
+  {% endif %}
+  {% if row.segments %}
+  <a href="/imports/{{ row.id }}/text" download>下载读到的文字</a>
+  {% endif %}
+  {% if can_retry %}
+  <form method="post" action="/imports/{{ row.id }}/retry" class="inline">
+    {{ m.csrf() }}
+    <input type="hidden" name="expected_revision" value="{{ row.revision }}">
+    <button type="submit">重新读取</button>
+  </form>
+  {% endif %}
+  <a class="danger-link" href="/imports/{{ row.id }}/discard">放弃本次导入…</a>
+</div>
+{% if row.segments %}
+{# What was read, as it was found; nothing here is rewritten. #}
+<section class="import-text" aria-label="读到的文字" data-reveal>
+  {% for segment in row.segments %}
+  {% if segment.kind == "page" %}
+  <h2>第 {{ segment.number }} 页</h2>
+  {% if segment.get("unreadable") %}
+  <p class="empty">这一页无法读取。</p>
+  {% elif segment.text.strip() %}
+  <p class="text">{{ segment.text }}</p>
+  {% else %}
+  <p class="empty">这一页没有读到文字。</p>
+  {% endif %}
+  {% elif segment.kind == "paragraph" %}
+  <div class="import-paragraph"><span class="import-number"><span class="visually-hidden">第 </span>{{ segment.number }}<span class="visually-hidden"> 段</span></span><p class="text">{{ segment.text }}</p></div>
+  {% elif segment.kind == "table" %}
+  <div class="import-table-wrap">
+    <table class="import-table">
+      <caption>表格 {{ segment.number }}</caption>
+      {% for cells in segment.rows %}
+      <tr>{% for cell in cells %}<td><span class="text">{{ cell }}</span></td>{% endfor %}</tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% else %}
+  <p class="text">{{ segment.text }}</p>
+  {% endif %}
+  {% endfor %}
+</section>
+{% endif %}
+{% endblock %}

@@ -11,7 +11,10 @@ marker, is refused at start-up (claim). Inside it:
   names both of its files, and removing them (remove_file) needs nothing
   else, also after a restart;
 - exports/<random>.zip.part: made for an "export all" package, and nameless
-  again before a byte of the package is written to it.
+  again before a byte of the package is written to it;
+- imports/<owner id>/<storage key>: the files of resume imports (U2-B1),
+  apart from the attachments: they live for at most seven days and the
+  clean-up looks at them with their own records (sweep's imported).
 
 Every path is made here from an owner's UUID and a random 32-character hex
 key, never from a name a request sent; the original file name only lives in
@@ -42,6 +45,8 @@ OWNER_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 STORAGE_KEY = re.compile(r"[0-9a-f]{32}")
 STAGING_NAME = re.compile(r"[0-9a-f]{32}\.part")
 EXPORT_NAME = re.compile(r"[0-9a-f]{32}\.zip\.part")
+# The two areas that keep files under owner folders.
+FILES, IMPORTS = "files", "imports"
 CHUNK_BYTES = 64 * 1024
 # Bytes kept from the start of a received file: enough for every type check.
 HEAD_BYTES = 16
@@ -87,8 +92,8 @@ class StagingFile:
         os.fsync(self._handle.fileno())
         self._handle.close()
 
-    def discard(self) -> None:
-        """Remove the staging name. A kept name made from it by place() stays."""
+    def discard(self) -> bool:
+        """Remove the staging name; True once it is gone. A kept name made from it by place() stays."""
         if not self._handle.closed:
             self._handle.close()
 
@@ -102,8 +107,11 @@ class StagingFile:
             # (it comes from the same key), and so does the clean-up pass
             # once it is old.
             logger.warning("could not remove a staging file (%s)", type(error).__name__)
+            return False
         finally:
             self._store.release(self.path)
+
+        return True
 
 
 @dataclass
@@ -120,6 +128,7 @@ class FileStore:
         self.files_dir = self.root / "files"
         self.staging_dir = self.root / "staging"
         self.exports_dir = self.root / "exports"
+        self.imports_dir = self.root / IMPORTS
         self._in_use: set[Path] = set()
         self._lock = threading.Lock()
 
@@ -152,7 +161,7 @@ class FileStore:
         return self._read_marker()
 
     def claim(self, library_id: str) -> None:
-        """Make the folder this library's (or check that it is), with its three subfolders."""
+        """Make the folder this library's (or check that it is), with its four subfolders."""
         claimed = self.claimed_by()
 
         try:
@@ -172,7 +181,7 @@ class FileStore:
             if claimed is not None and claimed != library_id:
                 raise ConfigError("这个附件目录属于另一个经历库数据库；请为这个数据库指定它自己的附件目录。")
 
-            for folder in (self.files_dir, self.staging_dir, self.exports_dir):
+            for folder in (self.files_dir, self.staging_dir, self.exports_dir, self.imports_dir):
                 try:
                     os.mkdir(folder, 0o700)
                 except FileExistsError:
@@ -213,12 +222,22 @@ class FileStore:
         if not stat.S_ISDIR(info.st_mode) or os.path.realpath(path) != str(path):
             raise UnreadableFile()
 
-    def _kept_path(self, owner_id: str, key: str, *, create: bool = False) -> Path:
+    def _area(self, area: str) -> Path:
+        if area == FILES:
+            return self.files_dir
+
+        if area == IMPORTS:
+            return self.imports_dir
+
+        raise ValueError("not an area of the store")
+
+    def _kept_path(self, owner_id: str, key: str, *, create: bool = False, area: str = FILES) -> Path:
         if not OWNER_ID.fullmatch(owner_id) or not STORAGE_KEY.fullmatch(key):
             raise ValueError("not an owner id and storage key")
 
-        self.check_folder(self.files_dir)
-        folder = self.files_dir / owner_id
+        base = self._area(area)
+        self.check_folder(base)
+        folder = base / owner_id
 
         if create:
             try:
@@ -256,21 +275,21 @@ class FileStore:
 
         return StagingFile(self, key, path, os.fdopen(fd, "wb"))
 
-    def place(self, staging: StagingFile, owner_id: str) -> None:
-        """Give a received file its kept name, files/<owner id>/<its key>.
+    def place(self, staging: StagingFile, owner_id: str, *, area: str = FILES) -> None:
+        """Give a received file its kept name, <area>/<owner id>/<its key>.
 
         A hard link: it fails, replacing nothing, if the name is taken, and
         the staging name keeps the same bytes until the upload removes it.
         """
-        target = self._kept_path(owner_id, staging.key, create=True)
+        target = self._kept_path(owner_id, staging.key, create=True, area=area)
         os.link(staging.path, target, follow_symlinks=False)
         _sync_folder(target.parent)
 
     # --- kept files -------------------------------------------------------
 
-    def open_kept(self, owner_id: str, key: str) -> BinaryIO:
+    def open_kept(self, owner_id: str, key: str, *, area: str = FILES) -> BinaryIO:
         """The kept file, open for reading; raises MissingFile or UnreadableFile."""
-        path = self._kept_path(owner_id, key)
+        path = self._kept_path(owner_id, key, area=area)
 
         try:
             fd = os.open(path, READ_FILE)
@@ -286,9 +305,9 @@ class FileStore:
 
         return os.fdopen(fd, "rb")
 
-    def open_checked(self, owner_id: str, key: str, size: int, sha256: str) -> BinaryIO:
+    def open_checked(self, owner_id: str, key: str, size: int, sha256: str, *, area: str = FILES) -> BinaryIO:
         """The kept file, after checking that it still has the recorded size and checksum."""
-        handle = self.open_kept(owner_id, key)
+        handle = self.open_kept(owner_id, key, area=area)
 
         try:
             digest = hashlib.sha256()
@@ -322,7 +341,7 @@ class FileStore:
 
         return "present" if stat.S_ISREG(info.st_mode) else "unreadable"
 
-    def remove_file(self, owner_id: str, key: str) -> None:
+    def remove_file(self, owner_id: str, key: str, *, area: str = FILES) -> None:
         """Remove an attachment's file under both names the store gives it.
 
         The staging name goes first: once it is gone, no kept name can be
@@ -332,7 +351,7 @@ class FileStore:
         unfinished) until both are gone.
         """
         self.remove_staged(key)
-        self.remove_kept(owner_id, key)
+        self.remove_kept(owner_id, key, area=area)
 
     def remove_staged(self, key: str) -> None:
         """Remove an upload's staging name, if it is still there."""
@@ -345,14 +364,14 @@ class FileStore:
 
         _remove_name(path)
 
-    def remove_kept(self, owner_id: str, key: str) -> None:
+    def remove_kept(self, owner_id: str, key: str, *, area: str = FILES) -> None:
         """Remove a kept file's name.
 
         An owner folder that is not a real folder of the store raises, so
         the clean-up stays unfinished.
         """
         try:
-            path = self._kept_path(owner_id, key)
+            path = self._kept_path(owner_id, key, area=area)
         except MissingFile:
             return
 
@@ -380,14 +399,22 @@ class FileStore:
 
     # --- clean-up ---------------------------------------------------------
 
-    def sweep(self, referenced: set[tuple[str, str]], now: float | None = None) -> SweepReport:
+    def sweep(
+        self,
+        referenced: set[tuple[str, str]],
+        now: float | None = None,
+        *,
+        imported: set[tuple[str, str]] | None = None,
+    ) -> SweepReport:
         """Remove leftovers that nobody touched for LEFTOVER_AFTER.
 
         These are staging and export files that no request of this process
         is using, and kept files that no attachment record refers to
         (referenced holds (owner id, storage key) pairs read before the
-        sweep; a file placed since then is too new to be removed). Names the
-        store does not make, links and folders are left alone.
+        sweep; a file placed since then is too new to be removed). With
+        imported, the same for the imports area and the import records'
+        pairs; without it, that area is not looked at. Names the store does
+        not make, links and folders are left alone.
         """
         now = time.time() if now is None else now
         report = SweepReport()
@@ -403,13 +430,19 @@ class FileStore:
                 if path not in in_use:
                     self._remove_leftover(path, kind, report)
 
-        for owner_id in self._names(self.files_dir):
-            if not OWNER_ID.fullmatch(owner_id):
-                continue
+        areas = [(self.files_dir, referenced)]
 
-            for path in self._old_files(self.files_dir / owner_id, STORAGE_KEY, now):
-                if (owner_id, path.name) not in referenced:
-                    self._remove_leftover(path, "kept", report)
+        if imported is not None:
+            areas.append((self.imports_dir, imported))
+
+        for base, known in areas:
+            for owner_id in self._names(base):
+                if not OWNER_ID.fullmatch(owner_id):
+                    continue
+
+                for path in self._old_files(base / owner_id, STORAGE_KEY, now):
+                    if (owner_id, path.name) not in known:
+                        self._remove_leftover(path, "kept", report)
 
         return report
 

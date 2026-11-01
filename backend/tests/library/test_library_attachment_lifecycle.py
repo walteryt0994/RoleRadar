@@ -898,7 +898,7 @@ def test_a_version_2_database_is_refused_before_anything_is_written(make_config,
 
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
 
-    with pytest.raises(ConfigError, match="结构版本是 2，当前程序只支持 3"):
+    with pytest.raises(ConfigError, match="结构版本是 2，当前程序只支持 4"):
         create_app(make_config())
 
     assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
