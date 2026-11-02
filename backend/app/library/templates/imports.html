@@ -10,7 +10,7 @@
 <p class="error" role="alert">{{ error }}</p>
 {% endif %}
 {% if full and not error %}
-<p class="warning" role="status">已经有 {{ MAX_OPEN_IMPORTS }} 份导入在暂存，达到上限。放弃不需要的导入之后，才能导入新的。</p>
+<p class="warning" role="status">已经有 {{ MAX_OPEN_IMPORTS }} 份导入占着名额（包括保存的草稿和回收站里还能恢复的草稿），达到上限。放弃不需要的临时导入，或者删除不需要的草稿并在回收站永久删除之后，才能导入新的。</p>
 {% endif %}
 {# At the limit the form is left out, unless a refused post brought typed text
    back: then it stays, with that text and its leave guard. The server still
@@ -32,7 +32,7 @@
     <textarea id="f-text" name="text" rows="10" maxlength="{{ MAX_TEXT_CHARS }}" aria-describedby="h-text">{{ text }}</textarea>
   </div>
   <div class="import-consent">
-    <p id="consent-terms">读取在本机完成，不会发给外部 AI。文件和读到的文字只在本机暂存，最多 {{ IMPORT_DAYS }} 天，到期自动清理、不能恢复；期间可以回来查看、下载，或者提前放弃。暂存不等于加入经历库。</p>
+    <p id="consent-terms">读取在本机完成，不会发给外部 AI。文件和读到的文字只在本机暂存，最多 {{ IMPORT_DAYS }} 天，到期自动清理、不能恢复；期间可以回来查看、下载，或者提前放弃；需要更久时，可以在导入页保存为待核对草稿。暂存不等于加入经历库。</p>
     <label class="check"><input type="checkbox" name="consent" value="yes" required aria-describedby="consent-terms">同意按上面的方式暂存这次的资料</label>
   </div>
   <div class="form-actions">
@@ -48,19 +48,27 @@
   </div>
 </dialog>
 {% endif %}
-{% if entries or clearing %}
+{% if entries or clearing or binned %}
 <section class="import-list" aria-labelledby="kept-title" data-reveal>
-  <h2 id="kept-title">暂存中的导入</h2>
+  <h2 id="kept-title">暂存的导入和草稿</h2>
   {% if entries %}
   <ul class="item-list">
     {% for row in entries %}
     <li>
       <a class="import-name" href="/imports/{{ row.id }}"{% if unsaved_input %} target="_blank" rel="noopener"{% endif %}>{{ row.filename or "粘贴的文字" }}</a>
       <span class="import-meta">{% if row.filename %}{{ SOURCE_LABELS[row.source] }} · {% endif %}{{ STATE_LABELS[row.state] }}</span>
+      {% set draft = drafts.get(row.id) %}
+      {% if draft %}
+      <span class="import-meta">已保存的待核对草稿（{{ draft.saved_at|shorttime }} 保存，不会到期）</span>
+      {% else %}
       <span class="import-meta">保留到 {{ row.expires_at|shorttime }}（{{ format_remaining(row.expires_at, now) }}）</span>
+      {% endif %}
     </li>
     {% endfor %}
   </ul>
+  {% endif %}
+  {% if binned %}
+  <p class="muted small">回收站里还有 {{ binned }} 份删除的草稿，恢复期内仍占名额；可以<a href="/experiences?tab=trash">去回收站</a>恢复或永久删除。</p>
   {% endif %}
   {% if clearing %}
   <p class="muted small">另有 {{ clearing }} 份已结束的导入还在清理文件，系统会自动重试。</p>

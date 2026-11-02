@@ -8,11 +8,17 @@ for candidates to check (review_web, U2-B2a), and discarding. Nothing here
 writes to the experiences, the profile or the preferences, and nothing is
 sent to any outside service.
 
+Since U2-B3a an import can be saved as a draft to keep checking it later:
+it then has no expiry, is never discarded (an older page's discard form is
+refused), and is deleted instead, into the recycle bin for seven days, from
+where it is restored or removed for good.
+
 The upload is read as it streams in (upload.receive_form with
 imports.IMPORT_FORM), like an attachment's; the other posts are ordinary
 small forms. Every route finds the import through the session's owner, so
 another user's import, or one that ended or expired, is simply not found.
 """
+import logging
 import secrets
 
 from fastapi import APIRouter, Depends, FastAPI, Request
@@ -21,7 +27,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.library.attachments import UploadRejected, UploadTokenRejected
 from app.library.candidates import FAILURE_TEXTS
-from app.library.errors import FileStoreError, NotFound
+from app.library.errors import FileStoreError, NotFound, StorageError
 from app.library.files import IMPORTS, read_chunks
 from app.library.identity import CurrentUser
 from app.library.imports import (
@@ -35,20 +41,32 @@ from app.library.imports import (
     NOTHING,
     TEXT_TOO_LONG,
     Ended,
+    ImportChanged,
+    RestoreClosed,
+    Saved,
+    SavedDraft,
     Stored,
+    binned_draft,
+    binned_drafts,
     clearing_count,
+    delete_draft,
     discard,
+    draft_of,
     import_text,
     open_import,
     open_imports,
     pasted_text,
+    purge_draft,
     read_import,
+    restore_draft,
     retryable,
+    save_draft,
     start_again,
     store_file,
     store_text,
     taken_places,
 )
+from app.library.lifecycle import RESTORE_WINDOW
 from app.library.models import CandidateState, ImportSource, ImportState, StructuringState
 from app.library.resume_reader import (
     BUSY,
@@ -122,9 +140,20 @@ NOTICES = {
     "import_discard_pending": (
         "已放弃这次导入：它已经不能查看或下载。文件清理暂未完成，系统会自动重试。"
     ),
-    "import_ended": "这次导入在读取期间已被放弃或已到期，读取结果没有保存。",
-    "import_ended_structuring": "这次导入在整理期间已被放弃或已到期，整理结果没有保存。",
+    "import_ended": "这次导入在读取期间已被放弃、删除或已到期，读取结果没有保存。",
+    "import_ended_structuring": "这次导入在整理期间已被放弃、删除或已到期，整理结果没有保存。",
+    "draft_saved": (
+        "已保存为待核对草稿：原文件、读到的文字、整理出的条目和你的修改、选择都会留下，不再按 7 天到期。"
+        "保存不是加入经历库，也不代表内容已经核实。"
+    ),
+    "draft_already": "这份导入之前已经保存为草稿，这次没有重复保存。",
+    "draft_deleted": (
+        f"草稿已移到回收站，{RESTORE_WINDOW.days} 天内可以在回收站恢复，之后会清除。"
+        "已经加入经历库或基本资料的内容不受影响。"
+    ),
+    "draft_restored": "草稿已恢复：条目、你的修改和选择、已加入的去向都和删除前一样，可以继续核对。",
 }
+TRASH = "/experiences?tab=trash"
 STORE_PROBLEMS = {
     Stored.FORM_USED: (
         409,
@@ -132,7 +161,8 @@ STORE_PROBLEMS = {
     ),
     Stored.FULL: (
         409,
-        f"已经有 {MAX_OPEN_IMPORTS} 份导入在暂存，达到上限，这次没有读取。请先放弃不需要的导入，再重新选择文件。",
+        f"已经有 {MAX_OPEN_IMPORTS} 份导入占着名额（包括保存的草稿和回收站里还能恢复的草稿），达到上限，这次没有读取。"
+        "请先放弃不需要的临时导入，或者删除不需要的草稿后在回收站永久删除，再重新选择文件。",
     ),
     Stored.FAILED: (
         500,
@@ -146,9 +176,16 @@ STORE_PROBLEMS = {
 }
 # A refusal at the limit gives the typed text back with the form, so it is not lost.
 FULL_WITH_TEXT = (
-    f"已经有 {MAX_OPEN_IMPORTS} 份导入在暂存，达到上限，这次没有暂存。你输入的文字还在下面，可以先复制；"
-    "也可以在新标签页打开下面不需要的导入并放弃，再回到这里提交。"
+    f"已经有 {MAX_OPEN_IMPORTS} 份导入占着名额（包括保存的草稿和回收站里还能恢复的草稿），达到上限，这次没有暂存。"
+    "你输入的文字还在下面，可以先复制；也可以在新标签页放弃不需要的临时导入，或者删除并永久删除不需要的草稿，"
+    "再回到这里提交。"
 )
+DRAFT_NOT_DISCARDED = (
+    "这份导入已经保存为待核对草稿，不能用“放弃”清除，这次什么都没有删除。"
+    f"需要的话，可以在草稿页选择“删除草稿”：删除后 {RESTORE_WINDOW.days} 天内可以在回收站恢复。"
+)
+
+logger = logging.getLogger("roleradar.library")
 
 router = APIRouter()
 
@@ -176,6 +213,8 @@ def imports_page(
 
     with rt.database.transaction() as db:
         entries = open_imports(db, user.id, now)
+        drafts = {row.id: draft_of(db, row.id) for row in entries}
+        binned = len(binned_drafts(db, user.id, now))
         clearing = clearing_count(db, user.id, now)
         full = taken_places(db, user.id, now) >= MAX_OPEN_IMPORTS
 
@@ -185,6 +224,8 @@ def imports_page(
         {
             "section": "imports",
             "entries": entries,
+            "drafts": drafts,
+            "binned": binned,
             "clearing": clearing,
             "full": full,
             "upload_key": secrets.token_urlsafe(24),
@@ -207,6 +248,7 @@ def _labels() -> dict:
         "MAX_OPEN_IMPORTS": MAX_OPEN_IMPORTS,
         "MAX_TEXT_CHARS": MAX_TEXT_CHARS,
         "IMPORT_DAYS": IMPORT_WINDOW.days,
+        "RESTORE_DAYS": RESTORE_WINDOW.days,
     }
 
 
@@ -215,12 +257,12 @@ def gone_page(request: Request, user: CurrentUser) -> Response:
         request,
         title="找不到这次导入",
         message=(
-            f"它可能已经到期清理（导入只暂存 {IMPORT_WINDOW.days} 天）、已经放弃，或者属于其他用户。"
-            "需要的话，可以重新导入。"
+            f"它可能已经到期清理（没有保存为草稿的导入只暂存 {IMPORT_WINDOW.days} 天）、已经放弃或永久删除、"
+            "作为草稿删除后在回收站里，或者属于其他用户。回收站里的草稿可以先恢复再打开；需要的话，也可以重新导入。"
         ),
         status_code=404,
         user=user,
-        links=[(BASE, "回到导入简历")],
+        links=[(BASE, "回到导入简历"), (TRASH, "去回收站")],
     )
 
 
@@ -262,6 +304,7 @@ def import_detail(import_id: str, request: Request, notice: str = "", user: Curr
     try:
         with rt.database.transaction() as db:
             row = open_import(db, user.id, import_id, now)
+            draft = draft_of(db, row.id)
             structuring = structuring_of(db, row.id)
             candidates = candidates_of(db, user.id, row.id)
     except NotFound:
@@ -275,6 +318,7 @@ def import_detail(import_id: str, request: Request, notice: str = "", user: Curr
         {
             "section": "imports",
             "row": row,
+            "draft": draft,
             "name": row.filename or "粘贴的文字",
             "problems": _problem_lines(row),
             "can_retry": retryable(row),
@@ -539,9 +583,13 @@ def discard_page(import_id: str, request: Request, user: CurrentUser = Depends(c
     try:
         with rt.database.transaction() as db:
             row = open_import(db, user.id, import_id, now)
+            saved = draft_of(db, row.id) is not None
             structured = structuring_of(db, row.id) is not None
     except NotFound:
         return gone_page(request, user)
+
+    if saved:
+        return _not_discarded(request, user, row.id)
 
     return confirm_page(
         request,
@@ -563,7 +611,253 @@ def discard_import(import_id: str, request: Request, user: CurrentUser = Depends
         ended = discard(rt.database, rt.files, rt.readings, user.id, import_id, rt.now())
     except NotFound:
         return gone_page(request, user)
+    except SavedDraft:
+        # Saved (in another tab) after this form was shown: the older decision is not carried out.
+        return _not_discarded(request, user, import_id)
 
     notice = "import_discarded" if ended == Ended.CLEARED else "import_discard_pending"
 
     return see_other(f"{BASE}?notice={notice}")
+
+
+def _not_discarded(request: Request, user: CurrentUser, import_id: str) -> Response:
+    return message_page(
+        request,
+        title="没有放弃：这是已保存的草稿",
+        message=DRAFT_NOT_DISCARDED,
+        status_code=409,
+        user=user,
+        links=[(f"{BASE}/{import_id}", "回到这份草稿")],
+    )
+
+
+# --- saved drafts (U2-B3a) -------------------------------------------------------------------
+
+
+def _not_done(request: Request, user: CurrentUser, title: str, message: str, links: list, status_code: int = 409):
+    return message_page(request, title=title, message=message, status_code=status_code, user=user, links=links)
+
+
+@router.post("/imports/{import_id}/save", dependencies=[Depends(checked_form)])
+def save_import(import_id: str, request: Request, user: CurrentUser = Depends(current_user)):
+    rt = runtime(request)
+    back = [(f"{BASE}/{import_id}", "回到这次导入")]
+
+    try:
+        saved = save_draft(rt.database, user.id, import_id, rt.now)
+    except NotFound:
+        return gone_page(request, user)
+    except StorageError as error:
+        logger.error("saving an import as a draft failed (%s)", type(error.__cause__).__name__)
+
+        return _not_done(
+            request, user, "没有保存",
+            "写入数据库时出错，这次没有保存：它仍是临时导入，到期时间不变，内容都还在。可以稍后再试一次。",
+            back, status_code=500,
+        )
+
+    if saved == Saved.BUSY:
+        return _not_done(
+            request, user, "现在还不能保存",
+            "这次导入正在读取，或者正在整理成条目。等它结束后再保存；已有的内容和到期时间都没有变化。",
+            back,
+        )
+
+    return see_other(f"{BASE}/{import_id}?notice={'draft_saved' if saved == Saved.SAVED else 'draft_already'}")
+
+
+def _delete_points(row) -> list[str]:
+    name = f"“{row.filename}”" if row.filename else "粘贴的文字"
+
+    return [
+        f"这份草稿（{name}）会移到回收站：原文件、读到的文字、整理出的条目，以及你的修改和选择都先保留，"
+        "但在回收站里不能查看、整理、修改或加入。",
+        f"删除后 {RESTORE_WINDOW.days} 天内可以在回收站恢复，恢复后和删除前一样；到期后会清除，不能再恢复。",
+        "已经加入经历库或基本资料的内容不受影响，不会被撤销。",
+        "回收站里的草稿在恢复期内仍占一个导入名额。",
+    ]
+
+
+@router.get("/imports/{import_id}/delete")
+def delete_page(import_id: str, request: Request, user: CurrentUser = Depends(current_user)):
+    rt = runtime(request)
+
+    try:
+        with rt.database.transaction() as db:
+            row = open_import(db, user.id, import_id, rt.now())
+            saved = draft_of(db, row.id) is not None
+    except NotFound:
+        return gone_page(request, user)
+
+    if not saved:
+        # A temporary import is discarded (no recycle bin), not deleted.
+        return see_other(f"{BASE}/{row.id}/discard")
+
+    return confirm_page(
+        request,
+        user,
+        title="删除这份草稿？",
+        points=_delete_points(row),
+        action=f"{BASE}/{row.id}/delete",
+        button="移到回收站",
+        cancel=f"{BASE}/{row.id}",
+        hidden={"expected_revision": str(row.revision)},
+        section="imports",
+    )
+
+
+@router.post("/imports/{import_id}/delete")
+def delete_import(
+    import_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+    form: dict[str, str] = Depends(checked_form),
+):
+    rt = runtime(request)
+    back = [(f"{BASE}/{import_id}", "回到这份草稿")]
+
+    try:
+        delete_draft(rt.database, user.id, import_id, _expected_revision(form), rt.now)
+    except NotFound:
+        return gone_page(request, user)
+    except ImportChanged:
+        return _not_done(
+            request, user, "没有删除",
+            "这份草稿在你打开确认页之后有了变化（可能是在另一个标签页），这次没有删除。请回到草稿重新查看后再决定。",
+            back,
+        )
+    except StorageError as error:
+        logger.error("deleting an import draft failed (%s)", type(error.__cause__).__name__)
+
+        return _not_done(
+            request, user, "没有删除",
+            "写入数据库时出错，草稿没有移到回收站，仍然可以继续核对。可以稍后再试一次。",
+            back, status_code=500,
+        )
+
+    # A reading still running stops now; its result would be dropped anyway.
+    rt.readings.stop(import_id)
+
+    return see_other(f"{BASE}?notice=draft_deleted")
+
+
+@router.post("/imports/{import_id}/restore")
+def restore_import(
+    import_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+    form: dict[str, str] = Depends(checked_form),
+):
+    rt = runtime(request)
+    back = [(TRASH, "回到回收站")]
+
+    try:
+        restore_draft(rt.database, user.id, import_id, _expected_revision(form), rt.now)
+    except NotFound:
+        return gone_page(request, user)
+    except RestoreClosed:
+        return _not_done(
+            request, user, "不能恢复",
+            "这份草稿已经超过恢复期限，或者已经永久删除，不能再恢复；清理会自动完成。已经加入的内容不受影响。",
+            back,
+        )
+    except ImportChanged:
+        return _not_done(
+            request, user, "没有恢复",
+            "回收站页面不是最新的（这份草稿可能刚在另一个标签页恢复或删除过），这次没有恢复。请刷新回收站后再看。",
+            back,
+        )
+    except StorageError as error:
+        logger.error("restoring an import draft failed (%s)", type(error.__cause__).__name__)
+
+        return _not_done(
+            request, user, "没有恢复",
+            "写入数据库时出错，草稿仍在回收站里，恢复期限不变。可以稍后再试一次。",
+            back, status_code=500,
+        )
+
+    return see_other(f"{BASE}/{import_id}?notice=draft_restored")
+
+
+def _purge_confirm(request, user, row, error=None, status_code=200):
+    name = f"“{row.filename}”" if row.filename else "粘贴的文字"
+
+    return confirm_page(
+        request,
+        user,
+        title="永久删除这份导入草稿？",
+        points=[
+            "永久删除后无法恢复。",
+            f"会删除这份草稿（{name}）的原文件、读到的文字、整理出的条目，以及你的修改和选择。",
+            "已经加入经历库或基本资料的内容不受影响。",
+            "清理会立即开始；如果文件暂时没有删掉，内容也已经不能访问或恢复，系统会自动重试。",
+            "已经下载到本机的导出文件不受影响。",
+        ],
+        action=f"{BASE}/{row.id}/purge",
+        button="永久删除",
+        cancel=TRASH,
+        hidden={"expected_revision": str(row.revision)},
+        acknowledge="我了解永久删除后无法恢复",
+        error=error,
+        status_code=status_code,
+        section="trash",
+    )
+
+
+@router.get("/imports/{import_id}/purge")
+def purge_page(import_id: str, request: Request, user: CurrentUser = Depends(current_user)):
+    rt = runtime(request)
+
+    try:
+        with rt.database.transaction() as db:
+            row, _ = binned_draft(db, user.id, import_id, rt.now())
+    except NotFound:
+        return gone_page(request, user)
+
+    return _purge_confirm(request, user, row)
+
+
+@router.post("/imports/{import_id}/purge")
+def purge_import(
+    import_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+    form: dict[str, str] = Depends(checked_form),
+):
+    rt = runtime(request)
+    expected = _expected_revision(form)
+    back = [(TRASH, "回到回收站")]
+
+    if form.get("acknowledge") != "yes":
+        try:
+            with rt.database.transaction() as db:
+                row, _ = binned_draft(db, user.id, import_id, rt.now())
+        except NotFound:
+            return gone_page(request, user)
+
+        return _purge_confirm(request, user, row, error="请先勾选“我了解永久删除后无法恢复”。", status_code=422)
+
+    try:
+        ended = purge_draft(rt.database, rt.files, user.id, import_id, expected, rt.now)
+    except NotFound:
+        return gone_page(request, user)
+    except ImportChanged:
+        return _not_done(
+            request, user, "没有永久删除",
+            "回收站页面不是最新的（这份草稿可能刚在另一个标签页恢复过），这次没有删除。请刷新回收站后再决定。",
+            back,
+        )
+    except StorageError as error:
+        # Only the deletion's own transaction raises (it was rolled back); a clean-up failure after
+        # it was committed comes back as Ended.PENDING (Codex U2B3A-F1).
+        logger.error("purging an import draft failed (%s)", type(error.__cause__).__name__)
+
+        return _not_done(
+            request, user, "没有永久删除",
+            "写入数据库时出错，草稿仍在回收站里，恢复期限不变。可以稍后再试一次。",
+            back, status_code=500,
+        )
+
+    notice = "import_draft_purged" if ended == Ended.CLEARED else "import_draft_purge_pending"
+
+    return see_other(f"{TRASH}&notice={notice}")

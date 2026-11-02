@@ -15,17 +15,18 @@ revision the page showed, and CandidateConflict says another page changed
 it first. Edits are kept apart from what was found. compare reads the
 user's current experiences and profile to say which candidates look new,
 like one already there (by name only), or like one with differences; it
-writes nothing. All of it is part of the import: it expires, is exported,
-and goes with it (imports._end). Nothing here writes to the experiences,
-the profile or the preferences, and nothing is sent anywhere: in this
-batch the only structurer is the local simulation.
+writes nothing. All of it is part of the import: it is kept as the import
+is (for seven days, or as a saved draft), exported with it, and goes with
+it (imports._end). Nothing here writes to the experiences, the profile or
+the preferences, and nothing is sent anywhere: in this batch the only
+structurer is the local simulation.
 """
 import copy
 import logging
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Callable
 
@@ -53,13 +54,14 @@ from app.library.candidates import (
 from app.library.content import CATEGORY_FIELDS, EXPERIENCE_CATEGORIES, PROFILE, TITLE_FIELDS, Field, display_title
 from app.library.db import Database
 from app.library.errors import NotFound
-from app.library.imports import IMPORT_OBJECT, is_open, locator, open_import
+from app.library.imports import IMPORT_OBJECT, STALE_STRUCTURING_AFTER, is_open, locator, open_import
 from app.library.models import (
     AdoptionAction,
     CandidateState,
     ExperienceItem,
     ImportAdoption,
     ImportCandidate,
+    ImportDraft,
     ImportState,
     ImportStructuring,
     ResumeImport,
@@ -71,7 +73,6 @@ from app.library.service import current_document, list_experiences, new_id, reco
 logger = logging.getLogger("roleradar.library")
 
 # A run takes well under a second; one this old lost its request.
-STALE_STRUCTURING_AFTER = timedelta(minutes=10)
 STRUCTURABLE = (ImportState.READ, ImportState.PARTIAL)
 STRUCTURER_LABELS = {SIMULATION_NAME: "本机模拟整理规则（不是 AI）"}
 STATE_LABELS = {CandidateState.PENDING: "待核对", CandidateState.EXCLUDED: "不加入", CandidateState.ADOPTED: "已加入"}
@@ -204,14 +205,15 @@ def finish_structuring(
 ) -> Asked:
     """Store a checked answer if its run is still the import's; DROPPED otherwise."""
     with database.transaction() as db:
-        now = clock()
         row = db.get(ResumeImport, import_id)
+        # Read once the write lock is held: an answer that waited past a deadline is judged as it is stored.
+        now = clock()
         current = db.get(ImportStructuring, import_id)
 
         if (
             row is None
             or row.owner_id != owner_id
-            or not is_open(row, now)
+            or not is_open(db, row, now)
             or row.revision != attempt.import_revision
             or current is None
             or current.state != StructuringState.RUNNING
@@ -581,12 +583,14 @@ def review_record(
     structuring: ImportStructuring,
     candidates: list[ImportCandidate],
     adoptions: dict[str, AdoptionView] | None = None,
+    draft: ImportDraft | None = None,
 ) -> dict:
     """The candidates of an import and the user's review, as data a person or a tool can read.
 
     What was found and what the user wrote stay apart, each with its
     sources; the dropped candidates are listed by place and reason only. An
     adopted candidate says where it went and which fields were written.
+    How the import is kept comes from its draft row, if it was saved.
     """
     adoptions = adoptions or {}
     segments = row.segments or []
@@ -606,7 +610,7 @@ def review_record(
         "outcome_text": FAILURE_TEXTS.get(structuring.outcome) if structuring.outcome else None,
         "started_at": _iso(structuring.started_at),
         "finished_at": _iso(structuring.finished_at),
-        "kept_until": _iso(row.expires_at),
+        **kept_record(row, draft),
         "dropped": [
             {
                 "position": problem["position"],
@@ -620,6 +624,17 @@ def review_record(
         ],
         "candidates": [_candidate_record(candidate, segments, adoptions.get(candidate.id)) for candidate in candidates],
     }
+
+
+def kept_record(row: ResumeImport, draft: ImportDraft | None) -> dict:
+    """How an import is kept, for an export: temporary until its expiry, saved, or in the recycle bin (U2-B3a)."""
+    if draft is None:
+        return {"kept_as": "temporary", "saved_at": None, "kept_until": _iso(row.expires_at)}
+
+    if draft.deleted_at is None:
+        return {"kept_as": "saved", "saved_at": _iso(draft.saved_at), "kept_until": None}
+
+    return {"kept_as": "binned", "saved_at": _iso(draft.saved_at), "kept_until": _iso(draft.purge_after)}
 
 
 def _candidate_record(candidate: ImportCandidate, segments: list, adoption: AdoptionView | None) -> dict:

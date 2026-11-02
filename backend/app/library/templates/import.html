@@ -5,7 +5,7 @@
 <p class="crumbs"><a href="/imports">导入简历</a></p>
 <header class="pane-head" data-reveal>
   <h1 class="import-title">{{ name }}</h1>
-  <p class="import-meta">{% if row.filename %}{{ SOURCE_LABELS[row.source] }} · {% endif %}{{ STATE_LABELS[row.state] }} · 保留到 {{ row.expires_at|localtime }}（{{ format_remaining(row.expires_at, now) }}）</p>
+  <p class="import-meta">{% if row.filename %}{{ SOURCE_LABELS[row.source] }} · {% endif %}{{ STATE_LABELS[row.state] }} · {% if draft %}已保存的待核对草稿（{{ draft.saved_at|localtime }} 保存，不会到期）{% else %}保留到 {{ row.expires_at|localtime }}（{{ format_remaining(row.expires_at, now) }}）{% endif %}</p>
 </header>
 {% if row.state == "reading" %}
 <p class="notice" role="status">正在读取。稍后<a href="/imports/{{ row.id }}">刷新</a>查看结果。</p>
@@ -18,7 +18,11 @@
   {% for line in problems %}<p>{{ line }}</p>{% endfor %}
 </div>
 {% endif %}
+{% if draft %}
+<p class="import-explain">读到的文字还没有加入经历库，也不会自动加入：可以先整理成待核对的条目，再逐条选择加入。这份草稿会一直保留，直到你删除它；保存草稿不代表内容已经核实。删除后 {{ RESTORE_DAYS }} 天内可以在回收站恢复；已经加入的内容不受影响。</p>
+{% else %}
 <p class="import-explain">读到的文字还没有加入经历库，也不会自动加入：可以先整理成待核对的条目，再逐条选择加入。到期后自动清理，不能恢复；已经加入的内容不受影响。</p>
+{% endif %}
 {% if structurable %}
 <section class="import-structuring" aria-labelledby="structuring-title">
   <h2 id="structuring-title">整理成待核对的条目</h2>
@@ -33,7 +37,7 @@
   {% elif structuring %}
   <p class="warning" role="status">上次整理没有完成（可能是应用重启了），可以重新整理。</p>
   {% endif %}
-  <p class="muted small">用本机的模拟整理规则（不是 AI）按标题、日期和列表符号把文字拆成条目，每一栏都标出原文出处，可能拆错或漏掉。什么都不会发送出去，也不会改动经历库。整理出的条目和你的修改跟这次导入一起暂存到 {{ row.expires_at|shorttime }}，不会延长。</p>
+  <p class="muted small">用本机的模拟整理规则（不是 AI）按标题、日期和列表符号把文字拆成条目，每一栏都标出原文出处，可能拆错或漏掉。什么都不会发送出去，也不会改动经历库。{% if draft %}整理出的条目和你的修改跟这份草稿一起保留。{% else %}整理出的条目和你的修改跟这次导入一起暂存到 {{ row.expires_at|shorttime }}，不会延长。{% endif %}</p>
   <form method="post" action="/imports/{{ row.id }}/structure">
     {{ m.csrf() }}
     <button type="submit" class="primary">{{ "重新整理" if structuring else "整理成待核对的条目" }}</button>
@@ -55,8 +59,22 @@
     <button type="submit">重新读取</button>
   </form>
   {% endif %}
+  {% if draft %}
+  <a class="danger-link" href="/imports/{{ row.id }}/delete">删除这份草稿…</a>
+  {% else %}
   <a class="danger-link" href="/imports/{{ row.id }}/discard">放弃本次导入…</a>
+  {% endif %}
 </div>
+{% if not draft %}
+<section class="import-keep" aria-labelledby="keep-title">
+  <h2 id="keep-title">需要更久？保存为待核对草稿</h2>
+  <p class="muted small">保存后会一起留下原文件、读到的文字、整理出的条目和你的修改、选择，以及已加入内容的去向，不再按 {{ IMPORT_DAYS }} 天到期，可以以后继续核对。保存不是加入经历库，也不代表内容已经核实。删除草稿后 {{ RESTORE_DAYS }} 天内可以在回收站恢复。草稿仍占导入名额（最多 {{ MAX_OPEN_IMPORTS }} 份）。</p>
+  <form method="post" action="/imports/{{ row.id }}/save">
+    {{ m.csrf() }}
+    <button type="submit">保存为待核对草稿</button>
+  </form>
+</section>
+{% endif %}
 {% if row.segments %}
 {# What was read, as it was found; nothing here is rewritten. #}
 <section class="import-text" aria-label="读到的文字" data-reveal>

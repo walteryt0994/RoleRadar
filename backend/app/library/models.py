@@ -43,10 +43,11 @@ from app.library.errors import ConfigError
 # 4: resume imports (U2-B1).
 # 5: the candidates read from an import, and how they were read (U2-B2a).
 # 6: where each adopted candidate was written (U2-B2b).
-# A file of version 3, 4 or 5 is upgraded by app.library.migrate.
-SCHEMA_VERSION = "6"
+# 7: resume imports the user saved as drafts to keep checking later (U2-B3a).
+# A file of version 3, 4, 5 or 6 is upgraded by app.library.migrate.
+SCHEMA_VERSION = "7"
 # The versions app.library.migrate upgrades from.
-UPGRADABLE_SCHEMA_VERSIONS = ("3", "4", "5")
+UPGRADABLE_SCHEMA_VERSIONS = ("3", "4", "5", "6")
 
 
 class ItemState(StrEnum):
@@ -97,6 +98,8 @@ class ImportState(StrEnum):
     # Ended: what was kept is no longer shown, and its content is gone from the row.
     DISCARDED = "discarded"
     EXPIRED = "expired"
+    # Ended: a saved draft permanently deleted, by the user or past its restore deadline (U2-B3a).
+    DELETED = "deleted"
 
 
 class ImportSource(StrEnum):
@@ -278,6 +281,10 @@ class ResumeImport(LibraryBase):
     allows. cleared_at says when the file is really gone; until then the row
     keeps the storage key and the clean-up retries. The ended row holds no
     content, only that an import existed and how its clean-up went.
+
+    An import saved as a draft (ImportDraft, U2-B3a) no longer expires; it
+    ends (DELETED) only when the user removes it from the recycle bin for
+    good, or when its restore deadline passes.
     """
 
     __tablename__ = "resume_imports"
@@ -392,6 +399,28 @@ class ImportAdoption(LibraryBase):
     # The names of the fields written, in the record's terms.
     fields: Mapped[list] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class ImportDraft(LibraryBase):
+    """A resume import the user saved to keep checking later (U2-B3a); one row per import at most.
+
+    Saved, the import keeps everything it held (the file, what was read, the
+    candidates with the user's edits and choices, where adopted ones went)
+    and no longer ends at its expires_at, which stays as it was. Deleted, it
+    is in the recycle bin from deleted_at until purge_after: out of use,
+    with nothing removed, so restoring brings back exactly what was there.
+    From purge_after on it is gone, and the clean-up pass ends the import.
+    Saving is no adoption: nothing here is written into the user's records.
+    The row goes when its import ends.
+    """
+
+    __tablename__ = "import_drafts"
+
+    import_id: Mapped[str] = mapped_column(ForeignKey("resume_imports.id", ondelete="CASCADE"), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    saved_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    deleted_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    purge_after: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
 
 class AuditEvent(LibraryBase):

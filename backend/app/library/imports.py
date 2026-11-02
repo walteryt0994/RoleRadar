@@ -26,6 +26,16 @@ removed. A file that cannot be removed yet keeps the row's storage key, and
 the clean-up pass (cleanup_imports) tries again; the row says so until the
 file is gone. Ended rows hold no content and are forgotten FORGET_AFTER
 after their clean-up finished.
+
+An open import can be saved as a draft (ImportDraft, U2-B3a) to keep
+checking it later: everything it holds stays, and its seven days no longer
+apply. Deleting a draft puts it in the recycle bin for RESTORE_WINDOW with
+nothing removed, so restoring brings it back as it was; removing it for
+good, or its deadline passing, ends it like any import (DELETED). kept_as
+says which of these an import is in at a given moment, and every page,
+download, export, late result and clean-up asks it; nothing else decides.
+A saved draft is never discarded: only deleting it, with its restore
+period, ends it. Saving writes nothing into the user's records.
 """
 import hashlib
 import logging
@@ -35,7 +45,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Callable
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, delete, exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.library.attachments import (
@@ -49,13 +59,16 @@ from app.library.attachments import (
 from app.library.db import Database
 from app.library.errors import FileStoreError, NotFound, StorageError
 from app.library.files import IMPORTS, FileStore, StagingFile
+from app.library.lifecycle import RESTORE_WINDOW
 from app.library.models import (
     ImportAdoption,
     ImportCandidate,
+    ImportDraft,
     ImportSource,
     ImportState,
     ImportStructuring,
     ResumeImport,
+    StructuringState,
 )
 from app.library.resume_reader import (
     BUSY,
@@ -80,6 +93,8 @@ MAX_OPEN_IMPORTS = 5
 STALE_RECEIVING_AFTER = timedelta(hours=1)
 # A reading takes at most resume_reader.READ_SECONDS plus its wait for a turn.
 STALE_READING_AFTER = timedelta(minutes=10)
+# A search for candidates that ran this long was cut off (the app stopped); it may run again.
+STALE_STRUCTURING_AFTER = timedelta(minutes=10)
 FORGET_AFTER = timedelta(days=30)
 # Bytes a pasted text may take in the form: four per character, and line breaks sent as two.
 MAX_TEXT_BYTES = 6 * MAX_TEXT_CHARS
@@ -89,7 +104,7 @@ IMPORT_OBJECT = "resume_import"
 logger = logging.getLogger("roleradar.library")
 
 VISIBLE = (ImportState.READING, ImportState.READ, ImportState.PARTIAL, ImportState.FAILED)
-ENDED = (ImportState.DISCARDED, ImportState.EXPIRED)
+ENDED = (ImportState.DISCARDED, ImportState.EXPIRED, ImportState.DELETED)
 # Why a stored file could not be read, beyond what resume_reader reports.
 MISSING_FILE = "missing_file"
 INTERRUPTED = "interrupted"
@@ -139,6 +154,39 @@ class Stored(StrEnum):
     # Failed, and what the upload left on disk could not all be removed yet:
     # no page shows it, and the clean-up pass removes it.
     FAILED_LEFTOVER = "failed_leftover"
+
+
+class Kept(StrEnum):
+    """How an import is kept at a given moment (kept_as); one answer for every use of it."""
+
+    # Not saved, and within its seven days.
+    TEMPORARY = "temporary"
+    # Saved as a draft: kept until the user deletes it.
+    SAVED = "saved"
+    # A deleted draft before its restore deadline: out of use, restorable.
+    BINNED = "binned"
+    # Ended, expired, past its restore deadline, or not yet received.
+    GONE = "gone"
+
+
+class Saved(StrEnum):
+    SAVED = "saved"
+    # Saved before, from this page or another.
+    ALREADY = "already"
+    # Being read, or its candidates are being found: saving waits until that ends.
+    BUSY = "busy"
+
+
+class ImportChanged(Exception):
+    """The import changed after the page was shown (another tab, or a result that came in); nothing was done."""
+
+
+class RestoreClosed(Exception):
+    """The draft's restore deadline has passed, or it was removed for good: it cannot come back."""
+
+
+class SavedDraft(Exception):
+    """The import is a saved draft: a request to discard it (from an older page) is refused, nothing is removed."""
 
 
 # --- the import form ------------------------------------------------------------
@@ -203,52 +251,170 @@ def pasted_text(raw: str) -> str:
 # --- reading -----------------------------------------------------------------------
 
 
-def is_open(row: ResumeImport, now: datetime) -> bool:
-    return row.state in VISIBLE and now < row.expires_at
+def draft_of(db: Session, import_id: str) -> ImportDraft | None:
+    return db.get(ImportDraft, import_id)
+
+
+def kept_as(db: Session, row: ResumeImport, now: datetime) -> Kept:
+    """Whether the import is a temporary one, a saved draft, a draft in the recycle bin, or gone."""
+    if row.state not in VISIBLE:
+        return Kept.GONE
+
+    draft = draft_of(db, row.id)
+
+    if draft is None:
+        return Kept.TEMPORARY if now < row.expires_at else Kept.GONE
+
+    if draft.deleted_at is None:
+        return Kept.SAVED
+
+    return Kept.BINNED if now < draft.purge_after else Kept.GONE
+
+
+def is_open(db: Session, row: ResumeImport, now: datetime) -> bool:
+    """Whether the import is in use: opened, downloaded, read, structured, checked and adopted from."""
+    return kept_as(db, row, now) in (Kept.TEMPORARY, Kept.SAVED)
+
+
+def _draft(*conditions):
+    """SQL: the import has a draft row that meets these conditions."""
+    return exists().where(ImportDraft.import_id == ResumeImport.id, *conditions)
+
+
+def _open_now(now: datetime):
+    """SQL for is_open."""
+    return and_(
+        ResumeImport.state.in_(VISIBLE),
+        or_(
+            and_(~_draft(), ResumeImport.expires_at > now),
+            _draft(ImportDraft.deleted_at.is_(None)),
+        ),
+    )
+
+
+def _binned_now(now: datetime):
+    """SQL: a deleted draft before its restore deadline."""
+    return and_(
+        ResumeImport.state.in_(VISIBLE),
+        _draft(ImportDraft.deleted_at.is_not(None), ImportDraft.purge_after > now),
+    )
+
+
+def _past_deadline(now: datetime):
+    """SQL: not ended yet, but gone: a temporary import past its seven days, or a deleted draft past its deadline."""
+    return and_(
+        ResumeImport.state.in_(VISIBLE),
+        or_(
+            and_(~_draft(), ResumeImport.expires_at <= now),
+            _draft(ImportDraft.deleted_at.is_not(None), ImportDraft.purge_after <= now),
+        ),
+    )
 
 
 def open_imports(db: Session, owner_id: str, now: datetime) -> list[ResumeImport]:
-    """The owner's imports that can be opened, newest first."""
+    """The owner's imports in use (temporary ones and saved drafts), newest first."""
     return list(
         db.scalars(
             select(ResumeImport)
-            .where(
-                ResumeImport.owner_id == owner_id,
-                ResumeImport.state.in_(VISIBLE),
-                ResumeImport.expires_at > now,
-            )
+            .where(ResumeImport.owner_id == owner_id, _open_now(now))
             .order_by(ResumeImport.received_at.desc(), ResumeImport.id)
         )
     )
 
 
-def open_import(db: Session, owner_id: str, import_id: str, now: datetime) -> ResumeImport:
-    """One import of this owner that can still be opened; NotFound otherwise."""
-    row = db.scalar(
-        select(ResumeImport).where(ResumeImport.id == import_id, ResumeImport.owner_id == owner_id)
+def kept_imports(db: Session, owner_id: str, now: datetime) -> list[ResumeImport]:
+    """The owner's imports still kept: those in use and drafts in the recycle bin (for the export), newest first."""
+    return list(
+        db.scalars(
+            select(ResumeImport)
+            .where(ResumeImport.owner_id == owner_id, or_(_open_now(now), _binned_now(now)))
+            .order_by(ResumeImport.received_at.desc(), ResumeImport.id)
+        )
     )
 
-    if row is None or not is_open(row, now):
-        raise NotFound()
 
-    return row
+def binned_drafts(db: Session, owner_id: str, now: datetime) -> list[tuple[ResumeImport, ImportDraft]]:
+    """The owner's drafts in the recycle bin that can still be restored, most recently deleted first."""
+    return [
+        (row, draft)
+        for row, draft in db.execute(
+            select(ResumeImport, ImportDraft)
+            .join(ImportDraft, ImportDraft.import_id == ResumeImport.id)
+            .where(
+                ResumeImport.owner_id == owner_id,
+                ResumeImport.state.in_(VISIBLE),
+                ImportDraft.deleted_at.is_not(None),
+                ImportDraft.purge_after > now,
+            )
+            .order_by(ImportDraft.deleted_at.desc(), ResumeImport.id)
+        )
+    ]
 
 
-def taken_places(db: Session, owner_id: str, now: datetime) -> int:
-    """Imports that count against MAX_OPEN_IMPORTS: open ones, and uploads still being placed."""
+def drafts_clearing(db: Session, owner_id: str, now: datetime) -> int:
+    """Deleted drafts of the owner that cannot be restored any more and whose clean-up has not finished."""
     return db.scalar(
         select(func.count())
         .select_from(ResumeImport)
         .where(
             ResumeImport.owner_id == owner_id,
-            ResumeImport.state.in_((ImportState.RECEIVING, *VISIBLE)),
-            ResumeImport.expires_at > now,
+            or_(
+                and_(ResumeImport.state == ImportState.DELETED, ResumeImport.cleared_at.is_(None)),
+                and_(
+                    ResumeImport.state.in_(VISIBLE),
+                    _draft(ImportDraft.deleted_at.is_not(None), ImportDraft.purge_after <= now),
+                ),
+            ),
+        )
+    )
+
+
+def _owned(db: Session, owner_id: str, import_id: str) -> ResumeImport | None:
+    return db.scalar(select(ResumeImport).where(ResumeImport.id == import_id, ResumeImport.owner_id == owner_id))
+
+
+def open_import(db: Session, owner_id: str, import_id: str, now: datetime) -> ResumeImport:
+    """One import of this owner in use now (temporary or saved); NotFound otherwise."""
+    row = _owned(db, owner_id, import_id)
+
+    if row is None or not is_open(db, row, now):
+        raise NotFound()
+
+    return row
+
+
+def binned_draft(db: Session, owner_id: str, import_id: str, now: datetime) -> tuple[ResumeImport, ImportDraft]:
+    """One draft of this owner in the recycle bin that can still be restored; NotFound otherwise."""
+    row = _owned(db, owner_id, import_id)
+
+    if row is None or kept_as(db, row, now) != Kept.BINNED:
+        raise NotFound()
+
+    return row, draft_of(db, row.id)
+
+
+def taken_places(db: Session, owner_id: str, now: datetime) -> int:
+    """Imports that count against MAX_OPEN_IMPORTS: uploads being placed, imports in use and restorable drafts.
+
+    A draft in the recycle bin keeps its place, so restoring it never goes
+    past the limit.
+    """
+    return db.scalar(
+        select(func.count())
+        .select_from(ResumeImport)
+        .where(
+            ResumeImport.owner_id == owner_id,
+            or_(
+                and_(ResumeImport.state == ImportState.RECEIVING, ResumeImport.expires_at > now),
+                _open_now(now),
+                _binned_now(now),
+            ),
         )
     )
 
 
 def clearing_count(db: Session, owner_id: str, now: datetime) -> int:
-    """Ended or expired imports of the owner whose clean-up has not finished."""
+    """Ended or gone imports of the owner (expired, discarded, deleted drafts) whose clean-up has not finished."""
     return db.scalar(
         select(func.count())
         .select_from(ResumeImport)
@@ -256,7 +422,7 @@ def clearing_count(db: Session, owner_id: str, now: datetime) -> int:
             ResumeImport.owner_id == owner_id,
             or_(
                 and_(ResumeImport.state.in_(ENDED), ResumeImport.cleared_at.is_(None)),
-                and_(ResumeImport.state.in_(VISIBLE), ResumeImport.expires_at <= now),
+                _past_deadline(now),
             ),
         )
     )
@@ -312,7 +478,7 @@ def store_text(database: Database, owner_id: str, upload_key: str, text: str, no
         earlier = _earlier(db, owner_id, upload_key)
 
         if earlier is not None:
-            if earlier.source == ImportSource.TEXT and earlier.sha256 == digest and is_open(earlier, now):
+            if earlier.source == ImportSource.TEXT and earlier.sha256 == digest and is_open(db, earlier, now):
                 return Stored.ALREADY_ADDED, earlier.id
 
             return Stored.FORM_USED, None
@@ -420,7 +586,7 @@ def _reserve(
             earlier.filename == filename
             and earlier.size == staging.size
             and earlier.sha256 == staging.sha256
-            and (is_open(earlier, now) or earlier.state == ImportState.RECEIVING)
+            and (is_open(db, earlier, now) or earlier.state == ImportState.RECEIVING)
         )
 
         return ((Stored.ALREADY_ADDED, earlier.id) if same_file else (Stored.FORM_USED, None)), None
@@ -515,14 +681,15 @@ def read_import(
 ) -> str | None:
     """Read a reading import's file and store what was read; return its new state.
 
-    None when the import is not reading any more (ended, expired, or read
-    by another request meanwhile): then the result is dropped and nothing
-    is written.
+    None when the import is not reading any more (ended, expired, deleted,
+    or read by another request meanwhile): then the result is dropped and
+    nothing is written. The revision must be the one the reading began
+    with, so a draft deleted and restored meanwhile does not take it either.
     """
     with database.transaction() as db:
         row = db.get(ResumeImport, import_id)
 
-        if row is None or row.owner_id != owner_id or row.state != ImportState.READING or clock() >= row.expires_at:
+        if row is None or row.owner_id != owner_id or row.state != ImportState.READING or not is_open(db, row, clock()):
             return None
 
         revision, key, size, digest, source = row.revision, row.storage_key, row.size, row.sha256, row.source
@@ -540,7 +707,7 @@ def read_import(
         row = db.get(ResumeImport, import_id)
         now = clock()
 
-        if row is None or row.state != ImportState.READING or row.revision != revision or now >= row.expires_at:
+        if row is None or row.state != ImportState.READING or row.revision != revision or not is_open(db, row, now):
             return None
 
         _store_reading(row, reading, now)
@@ -599,10 +766,16 @@ def discard(
     """End one open import at the user's request; NotFound if it is not open (or is another's).
 
     Whatever state the import reached since the page was shown, discarding
-    is what the user asked for, so it goes ahead.
+    is what the user asked for, so it goes ahead; unless it was saved as a
+    draft meanwhile (SavedDraft): a draft is only ever deleted, with its
+    restore period, never discarded by an older page's form.
     """
     with database.transaction() as db:
         row = open_import(db, owner_id, import_id, now)
+
+        if draft_of(db, row.id) is not None:
+            raise SavedDraft()
+
         _end(db, row, ImportState.DISCARDED, now)
         record_event(db, owner_id, row.id, IMPORT_OBJECT, row.id, "import_discarded", now)
         cleared = row.cleared_at is not None
@@ -621,8 +794,10 @@ def _end(db: Session, row: ResumeImport, state: str, now: datetime) -> None:
 
     The candidates read from it, with the user's edits, how they were read
     and where adopted ones went go in the same transaction: they are part of
-    the import. What was adopted stays in the records it was written into.
+    the import, and so is its draft row, if it was saved. What was adopted
+    stays in the records it was written into.
     """
+    db.execute(delete(ImportDraft).where(ImportDraft.import_id == row.id))
     db.execute(delete(ImportAdoption).where(ImportAdoption.import_id == row.id))
     db.execute(delete(ImportCandidate).where(ImportCandidate.import_id == row.id))
     db.execute(delete(ImportStructuring).where(ImportStructuring.import_id == row.id))
@@ -645,44 +820,242 @@ def _end(db: Session, row: ResumeImport, state: str, now: datetime) -> None:
 
 
 def _remove_file(database: Database, files: FileStore, import_id: str, owner_id: str, now: datetime) -> bool:
-    """Remove an ended import's file under both its names; True once it is gone."""
-    with database.transaction() as db:
-        row = db.get(ResumeImport, import_id)
+    """Remove an ended import's file under both its names; True once it is gone and recorded as gone.
 
-        if row is None or row.storage_key is None or row.cleared_at is not None:
-            return True
+    This runs after the import's ending was committed (a discard, an expiry,
+    a draft removed for good), which nothing here can undo or may report as
+    undone. So a database failure on the way is logged and returns False,
+    like a file that cannot be removed yet: the row keeps its storage key
+    with cleared_at empty, the pages say the clean-up is still to finish,
+    and the clean-up pass tries again. A file already removed is then found
+    gone, and only the record is written.
+    """
+    try:
+        with database.transaction() as db:
+            row = db.get(ResumeImport, import_id)
 
-        key = row.storage_key
+            if row is None or row.storage_key is None or row.cleared_at is not None:
+                return True
+
+            key = row.storage_key
+    except StorageError as failure:
+        logger.warning("an ended import's clean-up could not start yet (%s)", type(failure.__cause__).__name__)
+        return False
 
     try:
         files.remove_file(owner_id, key, area=IMPORTS)
     except (FileStoreError, OSError, ValueError) as error:
         logger.warning("an import file could not be removed yet (%s)", type(error).__name__)
 
+        try:
+            with database.transaction() as db:
+                row = db.get(ResumeImport, import_id)
+
+                if row is not None:
+                    row.cleanup_attempts += 1
+                    row.cleanup_error = type(error).__name__
+        except StorageError as failure:
+            logger.warning("a failed import clean-up could not be noted (%s)", type(failure.__cause__).__name__)
+
+        return False
+
+    try:
         with database.transaction() as db:
             row = db.get(ResumeImport, import_id)
 
             if row is not None:
-                row.cleanup_attempts += 1
-                row.cleanup_error = type(error).__name__
-
+                row.storage_key = None
+                row.cleared_at = now
+                row.cleanup_error = None
+                record_event(db, owner_id, row.id, IMPORT_OBJECT, row.id, "import_cleared", now)
+    except StorageError as failure:
+        logger.warning("an import file was removed but not yet recorded as gone (%s)", type(failure.__cause__).__name__)
         return False
 
-    with database.transaction() as db:
-        row = db.get(ResumeImport, import_id)
-
-        if row is not None:
-            row.storage_key = None
-            row.cleared_at = now
-            row.cleanup_error = None
-            record_event(db, owner_id, row.id, IMPORT_OBJECT, row.id, "import_cleared", now)
-
     return True
+
+
+# --- saved drafts (U2-B3a) ----------------------------------------------------------
+
+
+def _locked(db: Session, owner_id: str, import_id: str, clock: Callable[[], datetime]) -> tuple[ResumeImport | None, datetime]:
+    """The owner's import and the time, read once this transaction holds the write lock.
+
+    The first statement takes the lock (BEGIN IMMEDIATE); the clock is read
+    after it, so a request that waited for the lock past a deadline is
+    judged by the moment it acts, not by when it arrived.
+    """
+    row = _owned(db, owner_id, import_id)
+
+    return row, clock()
+
+
+def _finding_candidates(db: Session, row: ResumeImport, now: datetime) -> ImportStructuring | None:
+    """The search for candidates running for this import now, if any (a stale one is over)."""
+    structuring = db.get(ImportStructuring, row.id)
+
+    if structuring is None or structuring.state != StructuringState.RUNNING:
+        return None
+
+    return structuring if now < structuring.started_at + STALE_STRUCTURING_AFTER else None
+
+
+def save_draft(database: Database, owner_id: str, import_id: str, clock: Callable[[], datetime]) -> Saved:
+    """Keep an import in use as a draft; NotFound when it is not in use now (ended, expired, deleted, another's).
+
+    A partial reading or an unfinished review can be saved as it is; an
+    import being read, or one whose candidates are being found, waits
+    (BUSY) so no result in flight is lost or taken in by surprise. Nothing
+    is written into the user's records.
+    """
+    with database.transaction() as db:
+        row, now = _locked(db, owner_id, import_id, clock)
+
+        if row is None:
+            raise NotFound()
+
+        kept = kept_as(db, row, now)
+
+        if kept == Kept.SAVED:
+            return Saved.ALREADY
+
+        if kept != Kept.TEMPORARY:
+            raise NotFound()
+
+        if row.state == ImportState.READING or _finding_candidates(db, row, now) is not None:
+            return Saved.BUSY
+
+        db.add(ImportDraft(import_id=row.id, owner_id=owner_id, saved_at=now, deleted_at=None, purge_after=None))
+        row.revision += 1
+        row.updated_at = now
+        record_event(db, owner_id, row.id, IMPORT_OBJECT, row.id, "import_saved", now)
+
+    return Saved.SAVED
+
+
+def delete_draft(
+    database: Database, owner_id: str, import_id: str, expected_revision: int, clock: Callable[[], datetime]
+) -> None:
+    """Put a saved draft in the recycle bin until RESTORE_WINDOW from now; nothing it holds is removed.
+
+    A reading, or a search for candidates, still running for it is ended
+    here as interrupted and the revision moves on: a late result is never
+    taken in, now or after a restore, and restoring starts nothing. The
+    caller stops the reading process itself.
+    """
+    with database.transaction() as db:
+        row, now = _locked(db, owner_id, import_id, clock)
+
+        if row is None or kept_as(db, row, now) != Kept.SAVED:
+            raise NotFound()
+
+        if row.revision != expected_revision:
+            raise ImportChanged()
+
+        draft = draft_of(db, row.id)
+        draft.deleted_at = now
+        draft.purge_after = now + RESTORE_WINDOW
+
+        if row.state == ImportState.READING:
+            row.state = ImportState.FAILED
+            row.outcome = INTERRUPTED
+
+        structuring = db.get(ImportStructuring, row.id)
+
+        if structuring is not None and structuring.state == StructuringState.RUNNING:
+            # Asking again is allowed after a restore; this run's answer is dropped.
+            structuring.state = StructuringState.FAILED
+            structuring.outcome = None
+            structuring.finished_at = now
+
+        row.revision += 1
+        row.updated_at = now
+        record_event(db, owner_id, row.id, IMPORT_OBJECT, row.id, "import_draft_deleted", now)
+
+
+def restore_draft(
+    database: Database, owner_id: str, import_id: str, expected_revision: int, clock: Callable[[], datetime]
+) -> None:
+    """Bring a draft back from the recycle bin as it was; RestoreClosed once its deadline has passed.
+
+    Its candidates, the user's edits and choices and where adopted ones
+    went come back unchanged: an adopted candidate stays adopted and is
+    never written again.
+    """
+    with database.transaction() as db:
+        row, now = _locked(db, owner_id, import_id, clock)
+
+        if row is None:
+            raise NotFound()
+
+        kept = kept_as(db, row, now)
+
+        if kept != Kept.BINNED:
+            draft = draft_of(db, row.id)
+
+            if row.state == ImportState.DELETED or (draft is not None and draft.deleted_at is not None):
+                raise RestoreClosed()
+
+            raise NotFound()
+
+        if row.revision != expected_revision:
+            raise ImportChanged()
+
+        draft = draft_of(db, row.id)
+        draft.deleted_at = None
+        draft.purge_after = None
+        row.revision += 1
+        row.updated_at = now
+        record_event(db, owner_id, row.id, IMPORT_OBJECT, row.id, "import_draft_restored", now)
+
+
+def purge_draft(
+    database: Database,
+    files: FileStore,
+    owner_id: str,
+    import_id: str,
+    expected_revision: int,
+    clock: Callable[[], datetime],
+) -> Ended:
+    """Remove a draft in the recycle bin for good, now, at the user's request.
+
+    It ends like any import (DELETED): its content leaves the row in this
+    transaction, its file next. Only a draft still restorable is taken
+    here; one past its deadline is the clean-up pass's.
+
+    The transaction is the line: a StorageError raised from it means it was
+    rolled back and the draft is still in the recycle bin. Once it is
+    committed the draft is gone for good, whatever the clean-up after it
+    meets: the answer is then CLEARED, or PENDING when the file, or the
+    record that it is gone, is still to come (_remove_file never raises).
+    """
+    with database.transaction() as db:
+        row, now = _locked(db, owner_id, import_id, clock)
+
+        if row is None or kept_as(db, row, now) != Kept.BINNED:
+            raise NotFound()
+
+        if row.revision != expected_revision:
+            raise ImportChanged()
+
+        _end(db, row, ImportState.DELETED, now)
+        record_event(db, owner_id, row.id, IMPORT_OBJECT, row.id, "import_draft_purged", now)
+        cleared = row.cleared_at is not None
+
+    if cleared or _remove_file(database, files, import_id, owner_id, now):
+        return Ended.CLEARED
+
+    return Ended.PENDING
+
+
+# --- clean-up ----------------------------------------------------------------------
 
 
 @dataclass
 class ImportCleanup:
     expired: int = 0
+    # Deleted drafts past their restore deadline.
+    purged: int = 0
     interrupted: int = 0
     cleared: int = 0
     pending: int = 0
@@ -690,21 +1063,44 @@ class ImportCleanup:
 
 
 def cleanup_imports(database: Database, files: FileStore, now: datetime) -> ImportCleanup:
-    """One pass: end expired imports, stop stale ones, remove ended imports' files, forget old rows."""
+    """One pass: end expired imports and deleted drafts past their deadline, stop stale ones,
+    remove ended imports' files, forget old rows.
+
+    A temporary import ends at its expires_at; a saved draft never does. A
+    deleted draft ends at its purge_after, unless it was restored first:
+    each row is selected and ended in one transaction holding the write
+    lock, so a restore either came first (and nothing is selected) or
+    comes after (and finds the draft gone).
+    """
     report = ImportCleanup()
     stale_receiving = now - STALE_RECEIVING_AFTER
     stale_reading = now - STALE_READING_AFTER
 
     with database.transaction() as db:
-        for row in db.scalars(
-            select(ResumeImport).where(
-                ResumeImport.state.in_(VISIBLE),
-                ResumeImport.expires_at <= now,
+        for row in list(
+            db.scalars(
+                select(ResumeImport).where(
+                    ResumeImport.state.in_(VISIBLE),
+                    ResumeImport.expires_at <= now,
+                    ~_draft(),
+                )
             )
         ):
             _end(db, row, ImportState.EXPIRED, now)
             record_event(db, row.owner_id, row.id, IMPORT_OBJECT, row.id, "import_expired", now)
             report.expired += 1
+
+        for row in list(
+            db.scalars(
+                select(ResumeImport).where(
+                    ResumeImport.state.in_(VISIBLE),
+                    _draft(ImportDraft.deleted_at.is_not(None), ImportDraft.purge_after <= now),
+                )
+            )
+        ):
+            _end(db, row, ImportState.DELETED, now)
+            record_event(db, row.owner_id, row.id, IMPORT_OBJECT, row.id, "import_draft_expired", now)
+            report.purged += 1
 
         for row in db.scalars(
             select(ResumeImport).where(

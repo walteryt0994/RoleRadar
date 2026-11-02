@@ -27,7 +27,10 @@ candidates found in it, where each value stands in the text, the user's
 edits and choices, and the candidates dropped, by place and reason. Since
 U2-B2b a record written from an import says so: when, and whether it was
 added or supplemented. That note comes from the record's own history,
-holds no words and is exported only with the record itself.
+holds no words and is exported only with the record itself. Since U2-B3a
+the imports include those saved as drafts and drafts in the recycle bin
+(until their restore deadline), each saying how it is kept; exporting them
+restores, saves or adopts nothing.
 """
 import hashlib
 import json
@@ -57,19 +60,20 @@ from app.library.content import (
 from app.library.attachments import TYPE_LABELS
 from app.library.errors import ChangedFile, FileStoreError, MissingFile
 from app.library.files import CHUNK_BYTES, IMPORTS, FileStore
-from app.library.imports import import_text, open_imports
+from app.library.imports import draft_of, import_text, kept_imports
 from app.library.models import (
     Attachment,
     AttachmentState,
     AuditEvent,
     ExperienceItem,
     ExperienceVersion,
+    ImportDraft,
     ImportSource,
     ResumeImport,
     VersionKind,
 )
 from app.library.presentation import EVENT_LABELS, format_local, format_size, state_label, version_label
-from app.library.review import IMPORT_EVENTS, adoption_views, candidates_of, review_record, structuring_of
+from app.library.review import IMPORT_EVENTS, adoption_views, candidates_of, kept_record, review_record, structuring_of
 from app.library.service import (
     active_item,
     current_document,
@@ -84,7 +88,8 @@ EXPORT_FORMAT = "roleradar-library-export"
 # 4: resume imports still kept (U2-B1), with their text and original files.
 # 5: the candidates of those imports and their review (U2-B2a), in candidates.json.
 # 6: where adopted candidates went, and on each record the imports that wrote it (U2-B2b).
-EXPORT_FORMAT_VERSION = 6
+# 7: imports saved as drafts and drafts in the recycle bin, each with how it is kept (U2-B3a).
+EXPORT_FORMAT_VERSION = 7
 SHARE_WARNING = (
     "注意：这份文件包含你的私有备注或联系方式。导出文件离开 RoleRadar 后不再受平台的权限保护；"
     "分享或发送之前，请先检查并删掉不想让别人看到的内容。"
@@ -92,7 +97,7 @@ SHARE_WARNING = (
 NOT_INCLUDED = (
     "已超过恢复期限或已永久删除的内容，包括附件文件",
     "没有上传完成的附件",
-    "已放弃或已到期的简历导入",
+    "已放弃、已到期或已永久删除的简历导入，包括超过恢复期限的导入草稿",
     "分析结果、岗位简历和投递记录：这些功能还没有建立",
 )
 IMPORT_SOURCES = {ImportSource.PDF: "PDF", ImportSource.DOCX: "Word（.docx）", ImportSource.TEXT: "粘贴的文字"}
@@ -132,8 +137,10 @@ class ExportContent:
     current: list[ExportRecord]
     documents: dict[str, ExportRecord | None]
     binned: list[ExportRecord]
-    # Resume imports still kept (U2-B1); not part of the library.
+    # Resume imports still kept (U2-B1), saved drafts and drafts in the recycle bin (U2-B3a); not part of the library.
     imports: list[ResumeImport] = field(default_factory=list)
+    # The draft row of each import that was saved, by import id; None for a temporary one.
+    drafts: dict[str, ImportDraft | None] = field(default_factory=dict)
     # The candidates and review of each structured import, by import id (U2-B2a).
     reviews: dict[str, dict] = field(default_factory=dict)
 
@@ -368,7 +375,8 @@ def collect_export(db: Session, owner_id: str, now: datetime) -> ExportContent:
         )
 
     documents = {kind: current_document(db, owner_id, kind) for kind in DOCUMENT_KINDS}
-    imports = open_imports(db, owner_id, now)
+    imports = kept_imports(db, owner_id, now)
+    drafts = {row.id: draft_of(db, row.id) for row in imports}
     reviews = {}
 
     for row in imports:
@@ -376,13 +384,16 @@ def collect_export(db: Session, owner_id: str, now: datetime) -> ExportContent:
 
         if structuring is not None:
             candidates = candidates_of(db, owner_id, row.id)
-            reviews[row.id] = review_record(row, structuring, candidates, adoption_views(db, owner_id, candidates))
+            reviews[row.id] = review_record(
+                row, structuring, candidates, adoption_views(db, owner_id, candidates), drafts[row.id]
+            )
 
     return ExportContent(
         current=[record(item) for item in current],
         documents={kind: record(item) if item else None for kind, item in documents.items()},
         binned=[record(item) for item in binned],
         imports=imports,
+        drafts=drafts,
         reviews=reviews,
     )
 
@@ -512,6 +523,7 @@ def _write_zip(content: ExportContent, files: FileStore, owner_label: str, now: 
                     "filename": row.filename,
                     "received_at": _iso(row.received_at),
                     "expires_at": _iso(row.expires_at),
+                    **kept_record(row, content.drafts.get(row.id)),
                     "text_path": text_path,
                     "candidates_path": candidates_path,
                     "candidates": len(review["candidates"]) if review is not None else 0,
@@ -542,13 +554,17 @@ def _write_zip(content: ExportContent, files: FileStore, owner_label: str, now: 
             "preferences": _document_record(content.documents[PREFERENCES]),
             "recycle_bin": [_item_record(record) for record in content.binned],
             "imports": [
-                _import_record(row, entry, content.reviews.get(row.id))
+                _import_record(row, entry, content.reviews.get(row.id), content.drafts.get(row.id))
                 for row, entry in zip(content.imports, manifest_imports)
             ],
         }
         texts["data.json"] = _json_bytes(data)
         texts["README.md"] = _readme(
-            owner_label, now, listing, manifest_attachments, list(zip(content.imports, manifest_imports))
+            owner_label,
+            now,
+            listing,
+            manifest_attachments,
+            [(row, entry, content.drafts.get(row.id)) for row, entry in zip(content.imports, manifest_imports)],
         ).encode("utf-8")
         texts["manifest.json"] = _json_bytes(
             {
@@ -644,7 +660,18 @@ def _copy_import(archive: zipfile.ZipFile, files: FileStore, row: ResumeImport, 
     return INCLUDED
 
 
-def _import_record(row: ResumeImport, entry: dict, review: dict | None) -> dict:
+def _kept_text(row: ResumeImport, draft: ImportDraft | None) -> str:
+    """How an import is kept, as the README says it (U2-B3a)."""
+    if draft is None:
+        return f"暂存到 {format_local(row.expires_at)}"
+
+    if draft.deleted_at is None:
+        return f"已保存为待核对草稿（{format_local(draft.saved_at)} 保存，不会到期）"
+
+    return f"已删除的草稿，在回收站里，{format_local(draft.purge_after)} 之前可以恢复"
+
+
+def _import_record(row: ResumeImport, entry: dict, review: dict | None, draft: ImportDraft | None) -> dict:
     return {
         "id": row.id,
         "source": row.source,
@@ -654,6 +681,7 @@ def _import_record(row: ResumeImport, entry: dict, review: dict | None) -> dict:
         "filename": row.filename,
         "received_at": _iso(row.received_at),
         "expires_at": _iso(row.expires_at),
+        **kept_record(row, draft),
         "details": row.details,
         "segments": row.segments,
         "text_path": entry["text_path"],
@@ -680,11 +708,11 @@ def _readme(
     now: datetime,
     listing: dict,
     attachments: list[dict],
-    imports: list[tuple[ResumeImport, dict]],
+    imports: list[tuple[ResumeImport, dict, ImportDraft | None]],
 ) -> str:
     included = [entry for entry in attachments if entry["status"] == INCLUDED]
     left_out = [entry for entry in attachments if entry["status"] != INCLUDED]
-    imports_left_out = [entry for _, entry in imports if entry["original_status"] not in (None, INCLUDED)]
+    imports_left_out = [entry for _, entry, _ in imports if entry["original_status"] not in (None, INCLUDED)]
     current_files = sum(1 for entry in included if entry["section"] == "current")
     lines = [
         "# RoleRadar 经历库导出",
@@ -702,7 +730,7 @@ def _readme(
 
     if imports_left_out:
         lines += [
-            f"**这个导出包不完整：有 {len(imports_left_out)} 个导入的原文件没能放进来，原因见下面的“导入中的临时资料”和 manifest.json。**",
+            f"**这个导出包不完整：有 {len(imports_left_out)} 个导入的原文件没能放进来，原因见下面的“简历导入（不是正式资料）”和 manifest.json。**",
             "",
         ]
 
@@ -742,17 +770,18 @@ def _readme(
 
     if imports:
         lines += [
-            "## 导入中的临时资料",
+            "## 简历导入（不是正式资料）",
             "",
             "下面这些是导入时读到的原文和原文件，以及从中整理出的待核对条目，都还没有加入经历库，"
-            "条目也没有经过核实。RoleRadar 只暂存到各自的到期时间，到期后会删除；导出包里的这份副本不受影响。",
+            "条目也没有经过核实。没有保存的导入只暂存到各自的到期时间；保存为草稿的会一直保留，直到删除；"
+            "回收站里的草稿在恢复期限之后删除。导出包里的这份副本不受影响，导出也不会恢复、保存或加入任何内容。",
             "",
         ]
 
-        for row, entry in imports:
+        for row, entry, draft in imports:
             name = row.filename or "粘贴的文字"
             line = f"- `{entry['folder']}/`：{name}（{IMPORT_SOURCES.get(row.source, row.source)}，"
-            line += f"{IMPORT_STATES.get(row.state, row.state)}），暂存到 {format_local(row.expires_at)}"
+            line += f"{IMPORT_STATES.get(row.state, row.state)}），{_kept_text(row, draft)}"
 
             if entry["original_status"] not in (None, INCLUDED):
                 line += f"；原文件{STATUS_TEXT[entry['original_status']]}"

@@ -85,6 +85,13 @@ IMPORT_ROUTES = {
     ("POST", "/imports/{import_id}/retry"),
     ("GET", "/imports/{import_id}/discard"),
     ("POST", "/imports/{import_id}/discard"),
+    # Saved drafts (U2-B3a): saving, deleting into the recycle bin, restoring, removing for good.
+    ("POST", "/imports/{import_id}/save"),
+    ("GET", "/imports/{import_id}/delete"),
+    ("POST", "/imports/{import_id}/delete"),
+    ("POST", "/imports/{import_id}/restore"),
+    ("GET", "/imports/{import_id}/purge"),
+    ("POST", "/imports/{import_id}/purge"),
 }
 # Checking the candidates read from an import (U2-B2a); protected like the import pages.
 REVIEW_ROUTES = {

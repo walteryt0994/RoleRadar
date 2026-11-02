@@ -1015,7 +1015,7 @@ def test_export_all_holds_the_candidates_their_sources_and_the_review(app, brows
     record = json.loads(files[entry["candidates_path"]])
     data = json.loads(files["data.json"])
 
-    assert manifest["format_version"] == 6 and entry["candidates"] == 8
+    assert manifest["format_version"] == 7 and entry["candidates"] == 8
     assert data["imports"][0]["review"] == record
     assert "待核对的条目和核对进度（`candidates.json`）" in files["README.md"].decode("utf-8")
     assert record["structured_by"] == "本机模拟整理规则（不是 AI）" and "没有经过核实" in record["note"]

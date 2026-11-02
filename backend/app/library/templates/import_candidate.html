@@ -8,7 +8,11 @@
   <h1>修改：{{ candidate.title }}</h1>
   <p class="lede">{{ kind_label }} · 来自“{{ name }}”</p>
 </header>
+{% if draft %}
+<p class="muted small">这里的修改跟这份已保存的草稿一起保留，直到你删除草稿；删除后 {{ RESTORE_DAYS }} 天内可以在回收站恢复。保存不会把它加入经历库。改过的内容不要求和原文一致，页面会把它标成“你改过”，不会当作原文引用。</p>
+{% else %}
 <p class="muted small">这里的修改只暂存在这次导入里：到 {{ row.expires_at|shorttime }} 或放弃导入时，和原文一起清除，不会延长。它不是长期草稿，也不会加入经历库。改过的内容不要求和原文一致，页面会把它标成“你改过”，不会当作原文引用。</p>
+{% endif %}
 {% if error %}
 <p class="error" role="alert">{{ error }}</p>
 {% endif %}

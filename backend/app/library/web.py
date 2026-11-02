@@ -92,7 +92,13 @@ from app.library.errors import (
 )
 from app.library.export import collect_export, single_export, write_export
 from app.library.files import FileStore, read_chunks
-from app.library.imports import MAX_IMPORT_REQUEST_BYTES, cleanup_imports, referenced_import_files
+from app.library.imports import (
+    MAX_IMPORT_REQUEST_BYTES,
+    binned_drafts,
+    cleanup_imports,
+    drafts_clearing,
+    referenced_import_files,
+)
 from app.library.identity import (
     DEV_PROVIDER,
     CurrentUser,
@@ -227,6 +233,13 @@ NOTICES = {
     "purged": "已永久删除，清理已完成。",
     "purge_pending": (
         "已永久删除：内容已经不能访问或恢复。数据清理暂未完成，系统会自动重试，进度见回收站。"
+    ),
+    "import_draft_purged": (
+        "导入草稿已永久删除：原文件、读到的文字、整理出的条目和你的修改都已经删除。已经加入的内容不受影响。"
+    ),
+    "import_draft_purge_pending": (
+        "导入草稿已永久删除：它已经不能查看或恢复。清理还没有全部完成或还没有确认完成，系统会自动重试。"
+        "已经加入的内容不受影响。"
     ),
     "version_deleted": "已删除这个历史版本，7 天内可以在本页恢复。",
     "version_restored": "已恢复这个历史版本。",
@@ -1203,6 +1216,9 @@ def experience_list(
     with rt.database.transaction() as db:
         items = list_experiences(db, user.id)
         trash = trash_view(db, user.id, now)
+        # Resume import drafts the user deleted (U2-B3a): restored or removed from here too.
+        drafts = binned_drafts(db, user.id, now)
+        drafts_waiting = drafts_clearing(db, user.id, now)
 
     return render(
         request,
@@ -1210,6 +1226,8 @@ def experience_list(
         {
             "tab": "trash",
             "trash": trash,
+            "drafts": drafts,
+            "drafts_waiting": drafts_waiting,
             "now": now,
             "notice": NOTICES.get(notice),
             **library_sidebar(request, user, items=items, focus=True),

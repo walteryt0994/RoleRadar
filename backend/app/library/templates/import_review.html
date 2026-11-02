@@ -101,11 +101,15 @@
 <p class="crumbs"><a href="/imports">导入简历</a> › <a href="/imports/{{ row.id }}">{{ name }}</a></p>
 <header class="pane-head" data-reveal>
   <h1>核对整理出的条目</h1>
-  <p class="import-meta">{{ name }} · 保留到 {{ row.expires_at|localtime }}（{{ format_remaining(row.expires_at, now) }}）</p>
+  <p class="import-meta">{{ name }} · {% if draft %}已保存的待核对草稿（{{ draft.saved_at|localtime }} 保存，不会到期）{% else %}保留到 {{ row.expires_at|localtime }}（{{ format_remaining(row.expires_at, now) }}）{% endif %}</p>
 </header>
 <div class="review-terms">
   <p>这些条目由{{ structured_by }}整理：只按标题、日期和列表符号这类简单规则拆分，可能拆错、漏掉或放错类别，什么都没有发送出去。自动整理的每一栏都逐字摘自原文并标出出处，但这不代表内容已经核实。</p>
-  <p>条目、你的修改和“不加入”的选择，都只跟这次导入一起暂存到 {{ row.expires_at|shorttime }}：打开、修改都不会延长，到期或放弃导入时一起清除。只有你逐条选择“加入…”并确认的内容，才会写进你的经历或基本资料；已经加入的不会因为放弃或到期而撤销。求职偏好不会被改动。</p>
+  {% if draft %}
+  <p>条目、你的修改和“不加入”的选择，都跟这份草稿一起保留，直到你删除草稿；删除后 {{ RESTORE_DAYS }} 天内可以在回收站恢复。保存草稿不代表内容已经核实：只有你逐条选择“加入…”并确认的内容，才会写进你的经历或基本资料；已经加入的不会因为删除草稿而撤销。求职偏好不会被改动。</p>
+  {% else %}
+  <p>条目、你的修改和“不加入”的选择，都只跟这次导入一起暂存到 {{ row.expires_at|shorttime }}：打开、修改都不会延长，到期或放弃导入时一起清除；需要更久时，可以在<a href="/imports/{{ row.id }}">导入页</a>保存为待核对草稿。只有你逐条选择“加入…”并确认的内容，才会写进你的经历或基本资料；已经加入的不会因为放弃或到期而撤销。求职偏好不会被改动。</p>
+  {% endif %}
 </div>
 {% if row.state == "partial" %}
 <p class="warning">这份简历有页面没有读出来，整理结果可能缺内容。</p>

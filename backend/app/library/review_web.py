@@ -36,7 +36,7 @@ from app.library.candidates import (
 from app.library.content import PROFILE, display_title
 from app.library.errors import ContentError, NotFound, StorageError
 from app.library.identity import CurrentUser
-from app.library.imports import locator, open_import
+from app.library.imports import draft_of, locator, open_import
 from app.library.imports_web import BASE, _labels, gone_page
 from app.library.models import CandidateState, ImportCandidate, StructuringState
 from app.library.review import (
@@ -289,6 +289,7 @@ def review_page(import_id: str, request: Request, notice: str = "", user: Curren
     try:
         with rt.database.transaction() as db:
             row = open_import(db, user.id, import_id, now)
+            draft = draft_of(db, row.id)
             structuring = structuring_of(db, row.id)
             candidates = candidates_of(db, user.id, row.id)
             comparisons = compare(db, user.id, candidates)
@@ -316,6 +317,7 @@ def review_page(import_id: str, request: Request, notice: str = "", user: Curren
         {
             "section": "imports",
             "row": row,
+            "draft": draft,
             "name": row.filename or "粘贴的文字",
             "structuring": structuring,
             "structured_by": STRUCTURER_LABELS.get(structuring.structurer, "整理服务"),
@@ -358,6 +360,7 @@ def edit_page(
     row,
     candidate: ImportCandidate,
     *,
+    draft=None,
     values: dict[str, str] | None = None,
     revision: int | None = None,
     saved: dict[str, str] | None = None,
@@ -375,6 +378,7 @@ def edit_page(
         {
             "section": "imports",
             "row": row,
+            "draft": draft,
             "name": row.filename or "粘贴的文字",
             "candidate": view,
             "kind_label": KIND_LABELS[candidate.kind],
@@ -427,13 +431,14 @@ def candidate_edit(import_id: str, candidate_id: str, request: Request, user: Cu
     try:
         with rt.database.transaction() as db:
             row, candidate = open_candidate(db, user.id, import_id, candidate_id, rt.now())
+            draft = draft_of(db, row.id)
     except NotFound:
         return gone_page(request, user)
 
     if candidate.state != CandidateState.PENDING:
         return _left_out_page(request, user, import_id, candidate_id, candidate.state)
 
-    return edit_page(request, user, row, candidate)
+    return edit_page(request, user, row, candidate, draft=draft)
 
 
 @router.post("/imports/{import_id}/candidates/{candidate_id}/edit")
@@ -450,6 +455,7 @@ def candidate_save(
     try:
         with rt.database.transaction() as db:
             row, candidate = open_candidate(db, user.id, import_id, candidate_id, rt.now())
+            draft = draft_of(db, row.id)
     except NotFound:
         return gone_page(request, user)
 
@@ -464,13 +470,13 @@ def candidate_save(
         changed = save_edits(rt.database, user.id, import_id, candidate_id, expected, values, rt.now())
     except ContentError as error:
         return edit_page(
-            request, user, row, candidate, values=submitted, revision=expected, error=error.message,
+            request, user, row, candidate, draft=draft, values=submitted, revision=expected, error=error.message,
             field_errors=error.field_errors, status_code=422,
         )
     except CandidateConflict as conflict:
         # Shown again with what was typed, the saved words next to it, and the current revision.
         return edit_page(
-            request, user, row, candidate, values=values, revision=conflict.candidate.revision,
+            request, user, row, candidate, draft=draft, values=values, revision=conflict.candidate.revision,
             saved=conflict.candidate.values, status_code=409,
             error=(
                 "没有保存：这条在你打开这个页面之后被改过（可能是在另一个标签页）。"
@@ -488,7 +494,8 @@ def candidate_save(
         logger.error("saving a candidate's edits failed (%s)", type(error.__cause__).__name__)
 
         return edit_page(
-            request, user, row, candidate, values=values, revision=expected, error=SAVE_FAILED, status_code=500,
+            request, user, row, candidate, draft=draft, values=values, revision=expected, error=SAVE_FAILED,
+            status_code=500,
         )
 
     notice = "candidate_saved" if changed else "candidate_unchanged"
@@ -564,7 +571,8 @@ def download_candidates(import_id: str, request: Request, user: CurrentUser = De
             structuring = structuring_of(db, row.id)
             candidates = candidates_of(db, user.id, row.id)
             adoptions = adoption_views(db, user.id, candidates)
-            record = review_record(row, structuring, candidates, adoptions) if structuring is not None else None
+            draft = draft_of(db, row.id)
+            record = review_record(row, structuring, candidates, adoptions, draft) if structuring is not None else None
     except NotFound:
         return gone_page(request, user)
 
