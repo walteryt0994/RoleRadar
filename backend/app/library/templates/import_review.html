@@ -147,6 +147,7 @@
 <p class="import-actions">
   <a href="/imports/{{ row.id }}" target="_blank" rel="noopener">在新标签页对照原文</a>
   <a href="/imports/{{ row.id }}/candidates.json" download>下载这些条目和核对进度（JSON）</a>
+  <a href="/imports/{{ row.id }}/finish">核对完了？结束这次导入…</a>
 </p>
 {% for kind, label, views in groups %}
 <section class="review-group" aria-labelledby="g-{{ kind }}">

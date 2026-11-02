@@ -92,6 +92,11 @@ IMPORT_ROUTES = {
     ("POST", "/imports/{import_id}/restore"),
     ("GET", "/imports/{import_id}/purge"),
     ("POST", "/imports/{import_id}/purge"),
+    # Keeping the original as an attachment and ending the import (U2-B3b).
+    ("GET", "/imports/{import_id}/keep-file"),
+    ("POST", "/imports/{import_id}/keep-file"),
+    ("GET", "/imports/{import_id}/finish"),
+    ("POST", "/imports/{import_id}/finish"),
 }
 # Checking the candidates read from an import (U2-B2a); protected like the import pages.
 REVIEW_ROUTES = {

@@ -152,6 +152,21 @@ NOTICES = {
         "已经加入经历库或基本资料的内容不受影响。"
     ),
     "draft_restored": "草稿已恢复：条目、你的修改和选择、已加入的去向都和删除前一样，可以继续核对。",
+    # Keeping the original and ending the import (U2-B3b, finish_web).
+    "original_kept": (
+        "原文件已另存为附件：它现在是那条经历的私有附件，随经历删除、恢复和导出；结束或删除这次导入都不影响它。"
+    ),
+    "original_kept_already": "这份原文件刚才已经另存过，这次没有重复保存。",
+    "import_finished": (
+        "已结束这次导入：读到的文字、没有加入的条目和你的修改、原文件都已经清理。已经加入的内容和另存的附件不受影响。"
+    ),
+    "import_finish_pending": (
+        "已结束这次导入：它已经不能查看或下载。文件清理暂未完成，系统会自动重试。已经加入的内容和另存的附件不受影响。"
+    ),
+    "draft_finished": (
+        f"已结束：草稿移到了回收站，{RESTORE_WINDOW.days} 天内可以恢复后继续核对，之后会清除。"
+        "已经加入的内容和另存的附件不受影响。"
+    ),
 }
 TRASH = "/experiences?tab=trash"
 STORE_PROBLEMS = {
@@ -320,6 +335,8 @@ def import_detail(import_id: str, request: Request, notice: str = "", user: Curr
             "row": row,
             "draft": draft,
             "name": row.filename or "粘贴的文字",
+            # A file it holds can be kept as an attachment (U2-B3b); pasted text has none.
+            "keepable": row.storage_key is not None and row.source != ImportSource.TEXT,
             "problems": _problem_lines(row),
             "can_retry": retryable(row),
             "structurable": row.state in STRUCTURABLE,

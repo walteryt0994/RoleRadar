@@ -1,6 +1,7 @@
 """Attachments of saved experiences: checking, storing and listing them.
 
-An attachment is a PDF, PNG or JPEG file of at most MAX_FILE_BYTES, kept for
+An attachment is a PDF, PNG or JPEG file of at most MAX_FILE_BYTES (or a
+resume import's original Word file the user kept, originals.py), kept for
 one saved experience of its owner; an experience keeps at most
 MAX_ATTACHMENTS, counting those still restorable from the recycle bin. The
 profile and the job preferences have none. Checking a file's type is not a
@@ -73,8 +74,13 @@ class FileType:
 PDF = FileType("application/pdf", "PDF", b"%PDF-", frozenset({"application/pdf"}))
 PNG = FileType("image/png", "PNG", b"\x89PNG\r\n\x1a\n", frozenset({"image/png"}))
 JPEG = FileType("image/jpeg", "JPEG", b"\xff\xd8\xff", frozenset({"image/jpeg", "image/jpg", "image/pjpeg"}))
+# What the upload form takes: these types only.
 FILE_TYPES = {".pdf": PDF, ".png": PNG, ".jpg": JPEG, ".jpeg": JPEG}
-TYPE_LABELS = {kind.media_type: kind.label for kind in FILE_TYPES.values()}
+DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+# A Word file becomes an attachment only as a resume import's original kept by the user
+# (originals.py, U2-B3b), copied from a file the import already holds; the upload form never takes one.
+KEPT_DOCX = FileType(DOCX_MEDIA, "Word（.docx）", b"PK\x03\x04", frozenset({DOCX_MEDIA}))
+TYPE_LABELS = {kind.media_type: kind.label for kind in (*FILE_TYPES.values(), KEPT_DOCX)}
 
 AGAIN = "请重新选择文件后再上传（浏览器不会自动保留刚才选择的文件）。"
 NO_NAME = "这个文件没有可用的文件名，没有上传。" + AGAIN

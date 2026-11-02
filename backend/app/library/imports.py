@@ -50,6 +50,7 @@ from sqlalchemy.orm import Session
 
 from app.library.attachments import (
     CONTENT_MISMATCH,
+    DOCX_MEDIA,
     EMPTY,
     TYPE_MISMATCH,
     FileType,
@@ -111,7 +112,6 @@ INTERRUPTED = "interrupted"
 # Reading again may help: the file was not at fault.
 RETRYABLE = frozenset({TIMEOUT, CRASHED, BUSY, INTERRUPTED})
 
-DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 # Browsers on some systems declare these files as generic binary data; the content is checked anyway.
 IMPORT_PDF = FileType(
     "application/pdf",
@@ -762,19 +762,27 @@ def discard(
     owner_id: str,
     import_id: str,
     now: datetime,
+    *,
+    check: Callable[[Session], None] | None = None,
 ) -> Ended:
     """End one open import at the user's request; NotFound if it is not open (or is another's).
 
     Whatever state the import reached since the page was shown, discarding
     is what the user asked for, so it goes ahead; unless it was saved as a
     draft meanwhile (SavedDraft): a draft is only ever deleted, with its
-    restore period, never discarded by an older page's form.
+    restore period, never discarded by an older page's form. check, if
+    given, runs in the same transaction before anything ends; whatever it
+    raises leaves the import as it was (U2-B3b: the copies a finish page
+    described must still be there).
     """
     with database.transaction() as db:
         row = open_import(db, owner_id, import_id, now)
 
         if draft_of(db, row.id) is not None:
             raise SavedDraft()
+
+        if check is not None:
+            check(db)
 
         _end(db, row, ImportState.DISCARDED, now)
         record_event(db, owner_id, row.id, IMPORT_OBJECT, row.id, "import_discarded", now)
@@ -934,14 +942,20 @@ def save_draft(database: Database, owner_id: str, import_id: str, clock: Callabl
 
 
 def delete_draft(
-    database: Database, owner_id: str, import_id: str, expected_revision: int, clock: Callable[[], datetime]
+    database: Database,
+    owner_id: str,
+    import_id: str,
+    expected_revision: int,
+    clock: Callable[[], datetime],
+    *,
+    check: Callable[[Session], None] | None = None,
 ) -> None:
     """Put a saved draft in the recycle bin until RESTORE_WINDOW from now; nothing it holds is removed.
 
     A reading, or a search for candidates, still running for it is ended
     here as interrupted and the revision moves on: a late result is never
     taken in, now or after a restore, and restoring starts nothing. The
-    caller stops the reading process itself.
+    caller stops the reading process itself. check works as for discard.
     """
     with database.transaction() as db:
         row, now = _locked(db, owner_id, import_id, clock)
@@ -951,6 +965,9 @@ def delete_draft(
 
         if row.revision != expected_revision:
             raise ImportChanged()
+
+        if check is not None:
+            check(db)
 
         draft = draft_of(db, row.id)
         draft.deleted_at = now

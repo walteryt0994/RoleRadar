@@ -1,9 +1,10 @@
-"""Entry point of the RoleRadar experience library web app (v0.1 U1, U2-A2, U2-B1, U2-B2).
+"""Entry point of the RoleRadar experience library web app (v0.1 U1, U2-A2, U2-B1, U2-B2, U2-B3).
 
 This is a separate app from app.main: it mounts the library pages, the
 resume import pages (app.library.imports_web), the review of their
 candidates (app.library.review_web) and their adoption at the user's choice
-(app.library.adoption_web), the job analysis pages
+(app.library.adoption_web), finishing an import and keeping its original
+as an attachment (app.library.finish_web), the job analysis pages
 (app.job_analysis), stores data in its own SQLite file and attachment
 folder, and never imports the legacy database, models or routers. A resume
 import is read on this machine in a child process and sent nowhere; its
@@ -30,6 +31,7 @@ from app.library.errors import ConfigError
 from app.library.files import FileStore
 from app.library.identity import ensure_dev_users
 from app.library.adoption_web import install_adoption
+from app.library.finish_web import install_finish
 from app.library.imports_web import install_imports
 from app.library.models import create_schema, read_library_id
 from app.library.review_web import install_review
@@ -98,6 +100,7 @@ def create_app(
     install_imports(app)
     install_review(app)
     install_adoption(app)
+    install_finish(app)
     install_job_analysis(app, simulation_delay=simulation_delay, sweep_seconds=job_sweep_seconds)
 
     return app

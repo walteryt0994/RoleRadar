@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}{% if draft %}结束这份草稿{% else %}结束这次导入{% endif %}：{{ name }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/imports">导入简历</a> › <a href="/imports/{{ row.id }}">{{ name }}</a></p>
+{# A page shown again after a refused post is read at once: nothing on it waits for an animation. #}
+<header class="pane-head"{% if not error %} data-reveal{% endif %}>
+  <h1>{% if draft %}结束这份草稿？{% else %}结束这次导入？{% endif %}</h1>
+  <p class="lede">{{ name }}</p>
+</header>
+{% if notice %}
+<p class="notice" role="status">{{ notice }}</p>
+{% endif %}
+{% if error %}
+<p class="error" role="alert">{{ error }}</p>
+{% endif %}
+<section aria-labelledby="stays-title">
+  <h2 id="stays-title">会留下</h2>
+  <ul class="points">
+    {% if adopted %}
+    {% for view in adopted %}
+    <li>{{ view.title }}：{{ ADOPTION_LABELS[view.adoption.action] }}{% if view.adoption.title is none %}（对应的记录已经删除）{% elif view.adoption.category == "profile" %}（<a href="/basic-profile">基本资料</a>）{% else %}（<a href="/experiences/{{ view.adoption.item_id }}">{{ view.adoption.title }}</a>）{% endif %}</li>
+    {% endfor %}
+    <li>上面这些已经加入的内容是你的正式资料，结束不会撤销它们。</li>
+    {% else %}
+    <li>这次没有加入任何条目。不加入也可以结束。</li>
+    {% endif %}
+    {% if kept %}
+    <li>原文件已另存为附件：{% for copy in kept %}<a href="/experiences/{{ copy.item.id }}#attachments">{{ display_title(copy.item.content, copy.item.category) }}</a>{% if not loop.last %}、{% endif %}{% endfor %}（刚核对过，文件完好）。附件独立保存，结束不影响它。</li>
+    {% endif %}
+    <li>经历库、基本资料、求职偏好和其他导入都不受影响。</li>
+  </ul>
+</section>
+<section aria-labelledby="goes-title">
+  <h2 id="goes-title">{% if draft %}会移到回收站{% else %}会清理，不能恢复{% endif %}</h2>
+  <ul class="points">
+    <li>读到的文字{% if counts.total %}，整理出的条目里没有加入的 {{ counts.pending + counts.excluded }} 条（待核对 {{ counts.pending }} 条、不加入 {{ counts.excluded }} 条）和你对它们的修改、选择{% endif %}{% if original and kept %}，以及导入里暂存的原文件“{{ row.filename }}”（另存为附件的那一份不受影响）{% elif original %}，以及原文件“{{ row.filename }}”{% endif %}。</li>
+    {% if draft %}
+    <li>整份草稿移到回收站，{{ RESTORE_DAYS }} 天内可以恢复后继续核对，之后会清除。回收站里的原文件只是这份草稿可以恢复的一部分，不是附件。</li>
+    {% else %}
+    <li>结束后不能再查看、下载或恢复：这不是回收站。</li>
+    {% endif %}
+  </ul>
+</section>
+{% if not_kept %}
+<p class="warning">这些另存的附件不能算作保留的原文件：{% for copy in not_kept %}“{{ display_title(copy.item.content, copy.item.category) }}”里的那份（{% if copy.place == Place.PENDING %}还没有保存完成{% elif copy.place == Place.BINNED %}在回收站里，过了恢复期限会清除{% if copy.health != "usable" %}；{{ HEALTH_TEXTS[copy.health] }}{% endif %}{% else %}{{ HEALTH_TEXTS[copy.health] }}{% endif %}）{% if not loop.last %}、{% endif %}{% endfor %}。系统不会自动删除或覆盖它们。</p>
+{% endif %}
+{% if original and not kept %}
+<p class="warning">原文件现在没有可用的另存副本{% if draft %}，草稿过了恢复期限就会清除它{% else %}，结束后就会清理{% endif %}。需要留下的话，先<a href="/imports/{{ row.id }}/keep-file?next=finish">另存为附件</a>，再回来结束；不需要的话，也可以直接结束。</p>
+{% elif not original and row.segments %}
+<p class="muted small">粘贴的文字没有原文件。需要的话，结束前可以先<a href="/imports/{{ row.id }}/text" download>下载读到的文字</a>。</p>
+{% endif %}
+{% if draft %}
+<p class="muted small">只是暂时不核对的话，直接离开就好：草稿会一直保留，不会被删除。</p>
+{% endif %}
+<form method="post" action="/imports/{{ row.id }}/finish">
+  {{ m.csrf() }}
+  <input type="hidden" name="ending" value="{{ 'bin' if draft else 'discard' }}">
+  {# The copies this page called kept: if they are not so any more when it is sent, nothing ends. #}
+  <input type="hidden" name="keeping" value="{{ keeping }}">
+  <input type="hidden" name="expected_revision" value="{{ row.revision }}">
+  <div class="form-actions">
+    <button type="submit" class="danger">{% if draft %}结束并将草稿移入回收站{% else %}结束这次导入{% endif %}</button>
+    <a href="{{ back }}">返回继续核对</a>
+  </div>
+</form>
+{% endblock %}

@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}另存原文件：{{ name }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/imports">导入简历</a> › <a href="/imports/{{ row.id }}">{{ name }}</a></p>
+{# A page shown again after a refused post is read at once: nothing on it waits for an animation. #}
+<header class="pane-head"{% if not error %} data-reveal{% endif %}>
+  <h1>把原文件另存为附件</h1>
+  <p class="lede">{{ name }} · {{ type_label }} · {{ format_size(row.size) }}</p>
+</header>
+{% if error %}
+<p class="error" role="alert">{{ error }}</p>
+{% endif %}
+<p>保存的是完整的原文件，不只是和某一条经历有关的部分：里面可能有你的联系方式和其他经历。它只作为你的私有附件保存，不会发送出去，也不会被当作已经核实的内容。</p>
+<p class="muted small">另存后它就是这条经历的普通附件：随这条经历删除、恢复和导出；结束、到期或删除这次导入都不影响它，删除这个附件也不影响导入。</p>
+{% if kept %}
+<p class="notice" role="status">这份原文件已经保存在：{% for copy in kept %}<a href="/experiences/{{ copy.item.id }}#attachments">{{ display_title(copy.item.content, copy.item.category) }}</a>{% if not loop.last %}、{% endif %}{% endfor %}（刚核对过，文件完好）。</p>
+{% endif %}
+{% if unusable %}
+<p class="warning">这些另存的附件现在不可用，不能算作保留：{% for copy in unusable %}“{{ display_title(copy.item.content, copy.item.category) }}”里的那份（{{ HEALTH_TEXTS[copy.health] }}{% if copy.place == Place.BINNED %}，在回收站{% endif %}）{% if not loop.last %}、{% endif %}{% endfor %}。它们不会被自动删除或覆盖；可以再存一份可用的，不可用的那份需要时请你自己在经历里处理。</p>
+{% endif %}
+{% if targets %}
+<form method="post" action="/imports/{{ row.id }}/keep-file">
+  {{ m.csrf() }}
+  <input type="hidden" name="upload_key" value="{{ upload_key }}">
+  <input type="hidden" name="next" value="{{ next_page }}">
+  <fieldset class="target-list">
+    <legend>选择保存到哪一条经历：只能是你自己的、不在回收站里的经历（草稿也可以）。</legend>
+    {% for item in targets %}
+    <label class="target">
+      <input type="radio" name="target" value="{{ item.id }}" required{% if item.id in blocked or item.id in full %} disabled{% endif %}>
+      <span class="target-title">{{ display_title(item.content, item.category) }}</span>
+      <span class="trash-category">{{ CATEGORY_LABELS[item.category] }}</span>
+      {{ m.state_badge(item) }}
+      {% if item.id in adopted %}<span class="badge">这次导入加入的</span>{% endif %}
+      {% if item.id in blocked %}<span class="muted small">{% if blocked[item.id] == Place.PENDING %}正在保存这份文件{% elif blocked[item.id] == Place.BINNED %}回收站里有这份文件，可以先去恢复{% else %}已经有这份文件{% endif %}</span>{% elif item.id in full %}<span class="muted small">附件已满（回收站里还能恢复的也算在内）</span>{% elif item.id in broken %}<span class="muted small">那里另存的这份现在不可用，可以再存一份</span>{% endif %}
+    </label>
+    {% endfor %}
+  </fieldset>
+  <div class="form-actions">
+    <button type="submit" class="primary">另存为附件</button>
+    <a href="{{ back }}">取消</a>
+  </div>
+</form>
+{% else %}
+<p class="muted">你还没有可以保存到的经历。可以先在核对页加入一条，或者去经历库新建一条；也可以不另存，直接结束这次导入。</p>
+<p><a href="{{ back }}">返回</a></p>
+{% endif %}
+{% endblock %}

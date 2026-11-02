@@ -288,7 +288,9 @@ def test_an_older_discard_form_never_removes_a_saved_draft(app, browser_a):
     assert draft(app, import_id).deleted_at is None
     assert browser_a.get(f"/imports/{import_id}/discard").status_code == 409
     page = browser_a.get(f"/imports/{import_id}").text
-    assert "删除这份草稿…" in page and f"/imports/{import_id}/discard" not in page
+    # Since U2-B3b the page offers ending it, which for a draft says it goes to the recycle bin.
+    assert "结束这次导入…" in page and f"/imports/{import_id}/discard" not in page
+    assert "结束并将草稿移入回收站" in browser_a.get(f"/imports/{import_id}/finish").text
 
 
 # --- the recycle bin ------------------------------------------------------------------------------------

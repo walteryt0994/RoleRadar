@@ -59,11 +59,10 @@
     <button type="submit">重新读取</button>
   </form>
   {% endif %}
-  {% if draft %}
-  <a class="danger-link" href="/imports/{{ row.id }}/delete">删除这份草稿…</a>
-  {% else %}
-  <a class="danger-link" href="/imports/{{ row.id }}/discard">放弃本次导入…</a>
+  {% if keepable %}
+  <a href="/imports/{{ row.id }}/keep-file">另存原文件为附件…</a>
   {% endif %}
+  <a class="danger-link" href="/imports/{{ row.id }}/finish">结束这次导入…</a>
 </div>
 {% if not draft %}
 <section class="import-keep" aria-labelledby="keep-title">
