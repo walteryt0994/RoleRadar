@@ -21,7 +21,10 @@ nothing of it is left once the download ends.
 Since U2-B1 the package also holds the resume imports still kept (not
 ended, not expired): each in imports/ with the text that was read and the
 original file, said to be temporary and not part of the library. An import
-file that cannot be copied is listed like an attachment that cannot.
+file that cannot be copied is listed like an attachment that cannot. Since
+U2-B2a an import that was structured also has candidates.json: the
+candidates found in it, where each value stands in the text, the user's
+edits and choices, and the candidates dropped, by place and reason.
 """
 import hashlib
 import json
@@ -62,6 +65,7 @@ from app.library.models import (
     VersionKind,
 )
 from app.library.presentation import format_local, format_size, state_label, version_label
+from app.library.review import candidates_of, review_record, structuring_of
 from app.library.service import (
     active_item,
     current_document,
@@ -74,7 +78,8 @@ EXPORT_FORMAT = "roleradar-library-export"
 # 2: six categories, the profile and the preferences; field labels per kind.
 # 3: attachment files, their list in data.json and the manifest, and "complete".
 # 4: resume imports still kept (U2-B1), with their text and original files.
-EXPORT_FORMAT_VERSION = 4
+# 5: the candidates of those imports and their review (U2-B2a), in candidates.json.
+EXPORT_FORMAT_VERSION = 5
 SHARE_WARNING = (
     "注意：这份文件包含你的私有备注或联系方式。导出文件离开 RoleRadar 后不再受平台的权限保护；"
     "分享或发送之前，请先检查并删掉不想让别人看到的内容。"
@@ -122,6 +127,8 @@ class ExportContent:
     binned: list[ExportRecord]
     # Resume imports still kept (U2-B1); not part of the library.
     imports: list[ResumeImport] = field(default_factory=list)
+    # The candidates and review of each structured import, by import id (U2-B2a).
+    reviews: dict[str, dict] = field(default_factory=dict)
 
 
 @dataclass
@@ -334,12 +341,21 @@ def collect_export(db: Session, owner_id: str, now: datetime) -> ExportContent:
         )
 
     documents = {kind: current_document(db, owner_id, kind) for kind in DOCUMENT_KINDS}
+    imports = open_imports(db, owner_id, now)
+    reviews = {}
+
+    for row in imports:
+        structuring = structuring_of(db, row.id)
+
+        if structuring is not None:
+            reviews[row.id] = review_record(row, structuring, candidates_of(db, owner_id, row.id))
 
     return ExportContent(
         current=[record(item) for item in current],
         documents={kind: record(item) if item else None for kind, item in documents.items()},
         binned=[record(item) for item in binned],
-        imports=open_imports(db, owner_id, now),
+        imports=imports,
+        reviews=reviews,
     )
 
 
@@ -443,6 +459,12 @@ def _write_zip(content: ExportContent, files: FileStore, owner_label: str, now: 
                 text_path = f"{directory}/text.txt"
                 texts[text_path] = import_text(row).encode("utf-8")
 
+            review = content.reviews.get(row.id)
+            candidates_path = f"{directory}/candidates.json" if review is not None else None
+
+            if review is not None:
+                texts[candidates_path] = _json_bytes(review)
+
             if row.storage_key is not None:
                 target = f"{directory}/{_package_name(1, row.filename)}"
                 original_status = _copy_import(archive, files, row, f"{folder}/{target}", stamp)
@@ -461,6 +483,8 @@ def _write_zip(content: ExportContent, files: FileStore, owner_label: str, now: 
                     "received_at": _iso(row.received_at),
                     "expires_at": _iso(row.expires_at),
                     "text_path": text_path,
+                    "candidates_path": candidates_path,
+                    "candidates": len(review["candidates"]) if review is not None else 0,
                     "original_path": original_path,
                     "original_status": original_status,
                     "bytes": row.size,
@@ -487,7 +511,10 @@ def _write_zip(content: ExportContent, files: FileStore, owner_label: str, now: 
             "profile": _document_record(content.documents[PROFILE]),
             "preferences": _document_record(content.documents[PREFERENCES]),
             "recycle_bin": [_item_record(record) for record in content.binned],
-            "imports": [_import_record(row, entry) for row, entry in zip(content.imports, manifest_imports)],
+            "imports": [
+                _import_record(row, entry, content.reviews.get(row.id))
+                for row, entry in zip(content.imports, manifest_imports)
+            ],
         }
         texts["data.json"] = _json_bytes(data)
         texts["README.md"] = _readme(
@@ -587,7 +614,7 @@ def _copy_import(archive: zipfile.ZipFile, files: FileStore, row: ResumeImport, 
     return INCLUDED
 
 
-def _import_record(row: ResumeImport, entry: dict) -> dict:
+def _import_record(row: ResumeImport, entry: dict, review: dict | None) -> dict:
     return {
         "id": row.id,
         "source": row.source,
@@ -602,6 +629,8 @@ def _import_record(row: ResumeImport, entry: dict) -> dict:
         "text_path": entry["text_path"],
         "original_path": entry["original_path"],
         "original_status": entry["original_status"],
+        "candidates_path": entry["candidates_path"],
+        "review": review,
     }
 
 
@@ -656,8 +685,8 @@ def _readme(
         f"- `recycle-bin/`：回收站里仍可恢复的内容，共 {len(listing['recycle-bin'])} 份，"
         f"以及仍可恢复的附件文件 {len(included) - current_files} 个；每份都写明了恢复截止时间。"
         "当前经历中单独删除的附件在 `recycle-bin/deleted-attachments/` 里，文件夹名对应 `experiences/` 里的经历。",
-        f"- `imports/`：还在暂存期内的简历导入，共 {len(imports)} 份，每份有读到的文字（`text.txt`）和原文件。"
-        "它们不属于经历库，见下面的“导入中的临时资料”。",
+        f"- `imports/`：还在暂存期内的简历导入，共 {len(imports)} 份，每份有读到的文字（`text.txt`）和原文件；"
+        "整理过的还有待核对的条目和核对进度（`candidates.json`）。它们不属于经历库，见下面的“导入中的临时资料”。",
         "- `data.json`：同样的内容整理成结构化数据，方便以后导入其他工具。",
         "- `manifest.json`：文件清单、每个文件的 SHA-256 校验值，以及每个附件的来源和状态。",
         "",
@@ -685,8 +714,8 @@ def _readme(
         lines += [
             "## 导入中的临时资料",
             "",
-            "下面这些是导入时读到的原文和原文件，还没有加入经历库。RoleRadar 只暂存到各自的到期时间，"
-            "到期后会删除；导出包里的这份副本不受影响。",
+            "下面这些是导入时读到的原文和原文件，以及从中整理出的待核对条目，都还没有加入经历库，"
+            "条目也没有经过核实。RoleRadar 只暂存到各自的到期时间，到期后会删除；导出包里的这份副本不受影响。",
             "",
         ]
 
@@ -697,6 +726,9 @@ def _readme(
 
             if entry["original_status"] not in (None, INCLUDED):
                 line += f"；原文件{STATUS_TEXT[entry['original_status']]}"
+
+            if entry["candidates_path"]:
+                line += f"；整理出的待核对条目 {entry['candidates']} 条，在 `candidates.json`"
 
             lines.append(line + "。")
 

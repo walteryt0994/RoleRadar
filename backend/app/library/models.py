@@ -16,6 +16,11 @@ A ResumeImport row is one resume a user brought in (U2-B1): an uploaded
 PDF or DOCX, whose bytes are in the store's imports area, or pasted text.
 It keeps what was read for at most seven days and is not part of the
 library: nothing in it is an experience, a profile or a preference.
+
+The candidates read from an import (U2-B2a) belong to it the same way: an
+ImportStructuring row says how its text was turned into candidates, and
+each ImportCandidate row is one candidate the user checks, edits or leaves
+out. They live and end with their import.
 """
 import uuid
 from datetime import datetime
@@ -32,10 +37,12 @@ from app.library.errors import ConfigError
 # 2: categories beyond project/portfolio, the profile and preferences,
 # saved versions, and the category on purge jobs.
 # 3: attachments, and the library id that ties a database to its attachment folder.
-# 4: resume imports (U2-B1). A version 3 file is upgraded by app.library.migrate.
-SCHEMA_VERSION = "4"
-# The version app.library.migrate upgrades from.
-PREVIOUS_SCHEMA_VERSION = "3"
+# 4: resume imports (U2-B1).
+# 5: the candidates read from an import, and how they were read (U2-B2a).
+# A file of version 3 or 4 is upgraded by app.library.migrate.
+SCHEMA_VERSION = "5"
+# The versions app.library.migrate upgrades from.
+UPGRADABLE_SCHEMA_VERSIONS = ("3", "4")
 
 
 class ItemState(StrEnum):
@@ -92,6 +99,21 @@ class ImportSource(StrEnum):
     PDF = "pdf"
     DOCX = "docx"
     TEXT = "text"
+
+
+class StructuringState(StrEnum):
+    RUNNING = "running"
+    # At least one candidate passed the checks; they are kept.
+    DONE = "done"
+    # Nothing usable came back; asking again is allowed.
+    FAILED = "failed"
+
+
+class CandidateState(StrEnum):
+    # Waiting for the user to check it.
+    PENDING = "pending"
+    # Left out by the user; it can be taken back.
+    EXCLUDED = "excluded"
 
 
 class LibraryMeta(LibraryBase):
@@ -278,6 +300,62 @@ class ResumeImport(LibraryBase):
     cleanup_error: Mapped[str | None] = mapped_column(String(100))
 
 
+class ImportStructuring(LibraryBase):
+    """How the text of one import was turned into candidates (U2-B2a); one row per import.
+
+    attempt names the run whose answer may be stored. An answer is kept only
+    while the row still runs that attempt and the import is still open,
+    unexpired and as it was when the run began (import_revision), so a
+    discard, an expiry or a newer attempt that came first is never
+    overwritten. structurer says who answered (only the local simulation in
+    this batch). problems lists, without any content, the candidates of the
+    answer that were dropped: where they pointed and why.
+    """
+
+    __tablename__ = "import_structurings"
+
+    import_id: Mapped[str] = mapped_column(ForeignKey("resume_imports.id", ondelete="CASCADE"), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    state: Mapped[str] = mapped_column(String(20))
+    attempt: Mapped[str] = mapped_column(String(36))
+    import_revision: Mapped[int] = mapped_column(Integer)
+    structurer: Mapped[str] = mapped_column(String(100))
+    contract_version: Mapped[str] = mapped_column(String(10))
+    # Why nothing usable came back (candidates' reasons), or None.
+    outcome: Mapped[str | None] = mapped_column(String(30))
+    problems: Mapped[list | None] = mapped_column(JSON)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class ImportCandidate(LibraryBase):
+    """One candidate read from an import, waiting to be checked (U2-B2a).
+
+    extracted is what the structuring found, field by field: each value is
+    made of pieces of the import's text, each with the segment it stands in
+    (see candidates.py). edits holds the user's own words for the fields
+    they changed: kept apart from what was found, not required to stand in
+    the text, and never shown as a quote. cautions are what the text itself
+    calls for care about (a negation, team work, a plan, an uncertain date).
+    revision goes up with every change; the page's forms carry it.
+    """
+
+    __tablename__ = "import_candidates"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    import_id: Mapped[str] = mapped_column(ForeignKey("resume_imports.id", ondelete="CASCADE"), index=True)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    position: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(20))
+    extracted: Mapped[dict] = mapped_column(JSON)
+    edits: Mapped[dict | None] = mapped_column(JSON)
+    cautions: Mapped[list] = mapped_column(JSON)
+    state: Mapped[str] = mapped_column(String(20))
+    revision: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
 class AuditEvent(LibraryBase):
     """What happened to an object and when. No content is stored here."""
 
@@ -314,7 +392,7 @@ def create_schema(engine: Engine) -> None:
                 meta = session.get(LibraryMeta, "schema_version")
                 stored = meta.value if meta is not None else None
 
-                if stored == PREVIOUS_SCHEMA_VERSION:
+                if stored in UPGRADABLE_SCHEMA_VERSIONS:
                     # Starting the app never upgrades a file on its own.
                     raise ConfigError(
                         f"经历库数据库的结构版本是 {stored}，当前程序只支持 {SCHEMA_VERSION}。这个文件没有被修改。"

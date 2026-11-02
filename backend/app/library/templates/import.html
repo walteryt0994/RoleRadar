@@ -18,7 +18,29 @@
   {% for line in problems %}<p>{{ line }}</p>{% endfor %}
 </div>
 {% endif %}
-<p class="import-explain">还没有加入经历库。整理成经历的功能还没有建立，现在可以查看、下载或放弃。到期后自动清理，不能恢复。</p>
+<p class="import-explain">还没有加入经历库。可以先整理成待核对的条目；加入经历库的功能还没有建立。到期后自动清理，不能恢复。</p>
+{% if structurable %}
+<section class="import-structuring" aria-labelledby="structuring-title">
+  <h2 id="structuring-title">整理成待核对的条目</h2>
+  {% if structuring and structuring.state == "done" %}
+  <p>已整理出 {{ candidate_counts.total }} 条：待核对 {{ candidate_counts.pending }} 条，不加入 {{ candidate_counts.excluded }} 条。</p>
+  <p class="import-actions"><a class="button primary" href="/imports/{{ row.id }}/review">核对整理出的条目</a></p>
+  {% elif structuring and structuring.state == "running" and not can_structure %}
+  <p class="notice" role="status">正在整理。稍后<a href="/imports/{{ row.id }}">刷新</a>查看结果。</p>
+  {% else %}
+  {% if structuring_failure %}
+  <p class="warning" role="status">上次没有整理出可以核对的条目：{{ structuring_failure }}{% if structuring.problems %}<a href="/imports/{{ row.id }}/review">查看原因</a>。{% endif %}</p>
+  {% elif structuring %}
+  <p class="warning" role="status">上次整理没有完成（可能是应用重启了），可以重新整理。</p>
+  {% endif %}
+  <p class="muted small">用本机的模拟整理规则（不是 AI）按标题、日期和列表符号把文字拆成条目，每一栏都标出原文出处，可能拆错或漏掉。什么都不会发送出去，也不会改动经历库。整理出的条目和你的修改跟这次导入一起暂存到 {{ row.expires_at|shorttime }}，不会延长。</p>
+  <form method="post" action="/imports/{{ row.id }}/structure">
+    {{ m.csrf() }}
+    <button type="submit" class="primary">{{ "重新整理" if structuring else "整理成待核对的条目" }}</button>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
 <div class="import-actions">
   {% if row.storage_key %}
   <a href="/imports/{{ row.id }}/original" download>下载原文件</a>

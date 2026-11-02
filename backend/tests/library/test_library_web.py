@@ -86,6 +86,16 @@ IMPORT_ROUTES = {
     ("GET", "/imports/{import_id}/discard"),
     ("POST", "/imports/{import_id}/discard"),
 }
+# Checking the candidates read from an import (U2-B2a); protected like the import pages.
+REVIEW_ROUTES = {
+    ("POST", "/imports/{import_id}/structure"),
+    ("GET", "/imports/{import_id}/review"),
+    ("GET", "/imports/{import_id}/candidates/{candidate_id}/edit"),
+    ("POST", "/imports/{import_id}/candidates/{candidate_id}/edit"),
+    ("POST", "/imports/{import_id}/candidates/{candidate_id}/exclude"),
+    ("POST", "/imports/{import_id}/candidates/{candidate_id}/restore"),
+    ("GET", "/imports/{import_id}/candidates.json"),
+}
 # One field each kind of record accepts, so the same post is valid for every route.
 SOME_CONTENT = {"actions": "", "name": "", "cities_ideal": ""}
 SENTINEL = "哨兵-c41f"
@@ -213,6 +223,7 @@ def test_every_route_is_either_public_or_listed_as_protected(app):
         | {("POST", path) for path in UPLOAD_ROUTES}
         | JOB_ROUTES
         | IMPORT_ROUTES
+        | REVIEW_ROUTES
     )
 
     assert found == expected

@@ -3,7 +3,8 @@
 A user uploads one text PDF or DOCX, or pastes text, after agreeing that it
 is kept here for at most IMPORT_WINDOW. What is read is shown as it was
 found; nothing becomes an experience, a profile or a preference, and nothing
-is sent anywhere. Later batches (B2, B3) turn it into candidates to check.
+is sent anywhere. Candidates read from the text (review.py, U2-B2a) belong
+to the import and end with it.
 
 The seven days start when the server had the whole file or text
 (received_at) and never move: opening, refreshing, reading again or
@@ -48,7 +49,7 @@ from app.library.attachments import (
 from app.library.db import Database
 from app.library.errors import FileStoreError, NotFound, StorageError
 from app.library.files import IMPORTS, FileStore, StagingFile
-from app.library.models import ImportSource, ImportState, ResumeImport
+from app.library.models import ImportCandidate, ImportSource, ImportState, ImportStructuring, ResumeImport
 from app.library.resume_reader import (
     BUSY,
     CRASHED,
@@ -471,7 +472,7 @@ def abandon(
                 return False
 
             if row is not None:
-                _end(row, ImportState.DISCARDED, now)
+                _end(db, row, ImportState.DISCARDED, now)
                 row.details = {"abandoned": True}
 
         if row is None:
@@ -595,7 +596,7 @@ def discard(
     """
     with database.transaction() as db:
         row = open_import(db, owner_id, import_id, now)
-        _end(row, ImportState.DISCARDED, now)
+        _end(db, row, ImportState.DISCARDED, now)
         record_event(db, owner_id, row.id, IMPORT_OBJECT, row.id, "import_discarded", now)
         cleared = row.cleared_at is not None
 
@@ -608,8 +609,14 @@ def discard(
     return Ended.PENDING
 
 
-def _end(row: ResumeImport, state: str, now: datetime) -> None:
-    """End an import: from now on it holds no content; its file is removed next."""
+def _end(db: Session, row: ResumeImport, state: str, now: datetime) -> None:
+    """End an import: from now on it holds no content; its file is removed next.
+
+    The candidates read from it, with the user's edits, and how they were
+    read go in the same transaction: they are part of the import.
+    """
+    db.execute(delete(ImportCandidate).where(ImportCandidate.import_id == row.id))
+    db.execute(delete(ImportStructuring).where(ImportStructuring.import_id == row.id))
     row.state = state
     row.ended_at = now
     row.filename = None
@@ -686,7 +693,7 @@ def cleanup_imports(database: Database, files: FileStore, now: datetime) -> Impo
                 ResumeImport.expires_at <= now,
             )
         ):
-            _end(row, ImportState.EXPIRED, now)
+            _end(db, row, ImportState.EXPIRED, now)
             record_event(db, row.owner_id, row.id, IMPORT_OBJECT, row.id, "import_expired", now)
             report.expired += 1
 
@@ -696,7 +703,7 @@ def cleanup_imports(database: Database, files: FileStore, now: datetime) -> Impo
                 ResumeImport.updated_at <= stale_receiving,
             )
         ):
-            _end(row, ImportState.DISCARDED, now)
+            _end(db, row, ImportState.DISCARDED, now)
             row.details = {"abandoned": True}
 
         for row in db.scalars(

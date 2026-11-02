@@ -3,9 +3,10 @@
 The import page takes one file or pasted text after the user agreed that it
 is kept here for at most seven days. An import's page shows what was read,
 where it was found and when it expires; it offers the original file and the
-text for download, reading again when a failure was not the file's, and
-discarding. Nothing here writes to the experiences, the profile or the
-preferences, and nothing is sent to any outside service.
+text for download, reading again when a failure was not the file's, asking
+for candidates to check (review_web, U2-B2a), and discarding. Nothing here
+writes to the experiences, the profile or the preferences, and nothing is
+sent to any outside service.
 
 The upload is read as it streams in (upload.receive_form with
 imports.IMPORT_FORM), like an attachment's; the other posts are ordinary
@@ -19,6 +20,7 @@ from fastapi.responses import Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from app.library.attachments import UploadRejected, UploadTokenRejected
+from app.library.candidates import FAILURE_TEXTS
 from app.library.errors import FileStoreError, NotFound
 from app.library.files import IMPORTS, read_chunks
 from app.library.identity import CurrentUser
@@ -47,7 +49,7 @@ from app.library.imports import (
     store_text,
     taken_places,
 )
-from app.library.models import ImportSource, ImportState
+from app.library.models import CandidateState, ImportSource, ImportState, StructuringState
 from app.library.resume_reader import (
     BUSY,
     CRASHED,
@@ -66,6 +68,7 @@ from app.library.resume_reader import (
     TRUNCATED,
     UNREADABLE_PAGES,
 )
+from app.library.review import STRUCTURABLE, can_ask_again, candidates_of, structuring_of
 from app.library.web import NOTICES as LIBRARY_NOTICES
 from app.library.web import (
     DOWNLOAD_POLICY,
@@ -120,6 +123,7 @@ NOTICES = {
         "已放弃这次导入：它已经不能查看或下载。文件清理暂未完成，系统会自动重试。"
     ),
     "import_ended": "这次导入在读取期间已被放弃或已到期，读取结果没有保存。",
+    "import_ended_structuring": "这次导入在整理期间已被放弃或已到期，整理结果没有保存。",
 }
 STORE_PROBLEMS = {
     Stored.FORM_USED: (
@@ -258,8 +262,12 @@ def import_detail(import_id: str, request: Request, notice: str = "", user: Curr
     try:
         with rt.database.transaction() as db:
             row = open_import(db, user.id, import_id, now)
+            structuring = structuring_of(db, row.id)
+            candidates = candidates_of(db, user.id, row.id)
     except NotFound:
         return gone_page(request, user)
+
+    failed = structuring is not None and structuring.state == StructuringState.FAILED
 
     return render(
         request,
@@ -270,6 +278,15 @@ def import_detail(import_id: str, request: Request, notice: str = "", user: Curr
             "name": row.filename or "粘贴的文字",
             "problems": _problem_lines(row),
             "can_retry": retryable(row),
+            "structurable": row.state in STRUCTURABLE,
+            "structuring": structuring,
+            "can_structure": row.state in STRUCTURABLE and can_ask_again(structuring, now),
+            "structuring_failure": FAILURE_TEXTS.get(structuring.outcome) if failed else None,
+            "candidate_counts": {
+                "total": len(candidates),
+                "pending": sum(1 for candidate in candidates if candidate.state == CandidateState.PENDING),
+                "excluded": sum(1 for candidate in candidates if candidate.state == CandidateState.EXCLUDED),
+            },
             "notice": NOTICES.get(notice),
             "now": now,
             **_labels(),
@@ -496,12 +513,15 @@ def retry_import(
     return see_other(f"{BASE}/{import_id}?notice=import_read_again")
 
 
-def _discard_points(row) -> list[str]:
+def _discard_points(row, structured: bool) -> list[str]:
     if row.filename:
         # A file that could not be read has nothing read to clear.
         what = f"原文件“{row.filename}”" + ("和从中读到的文字" if row.segments else "")
     else:
         what = "你粘贴的文字"
+
+    if structured:
+        what += "，以及整理出的条目和你对它们的修改、选择"
 
     return [
         f"会清理这次导入在本机暂存的{what}。",
@@ -518,6 +538,7 @@ def discard_page(import_id: str, request: Request, user: CurrentUser = Depends(c
     try:
         with rt.database.transaction() as db:
             row = open_import(db, user.id, import_id, now)
+            structured = structuring_of(db, row.id) is not None
     except NotFound:
         return gone_page(request, user)
 
@@ -525,7 +546,7 @@ def discard_page(import_id: str, request: Request, user: CurrentUser = Depends(c
         request,
         user,
         title="放弃这次导入？",
-        points=_discard_points(row),
+        points=_discard_points(row, structured),
         action=f"{BASE}/{row.id}/discard",
         button="放弃本次导入",
         cancel=f"{BASE}/{row.id}",

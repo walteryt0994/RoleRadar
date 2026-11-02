@@ -694,6 +694,34 @@ dialog h2 { margin-top: 0; }
 .import-table caption { padding-bottom: 4px; font-size: 13px; font-weight: 500; color: var(--ink-soft); text-align: left; }
 .import-table td { min-width: 6em; padding: 6px 10px; vertical-align: top; border: 1px solid var(--line); }
 
+/* --- candidates of an import (U2-B2a): each value with where it was found --- */
+
+.import-structuring { margin-top: 28px; padding-top: 4px; border-top: 1px solid var(--line); }
+.import-structuring h2 { margin: 20px 0 8px; font-size: 17px; }
+.import-structuring p { margin: 8px 0; }
+/* Who made these and how long they are kept, said once at the top. */
+.review-terms { margin: 0 0 20px; padding: 14px 16px; font-size: 14px; background: var(--page); border: 1px solid var(--line); border-radius: var(--radius-control); }
+.review-terms p { margin: 0 0 8px; }
+.review-terms p:last-child { margin-bottom: 0; }
+.review-progress { margin: 20px 0 4px; font-size: 14px; color: var(--ink-soft); }
+.review-group { margin-top: 32px; }
+.review-group > h2 { margin: 0 0 12px; font-size: 17px; }
+.candidate { margin: 0 0 16px; padding: 16px 18px; background: var(--white); border: 1px solid var(--line); border-radius: var(--radius-panel); }
+.candidate.is-excluded { color: var(--ink-soft); background: var(--paper); }
+.candidate-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+.candidate-head h3 { margin: 0; font-size: 16px; overflow-wrap: anywhere; }
+.candidate-fields dd { overflow-wrap: anywhere; }
+.candidate .row-actions { margin-top: 14px; }
+.source-line { margin: 4px 0 0; overflow-wrap: anywhere; }
+/* A caution sits with the words it is about; its border marks it, without colour. */
+.caution { margin: 6px 0 0; padding-left: 10px; font-size: 13px; border-left: 3px solid var(--field-line); }
+.matches { margin-top: 14px; padding-top: 10px; font-size: 14px; border-top: 1px dashed var(--line); }
+.matches p { margin: 0; }
+.matches ul { margin: 6px 0 0; padding-left: 20px; overflow-wrap: anywhere; }
+.match-fields { font-size: 13px; color: var(--ink-soft); }
+.found-line { margin: -8px 0 18px; overflow-wrap: anywhere; }
+.found-line p { margin: 2px 0 0; }
+
 /* --- motion: a skeleton while a page loads, and blocks that rise in -------- */
 
 /* Only shown by motion.js while the browser really waits for a workspace

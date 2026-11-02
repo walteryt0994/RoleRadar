@@ -1,10 +1,12 @@
-"""Entry point of the RoleRadar experience library web app (v0.1 U1, U2-A2, U2-B1).
+"""Entry point of the RoleRadar experience library web app (v0.1 U1, U2-A2, U2-B1, U2-B2a).
 
 This is a separate app from app.main: it mounts the library pages, the
-resume import pages (app.library.imports_web) and the job analysis pages
+resume import pages (app.library.imports_web) and the review of their
+candidates (app.library.review_web), the job analysis pages
 (app.job_analysis), stores data in its own SQLite file and attachment
 folder, and never imports the legacy database, models or routers. A resume
-import is read on this machine in a child process and sent nowhere. The job
+import is read on this machine in a child process and sent nowhere; its
+candidates come from local simulated rules and are sent nowhere. The job
 analysis uses the shared job description contracts of
 app.schemas, which hold no database. Importing this module has no side
 effects; create_app() does the work. The analysis uses the simulated
@@ -28,6 +30,7 @@ from app.library.files import FileStore
 from app.library.identity import ensure_dev_users
 from app.library.imports_web import install_imports
 from app.library.models import create_schema, read_library_id
+from app.library.review_web import install_review
 from app.job_analysis.tasks import SWEEP_SECONDS
 from app.job_analysis.web import JobAnalysisRuntime, install_job_analysis
 from app.library.web import LibraryRuntime, build_templates, install_web
@@ -91,6 +94,7 @@ def create_app(
     )
     install_web(app, config)
     install_imports(app)
+    install_review(app)
     install_job_analysis(app, simulation_delay=simulation_delay, sweep_seconds=job_sweep_seconds)
 
     return app

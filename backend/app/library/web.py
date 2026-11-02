@@ -170,7 +170,9 @@ from app.library.service import (
     list_experiences,
     save_draft,
 )
+from app.library.candidates import Structurer
 from app.library.resume_reader import Readings
+from app.library.resume_rules import SimulatedStructurer
 from app.library.upload import MAX_REQUEST_BYTES, receive_upload
 
 PACKAGE_DIR = Path(__file__).parent
@@ -303,6 +305,8 @@ class LibraryRuntime:
     session_end_listeners: list = field(default_factory=list)
     # The resume readings running in child processes (U2-B1).
     readings: Readings = field(default_factory=Readings)
+    # Who turns an import's text into candidates: only the local simulation (U2-B2a).
+    structurer: Structurer = field(default_factory=SimulatedStructurer)
 
     def now(self):
         return self.clock.now()

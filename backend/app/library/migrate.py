@@ -1,21 +1,26 @@
-"""Upgrading an experience library database from structure version 3 to 4 (U2-B1).
+"""Upgrading an experience library database to the current structure version.
 
-Version 4 adds one table, resume_imports; nothing already in the file
-changes. The upgrade is an explicit command, never a part of starting the
-app. From backend/, with the app stopped and the file backed up:
+Version 4 added resume_imports (U2-B1); version 5 adds import_structurings
+and import_candidates (U2-B2a). An upgrade passes every step from the file's
+version: a version 3 file gets all three tables, a version 4 file the two
+new ones. Nothing already in the file changes; the new tables are created
+empty, with their indexes. The upgrade is an explicit command, never a part
+of starting the app. From backend/, with the app stopped and the file
+backed up:
 
     python -m app.library.migrate --db /path/to/library.db           # check only
     python -m app.library.migrate --db /path/to/library.db --apply   # upgrade
 
 Before anything changes, the file must exist, pass the same path checks as
 the app's database (never the legacy RoleRadar database, never inside the
-repository), be a library database of version 3 with its library id and
-without the new table, and pass SQLite's quick check. The upgrade is one
-transaction that takes the write lock first: it creates the table with its
-indexes and then sets the version, so any failure leaves the file as it
-was. A file that is already version 4 is left alone. Afterwards every table
-that was there must hold the same number of rows, and the library id must
-be the same. Only table names and row counts are printed, never content.
+repository), be a library database of version 3 or 4 with its library id
+and without any table the upgrade would create, and pass SQLite's quick
+check. The upgrade is one transaction that takes the write lock first: it
+creates the tables and then sets the version, so any failure leaves the
+file as it was. A file that is already current is left alone. Afterwards
+every table that was there must hold the same number of rows, the new ones
+none, and the library id must be the same. Only table names and row counts
+are printed, never content.
 """
 import argparse
 import os
@@ -23,17 +28,29 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sqlalchemy import inspect, text
+from sqlalchemy import Table, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.library.config import TEST_ROOT_ENV, check_storage_path
 from app.library.db import make_engine
 from app.library.errors import ConfigError
-from app.library.models import PREVIOUS_SCHEMA_VERSION, SCHEMA_VERSION, LibraryMeta, ResumeImport
+from app.library.models import (
+    SCHEMA_VERSION,
+    UPGRADABLE_SCHEMA_VERSIONS,
+    ImportCandidate,
+    ImportStructuring,
+    LibraryMeta,
+    ResumeImport,
+)
 
-NEW_TABLE = ResumeImport.__tablename__
+# What each version adds, oldest first.
+STEPS: tuple[tuple[str, tuple[Table, ...]], ...] = (
+    ("4", (ResumeImport.__table__,)),
+    ("5", (ImportStructuring.__table__, ImportCandidate.__table__)),
+)
 REFUSED, FAILED = 2, 1
+FROM_VERSIONS = " 或 ".join(UPGRADABLE_SCHEMA_VERSIONS)
 
 
 class MigrationRefused(Exception):
@@ -47,6 +64,11 @@ class Survey:
     version: str | None
     library_id: str | None
     counts: dict[str, int] = field(default_factory=dict)
+
+
+def new_tables(version: str) -> list[Table]:
+    """The tables an upgrade from this version creates, in the order it creates them."""
+    return [table for step, tables in STEPS if int(step) > int(version) for table in tables]
 
 
 def survey(engine: Engine) -> Survey:
@@ -76,26 +98,30 @@ def survey(engine: Engine) -> Survey:
 
 
 def check_upgradable(found: Survey) -> bool:
-    """True if the file needs the upgrade, False if it is already version 4; raise if it is neither."""
+    """True if the file needs the upgrade, False if it is current already; raise if it is neither."""
     if found.version == SCHEMA_VERSION:
         return False
 
-    if found.version != PREVIOUS_SCHEMA_VERSION:
+    if found.version not in UPGRADABLE_SCHEMA_VERSIONS:
         raise MigrationRefused(
-            f"这个经历库的结构版本是 {found.version or '未知'}；本命令只把 {PREVIOUS_SCHEMA_VERSION} 升级到 {SCHEMA_VERSION}。"
+            f"这个经历库的结构版本是 {found.version or '未知'}；本命令只把 {FROM_VERSIONS} 升级到 {SCHEMA_VERSION}。"
         )
 
     if not found.library_id:
         raise MigrationRefused("这个经历库缺少编号（library_id），无法确认它和附件目录的关系，没有升级。")
 
-    if NEW_TABLE in found.counts:
-        raise MigrationRefused(f"版本 {PREVIOUS_SCHEMA_VERSION} 的文件里已经有 {NEW_TABLE} 表，状态不明，没有升级。")
+    present = [table.name for table in new_tables(found.version) if table.name in found.counts]
+
+    if present:
+        raise MigrationRefused(
+            f"版本 {found.version} 的文件里已经有 {'、'.join(present)} 表，状态不明，没有升级。"
+        )
 
     return True
 
 
 def upgrade(engine: Engine) -> bool:
-    """Upgrade a version 3 file in one transaction; return False if it was version 4 already."""
+    """Upgrade a version 3 or 4 file in one transaction; return False if it was current already."""
     with engine.begin() as connection:
         # Read again under the write lock: another run may have upgraded it meanwhile.
         version = connection.execute(
@@ -105,10 +131,12 @@ def upgrade(engine: Engine) -> bool:
         if version == SCHEMA_VERSION:
             return False
 
-        if version != PREVIOUS_SCHEMA_VERSION:
+        if version not in UPGRADABLE_SCHEMA_VERSIONS:
             raise MigrationRefused(f"这个经历库的结构版本是 {version or '未知'}，没有升级。")
 
-        ResumeImport.__table__.create(connection)
+        for table in new_tables(version):
+            table.create(connection)
+
         connection.execute(
             text("UPDATE library_meta SET value = :version WHERE key = 'schema_version'"),
             {"version": SCHEMA_VERSION},
@@ -118,7 +146,7 @@ def upgrade(engine: Engine) -> bool:
 
 
 def verify(before: Survey, after: Survey) -> list[str]:
-    """What differs, apart from the new table and the version; empty if nothing does."""
+    """What differs, apart from the new tables and the version; empty if nothing does."""
     problems = []
 
     if after.version != SCHEMA_VERSION:
@@ -131,8 +159,10 @@ def verify(before: Survey, after: Survey) -> list[str]:
         if after.counts.get(name) != count:
             problems.append(f"{name} 表的行数从 {count} 变成了 {after.counts.get(name)}。")
 
-    if after.counts.get(NEW_TABLE) != 0:
-        problems.append(f"新表 {NEW_TABLE} 不是空的。")
+    if before.version != SCHEMA_VERSION:
+        for table in new_tables(before.version):
+            if after.counts.get(table.name) != 0:
+                problems.append(f"新表 {table.name} 不存在或不是空的。")
 
     return problems
 
@@ -145,8 +175,8 @@ def _print_counts(found: Survey) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m app.library.migrate",
-        description=f"把经历库数据库从结构版本 {PREVIOUS_SCHEMA_VERSION} 升级到 {SCHEMA_VERSION}（新增简历导入暂存表）。"
-        "不加 --apply 时只检查，不修改文件。",
+        description=f"把经历库数据库从结构版本 {FROM_VERSIONS} 升级到 {SCHEMA_VERSION}"
+        "（新增简历导入暂存表，以及导入候选的核对表）。不加 --apply 时只检查，不修改文件。",
     )
     parser.add_argument("--db", required=True, help="要升级的经历库 SQLite 文件的绝对路径")
     parser.add_argument("--apply", action="store_true", help="确认执行升级（请先停止网页应用并备份文件）")
@@ -184,8 +214,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if not args.apply:
+            names = "、".join(table.name for table in new_tables(before.version))
             print(
-                f"检查通过：可以升级到 {SCHEMA_VERSION}，只会新增空的 {NEW_TABLE} 表并更新版本号。"
+                f"检查通过：可以从 {before.version} 升级到 {SCHEMA_VERSION}，只会新增空的 {names} 表并更新版本号。"
                 "这次只检查，没有修改文件；确认已备份后加 --apply 执行。"
             )
             return 0
@@ -211,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
             return FAILED
 
         print("已升级。" if changed else f"已经是结构版本 {SCHEMA_VERSION}，文件没有修改。")
-        print(f"升级后结构版本：{after.version}；原有各表行数不变，经历库编号不变。")
+        print(f"升级后结构版本：{after.version}；原有各表行数不变，新表都是空的，经历库编号不变。")
         _print_counts(after)
 
         return 0

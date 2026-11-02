@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}修改：{{ candidate.title }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/imports">导入简历</a> › <a href="/imports/{{ row.id }}/review#c-{{ candidate.id }}">核对整理出的条目</a></p>
+{# A page shown again after a refused save is read at once: nothing on it waits for an animation. #}
+<header class="pane-head"{% if not error %} data-reveal{% endif %}>
+  <h1>修改：{{ candidate.title }}</h1>
+  <p class="lede">{{ kind_label }} · 来自“{{ name }}”</p>
+</header>
+<p class="muted small">这里的修改只暂存在这次导入里：到 {{ row.expires_at|shorttime }} 或放弃导入时，和原文一起清除，不会延长。它不是长期草稿，也不会加入经历库。改过的内容不要求和原文一致，页面会把它标成“你改过”，不会当作原文引用。</p>
+{% if error %}
+<p class="error" role="alert">{{ error }}</p>
+{% endif %}
+<form method="post" action="/imports/{{ row.id }}/candidates/{{ candidate.id }}/edit" class="editor" data-leave-guard{% if unsaved_input %} data-initially-dirty{% endif %}>
+  {{ m.csrf() }}
+  <input type="hidden" name="expected_revision" value="{{ revision }}">
+  {% for field in fields %}
+  {{ m.form_field(field, values[field.name], field_errors.get(field.name)) }}
+  {% set found_value, places = found[field.name] %}
+  <div class="found-line">
+    {% if found_value %}
+    <p class="small"><span class="muted">自动整理（逐字摘自原文{{ places }}）：</span><span class="text">{{ found_value }}</span></p>
+    {% else %}
+    <p class="muted small">原文里没有找到这一栏。</p>
+    {% endif %}
+    {% if saved is not none and saved[field.name] != values[field.name] %}
+    <p class="small"><span class="badge diff">现在已保存的</span> <span class="text">{{ saved[field.name] or "（空）" }}</span></p>
+    {% endif %}
+  </div>
+  {% endfor %}
+  <p class="muted small">直接关闭或刷新页面时，浏览器的提醒不一定出现，离开前请先保存。</p>
+  <div class="form-actions sticky">
+    <button type="submit" data-save-button>保存修改</button>
+    <a href="/imports/{{ row.id }}/review#c-{{ candidate.id }}">取消</a>
+    <p class="dirty-status" id="dirty-status" aria-live="polite"></p>
+  </div>
+</form>
+<dialog id="leave-dialog" aria-labelledby="leave-title">
+  <h2 id="leave-title">离开后，这里没保存的修改不会保留</h2>
+  <div class="dialog-actions">
+    <button type="button" data-leave-choice="stay" class="secondary">继续修改</button>
+    <button type="button" data-leave-choice="discard" class="danger">放弃修改并离开</button>
+  </div>
+</dialog>
+{% endblock %}
+{% block scripts %}<script src="/static/leave_guard.js"></script>{% endblock %}

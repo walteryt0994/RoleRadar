@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}核对整理出的条目{% endblock %}
+{% block content %}
+{# One candidate: what it says now, where each value was found, what to be careful about,
+   what it may duplicate, and its two or three actions. #}
+{% macro candidate_card(view) %}
+<article class="candidate{% if view.state == 'excluded' %} is-excluded{% endif %}" id="c-{{ view.id }}" aria-labelledby="t-{{ view.id }}">
+  <header class="candidate-head">
+    <h3 id="t-{{ view.id }}">{{ view.title }}</h3>
+    {% if view.state == "excluded" %}
+    <span class="badge">{{ CANDIDATE_STATE_LABELS["excluded"] }}</span>
+    {% elif view.comparison %}
+    <span class="badge{% if view.comparison.label != 'new' %} diff{% endif %}">{{ (PROFILE_COMPARISON_LABELS if view.kind == PROFILE else COMPARISON_LABELS)[view.comparison.label] }}</span>
+    {% endif %}
+    {% if view.edited %}
+    <span class="badge">你改过</span>
+    {% endif %}
+  </header>
+  {% if view.state == "excluded" %}
+  <p class="muted small">已标为不加入。恢复后可以继续核对和修改。</p>
+  {% else %}
+  {% for caution in view.cautions %}
+  <p class="caution">{{ caution }}</p>
+  {% endfor %}
+  <dl class="fields candidate-fields">
+    {% for f in view.fields %}
+    <dt>{{ f.label }}</dt>
+    <dd>
+      {% if f.value %}
+      <p class="text">{{ f.value }}</p>
+      {% else %}
+      <p class="empty">（你清空了这一栏）</p>
+      {% endif %}
+      {% if f.edited %}
+      <p class="source-line small"><span class="badge">你改过</span> 自动整理的内容：{% if f.found %}<span class="text">{{ f.found }}</span>{% else %}原文里没有找到这一栏{% endif %}</p>
+      {% endif %}
+      {% if f.places %}
+      <p class="source-line muted small">{{ "自动整理的内容" if f.edited else "这一栏" }}逐字摘自原文{{ f.places }}</p>
+      {% endif %}
+      {% for caution in f.cautions %}
+      <p class="caution">{{ caution }}</p>
+      {% endfor %}
+    </dd>
+    {% endfor %}
+  </dl>
+  {% if view.kind == "skills" %}
+  <p class="muted small">技能只作为你的自述留在这次导入里，可以导出；不会加入经历库，也不会当作做过某件事的证据。</p>
+  {% elif view.kind == "intention" %}
+  <p class="muted small">这是简历里当时写的求职意向，不会改动你现在的求职偏好。如果仍然适用，可以到<a href="/job-preferences" target="_blank" rel="noopener">求职偏好</a>里自己修改。</p>
+  {% endif %}
+  {% if view.comparison and view.comparison.matches %}
+  <div class="matches">
+    {% if view.kind == PROFILE %}
+    <p>和现有的<a href="/basic-profile" target="_blank" rel="noopener">基本资料</a>对照：</p>
+    {% else %}
+    <p>名称相同或相近的已有经历（只按名称比对：可能是同一段，也可能是另一段，例如同一所学校的不同学位）：</p>
+    {% endif %}
+    <ul>
+      {% for match in view.comparison.matches %}
+      <li>
+        {% if view.kind != PROFILE %}<a href="/experiences/{{ match.item_id }}" target="_blank" rel="noopener">{{ match.title }}</a>{% endif %}
+        <ul class="match-fields">
+          {% for name, state, existing in match.fields %}
+          <li>{{ CANDIDATE_FIELD_LABELS[view.kind][name] }}：{{ FIELD_STATE_LABELS[state] }}{% if state in ("differs", "contained") %}，已有的是“<span class="text">{{ existing }}</span>”{% endif %}</li>
+          {% endfor %}
+        </ul>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  {% endif %}
+  <div class="row-actions">
+    {% if view.state == "pending" %}
+    <a class="button" href="/imports/{{ row.id }}/candidates/{{ view.id }}/edit">修改</a>
+    <form method="post" action="/imports/{{ row.id }}/candidates/{{ view.id }}/exclude" class="inline">
+      {{ m.csrf() }}
+      <input type="hidden" name="expected_revision" value="{{ view.revision }}">
+      <button type="submit">不加入</button>
+    </form>
+    {% else %}
+    <form method="post" action="/imports/{{ row.id }}/candidates/{{ view.id }}/restore" class="inline">
+      {{ m.csrf() }}
+      <input type="hidden" name="expected_revision" value="{{ view.revision }}">
+      <button type="submit">恢复为待核对</button>
+    </form>
+    {% endif %}
+  </div>
+</article>
+{% endmacro %}
+<p class="crumbs"><a href="/imports">导入简历</a> › <a href="/imports/{{ row.id }}">{{ name }}</a></p>
+<header class="pane-head" data-reveal>
+  <h1>核对整理出的条目</h1>
+  <p class="import-meta">{{ name }} · 保留到 {{ row.expires_at|localtime }}（{{ format_remaining(row.expires_at, now) }}）</p>
+</header>
+<div class="review-terms">
+  <p>这些条目由{{ structured_by }}整理：只按标题、日期和列表符号这类简单规则拆分，可能拆错、漏掉或放错类别，什么都没有发送出去。自动整理的每一栏都逐字摘自原文并标出出处，但这不代表内容已经核实。</p>
+  <p>条目、你的修改和“不加入”的选择，都只跟这次导入一起暂存到 {{ row.expires_at|shorttime }}：打开、修改都不会延长，到期或放弃导入时一起清除。这里不会改动你的经历、基本资料或求职偏好；加入经历库的功能还没有建立。</p>
+</div>
+{% if row.state == "partial" %}
+<p class="warning">这份简历有页面没有读出来，整理结果可能缺内容。</p>
+{% endif %}
+{% if running and not can_ask_again %}
+<p class="notice" role="status">正在整理。稍后<a href="/imports/{{ row.id }}/review">刷新</a>查看结果。</p>
+{% elif failure or (running and can_ask_again) %}
+<div class="error" role="alert">
+  <p>{{ failure or "上次整理没有完成（可能是应用重启了）。" }}</p>
+  {% if problems %}
+  <ul>
+    {% for line in problems %}
+    <li>{{ line }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+<form method="post" action="/imports/{{ row.id }}/structure">
+  {{ m.csrf() }}
+  <div class="form-actions"><button type="submit" class="primary">重新整理</button></div>
+</form>
+{% elif problems %}
+<div class="warning" role="status">
+  <p>另有 {{ problems|length }} 条整理结果没有通过原文核对，已经丢弃，没有显示在下面：</p>
+  <ul>
+    {% for line in problems %}
+    <li>{{ line }}</li>
+    {% endfor %}
+  </ul>
+  <p>需要的话，可以对照原文，以后自己补到经历库里。</p>
+</div>
+{% endif %}
+{% if counts.total %}
+<p class="review-progress">共 {{ counts.total }} 条：待核对 {{ counts.pending }} 条，不加入 {{ counts.excluded }} 条；其中你改过 {{ counts.edited }} 条。</p>
+<p class="import-actions">
+  <a href="/imports/{{ row.id }}" target="_blank" rel="noopener">在新标签页对照原文</a>
+  <a href="/imports/{{ row.id }}/candidates.json" download>下载这些条目和核对进度（JSON）</a>
+</p>
+{% for kind, label, views in groups %}
+<section class="review-group" aria-labelledby="g-{{ kind }}">
+  <h2 id="g-{{ kind }}">{{ label }}</h2>
+  {% for view in views %}
+  {{ candidate_card(view) }}
+  {% endfor %}
+</section>
+{% endfor %}
+{% if references %}
+<section class="review-group" aria-labelledby="g-references">
+  <h2 id="g-references">仅供参考</h2>
+  <p class="muted small">下面这些只作为参考留在这次导入里，可以导出；不会加入经历库，也不会改动你的求职偏好。</p>
+  {% for kind, label, views in references %}
+  {% for view in views %}
+  {{ candidate_card(view) }}
+  {% endfor %}
+  {% endfor %}
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}
