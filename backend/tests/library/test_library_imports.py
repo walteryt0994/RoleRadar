@@ -49,6 +49,7 @@ from app.library.models import (
     ImportDraft,
     ImportState,
     ImportStructuring,
+    LiveRequest,
     PurgeJob,
     ResumeImport,
     User,
@@ -1064,11 +1065,13 @@ def test_export_all_says_when_an_import_file_is_missing(app, browser_a):
 # --- the structure upgrade from versions 3, 4, 5 and 6 ----------------------------------------------------
 
 # The tables each older structure version lacks, in an order they can be dropped in.
+NEW_IN_8 = ("live_requests", "live_approvals")
 LACKING = {
-    "3": ("import_drafts", "import_adoptions", "import_candidates", "import_structurings", "resume_imports"),
-    "4": ("import_drafts", "import_adoptions", "import_candidates", "import_structurings"),
-    "5": ("import_drafts", "import_adoptions"),
-    "6": ("import_drafts",),
+    "3": NEW_IN_8 + ("import_drafts", "import_adoptions", "import_candidates", "import_structurings", "resume_imports"),
+    "4": NEW_IN_8 + ("import_drafts", "import_adoptions", "import_candidates", "import_structurings"),
+    "5": NEW_IN_8 + ("import_drafts", "import_adoptions"),
+    "6": NEW_IN_8 + ("import_drafts",),
+    "7": NEW_IN_8,
 }
 OLDER_VERSIONS = list(LACKING)
 
@@ -1076,11 +1079,12 @@ OLDER_VERSIONS = list(LACKING)
 def older_file(path: Path, clock, version: str = "3") -> dict:
     """A library of an older structure version, with a row in each of its tables; returns its row counts.
 
-    Versions 4 to 7 only add tables, so the current file without them and
+    Versions 4 to 8 only add tables, so the current file without them and
     with the older version number is that version's file. From version 4 on
     the file holds a resume import, from version 5 on its candidates too:
-    one waiting, one edited, one left out; a version 6 file also says where
-    the edited one was adopted.
+    one waiting, one edited, one left out; from version 6 on it also says
+    where the edited one was adopted, and a version 7 file has the import
+    saved as a draft.
     """
     engine = make_engine(path)
     create_schema(engine)
@@ -1125,7 +1129,7 @@ def older_file(path: Path, clock, version: str = "3") -> dict:
         )
         db.add(AuditEvent(owner_id=user, item_id=item, object_type="experience", object_id=item, action="created", at=now))
 
-        if version in ("4", "5", "6"):
+        if version in ("4", "5", "6", "7"):
             imported = str(uuid.uuid4())
             db.add(
                 ResumeImport(
@@ -1137,7 +1141,7 @@ def older_file(path: Path, clock, version: str = "3") -> dict:
                 )
             )
 
-        if version in ("5", "6"):
+        if version in ("5", "6", "7"):
             db.flush()
             db.add(
                 ImportStructuring(
@@ -1151,7 +1155,7 @@ def older_file(path: Path, clock, version: str = "3") -> dict:
                 (("pending", None), ("pending", {"title": "改过的合成标题"}), ("excluded", None)), start=1
             ):
                 candidate = str(uuid.uuid4())
-                adopted = version == "6" and edits is not None
+                adopted = version in ("6", "7") and edits is not None
                 db.add(
                     ImportCandidate(
                         id=candidate, import_id=imported, owner_id=user, position=position, kind="other",
@@ -1168,6 +1172,10 @@ def older_file(path: Path, clock, version: str = "3") -> dict:
                             item_id=item, action="supplement", fields=["title"], created_at=now,
                         )
                     )
+
+        if version == "7":
+            db.flush()
+            db.add(ImportDraft(import_id=imported, owner_id=user, saved_at=now, deleted_at=None, purge_after=None))
 
     with engine.begin() as connection:
         for name in LACKING[version]:
@@ -1257,8 +1265,9 @@ def test_upgrading_an_older_file_keeps_every_row_and_its_identity(make_config, t
     assert after == counts and set(new.values()) == {0}
     assert rows_of(path, before) == before
     assert version == "3" or counts["resume_imports"] == 1
-    assert version not in ("5", "6") or counts["import_candidates"] == 3
-    assert version != "6" or counts["import_adoptions"] == 1
+    assert version not in ("5", "6", "7") or counts["import_candidates"] == 3
+    assert version not in ("6", "7") or counts["import_adoptions"] == 1
+    assert version != "7" or counts["import_drafts"] == 1
     assert tables_of(path) == set(LibraryBase.metadata.tables)
     # Running it again changes nothing, and the app opens the file.
     digest = digest_of(path)
@@ -1279,7 +1288,8 @@ def test_an_upgraded_file_has_the_structure_of_a_new_one(tmp_path, clock, versio
 
 
 @pytest.mark.parametrize(
-    ("version", "failing"), [("3", ResumeImport), ("4", ImportCandidate), ("5", ImportAdoption), ("6", ImportDraft)]
+    ("version", "failing"),
+    [("3", ResumeImport), ("4", ImportCandidate), ("5", ImportAdoption), ("6", ImportDraft), ("7", LiveRequest)],
 )
 def test_a_failed_upgrade_leaves_the_file_as_it_was(tmp_path, clock, monkeypatch, capsys, version, failing):
     path = tmp_path / "library.db"
@@ -1298,12 +1308,13 @@ def test_a_failed_upgrade_leaves_the_file_as_it_was(tmp_path, clock, monkeypatch
     assert meta_of(path)["schema_version"] == version and set(counts) == tables_of(path)
 
 
-def test_a_file_that_already_has_a_new_table_is_refused_untouched(tmp_path, clock):
+@pytest.mark.parametrize(("version", "table"), [("6", "import_drafts"), ("7", "live_approvals")])
+def test_a_file_that_already_has_a_new_table_is_refused_untouched(tmp_path, clock, version, table):
     path = tmp_path / "library.db"
-    older_file(path, clock, "6")
+    older_file(path, clock, version)
 
     with sqlite3.connect(path) as connection:
-        connection.execute("CREATE TABLE import_drafts (id TEXT)")
+        connection.execute(f"CREATE TABLE {table} (id TEXT)")
 
     digest = digest_of(path)
 
@@ -1311,7 +1322,7 @@ def test_a_file_that_already_has_a_new_table_is_refused_untouched(tmp_path, cloc
     assert digest_of(path) == digest
 
 
-@pytest.mark.parametrize("version", ["2", "8"])
+@pytest.mark.parametrize("version", ["2", "9"])
 def test_other_versions_are_refused_untouched(tmp_path, clock, version):
     path = tmp_path / "library.db"
     older_file(path, clock)

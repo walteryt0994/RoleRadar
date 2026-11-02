@@ -24,6 +24,11 @@ out. They live and end with their import. An ImportAdoption row (U2-B2b)
 says where an adopted candidate was written: which record, how and which
 fields, never what. It ends with its import too; the record it names lives
 on by its own rules.
+
+A LiveApproval row (U2-C1) is one approval of real AI requests: its terms
+as first used and whether it is paused. A LiveRequest row is one request
+the gate let through: what was reserved for it and what it was charged,
+never what it carried (see app.live_gate).
 """
 import uuid
 from datetime import datetime
@@ -44,10 +49,11 @@ from app.library.errors import ConfigError
 # 5: the candidates read from an import, and how they were read (U2-B2a).
 # 6: where each adopted candidate was written (U2-B2b).
 # 7: resume imports the user saved as drafts to keep checking later (U2-B3a).
-# A file of version 3, 4, 5 or 6 is upgraded by app.library.migrate.
-SCHEMA_VERSION = "7"
+# 8: the approvals of real AI requests and the ledger of what each cost (U2-C1).
+# A file of version 3, 4, 5, 6 or 7 is upgraded by app.library.migrate.
+SCHEMA_VERSION = "8"
 # The versions app.library.migrate upgrades from.
-UPGRADABLE_SCHEMA_VERSIONS = ("3", "4", "5", "6")
+UPGRADABLE_SCHEMA_VERSIONS = ("3", "4", "5", "6", "7")
 
 
 class ItemState(StrEnum):
@@ -421,6 +427,68 @@ class ImportDraft(LibraryBase):
     saved_at: Mapped[datetime] = mapped_column(UTCDateTime)
     deleted_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     purge_after: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class LiveRequestState(StrEnum):
+    # Let through and handed on; what it cost is not settled yet.
+    RESERVED = "reserved"
+    # Settled from the usage the service reported, within its reservation.
+    SETTLED = "settled"
+    # The reported usage cost more than the reservation: charged in full, the approval paused.
+    OVER = "over"
+    # No usable usage, or the app stopped before settling: charged at the reservation, the approval paused.
+    UNKNOWN = "unknown"
+    # Its provider said it never left: nothing charged, and it does not count.
+    RELEASED = "released"
+
+
+class LiveApproval(LibraryBase):
+    """One approval of real AI requests (U2-C1): its terms as first used, and whether it is paused.
+
+    terms is the snapshot taken the first time the approval was used; an app
+    that brings the same approval_id with other terms is refused, so neither
+    a restart nor a changed setting widens what was approved. paused_at is
+    set when a cost could not be known or came out above its reservation;
+    nothing in the app clears it, so going on takes a new approval. Nothing
+    a request carried is kept here.
+    """
+
+    __tablename__ = "live_approvals"
+
+    approval_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    terms: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    paused_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    paused_reason: Mapped[str | None] = mapped_column(String(30))
+
+
+class LiveRequest(LibraryBase):
+    """One real request the gate let through (U2-C1): what was reserved and charged, never what it carried.
+
+    Amounts are in millionths of a US dollar, rounded up; charged is None
+    while the request is reserved. Token counts are the ones the service
+    reported, where it did. owner_id is no foreign key: the ledger keeps
+    what was spent whatever happens to the account later.
+    """
+
+    __tablename__ = "live_requests"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    approval_id: Mapped[str] = mapped_column(ForeignKey("live_approvals.approval_id"), index=True)
+    purpose: Mapped[str] = mapped_column(String(20))
+    owner_id: Mapped[str] = mapped_column(String(36))
+    state: Mapped[str] = mapped_column(String(20), index=True)
+    reserved_micro_usd: Mapped[int] = mapped_column(Integer)
+    charged_micro_usd: Mapped[int | None] = mapped_column(Integer)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    cache_read_tokens: Mapped[int | None] = mapped_column(Integer)
+    cache_write_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    service_tier: Mapped[str | None] = mapped_column(String(20))
+    # Why it ended as it did, beyond its state (interrupted, unknown_usage, …); None when settled plainly.
+    reason: Mapped[str | None] = mapped_column(String(30))
+    reserved_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    settled_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
 
 class AuditEvent(LibraryBase):

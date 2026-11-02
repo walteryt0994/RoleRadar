@@ -27,6 +27,8 @@ from app.ai_provider import (
     OpenAIProvider,
     OpenAIProviderConfig,
     ProviderIdentity,
+    SendState,
+    Usage,
     load_openai_config,
 )
 
@@ -957,3 +959,138 @@ def test_a_configured_output_limit_caps_every_request(asked, sent):
     assert request["max_output_tokens"] == sent
     assert result.requested_max_output_tokens == sent
     assert result.requested_reasoning_effort is None
+
+
+# --- what a request used and how far it got (U2-C1) -----------------------------------------------------
+
+SECRET_PROMPT = "SYNTHETIC-PROMPT-WORDS"
+
+
+def _response_with_usage(**changes):
+    response = _fake_response(**changes)
+    response.service_tier = "default"
+    response.usage = types.SimpleNamespace(
+        input_tokens=120,
+        output_tokens=30,
+        total_tokens=150,
+        input_tokens_details=types.SimpleNamespace(cached_tokens=40, cache_write_tokens=10),
+        output_tokens_details=types.SimpleNamespace(reasoning_tokens=12),
+    )
+
+    return response
+
+
+FULL_USAGE = Usage(
+    input_tokens=120,
+    output_tokens=30,
+    cache_read_tokens=40,
+    cache_write_tokens=10,
+    reasoning_tokens=12,
+    total_tokens=150,
+    service_tier="default",
+)
+
+
+def test_a_result_reports_every_usage_count_and_the_tier_it_ran_on(provider):
+    provider._client.responses.create.return_value = _response_with_usage()
+
+    assert provider.generate_text(SECRET_PROMPT).usage == FULL_USAGE
+
+
+def test_counts_left_out_are_unknown_and_nothing_more(provider):
+    response = _response_with_usage()
+    response.usage.input_tokens_details = None
+    response.service_tier = None
+    provider._client.responses.create.return_value = response
+    usage = provider.generate_text(SECRET_PROMPT).usage
+
+    assert (usage.input_tokens, usage.cache_read_tokens, usage.service_tier, usage.malformed) == (120, None, None, False)
+
+
+@pytest.mark.parametrize("field, value", [("output_tokens", True), ("input_tokens", -1), ("total_tokens", 1.5), ("input_tokens", "120")])
+def test_a_count_reported_as_no_count_marks_the_usage_malformed(provider, field, value):
+    response = _response_with_usage()
+    setattr(response.usage, field, value)
+    provider._client.responses.create.return_value = response
+    usage = provider.generate_text(SECRET_PROMPT).usage
+
+    # Left out, and never mistaken for a count that was simply not reported.
+    assert getattr(usage, field) is None and usage.malformed is True
+
+
+def test_an_error_carries_the_malformed_mark_too(provider):
+    response = _response_with_usage(status="incomplete", incomplete_reason="max_output_tokens")
+    response.usage.input_tokens_details.cached_tokens = -40
+    provider._client.responses.create.return_value = response
+
+    with pytest.raises(AIProviderResponseError) as caught:
+        provider.generate_text(SECRET_PROMPT)
+
+    assert caught.value.usage.malformed is True and caught.value.usage.cache_read_tokens is None
+
+
+@pytest.mark.parametrize(
+    "changes, error_type",
+    [
+        ({"output_text": "Python, SQL, Doc", "status": "incomplete", "incomplete_reason": "max_output_tokens"}, AIProviderResponseError),
+        ({"output_text": "   "}, AIProviderEmptyResponseError),
+        ({"output_text": "", "output": [types.SimpleNamespace(type="refusal", content=None)]}, AIProviderRefusalError),
+    ],
+)
+def test_an_unusable_answer_says_it_was_answered_and_what_it_used(provider, changes, error_type):
+    provider._client.responses.create.return_value = _response_with_usage(**changes)
+
+    with pytest.raises(error_type) as caught:
+        provider.generate_text(SECRET_PROMPT)
+
+    assert caught.value.sent is SendState.ANSWERED and caught.value.usage == FULL_USAGE
+    # Counts only: nothing the request or the answer carried.
+    shown = str(caught.value) + repr(caught.value) + repr(caught.value.usage)
+    assert SECRET_PROMPT not in shown and "Python" not in shown
+
+
+@pytest.mark.parametrize(
+    "error, sent",
+    [
+        (lambda: APITimeoutError(_fake_request()), SendState.HANDED),
+        (lambda: APIConnectionError(request=_fake_request()), SendState.HANDED),
+        (lambda: RateLimitError("rate limited", response=_fake_http_response(429), body=None), SendState.ANSWERED),
+        (lambda: APIStatusError("server error", response=_fake_http_response(500), body=None), SendState.ANSWERED),
+    ],
+)
+def test_a_failed_call_says_how_far_it_got_and_reports_no_usage(provider, error, sent):
+    provider._client.responses.create.side_effect = error()
+
+    with pytest.raises(AIProviderError) as caught:
+        provider.generate_text(SECRET_PROMPT)
+
+    assert caught.value.sent is sent and caught.value.usage is None
+    assert SECRET_PROMPT not in str(caught.value)
+
+
+def test_errors_raised_without_saying_count_as_perhaps_sent_and_config_errors_as_not_sent():
+    assert AIProviderTimeoutError("x").sent is SendState.HANDED and AIProviderTimeoutError("x").usage is None
+    assert AIProviderConfigError("x").sent is SendState.NOT_SENT
+
+
+def test_a_configured_service_tier_is_asked_for_in_every_request():
+    with patch("app.ai_provider.OpenAI"):
+        tiered = OpenAIProvider(config=OpenAIProviderConfig(**_config_values(service_tier="flex")))
+
+    tiered._client.responses.create.return_value = _fake_response()
+    tiered.generate_text("Parse this job description.")
+
+    assert tiered._client.responses.create.call_args.kwargs["service_tier"] == "flex"
+
+
+def test_no_service_tier_is_sent_unless_configured(provider):
+    provider._client.responses.create.return_value = _fake_response()
+    provider.generate_text("Parse this job description.")
+
+    assert "service_tier" not in provider._client.responses.create.call_args.kwargs
+
+
+@pytest.mark.parametrize("tier", ["", "Default", "flex tier", 3, "x" * 21])
+def test_config_rejects_a_service_tier_that_is_not_a_short_name(tier):
+    with pytest.raises(AIProviderConfigError):
+        OpenAIProviderConfig(**_config_values(service_tier=tier))

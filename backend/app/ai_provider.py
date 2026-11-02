@@ -5,6 +5,7 @@ import time
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 from openai import (
     APIConnectionError,
@@ -17,12 +18,57 @@ from openai import (
 )
 
 
+class SendState(StrEnum):
+    """How far a request got, as far as its provider can tell."""
+
+    # Stopped before it was handed to the SDK: nothing went out.
+    NOT_SENT = "not_sent"
+    # Handed to the SDK and no answer came back: it may have reached the service.
+    HANDED = "handed"
+    # The service answered, with an error or an unusable response included.
+    ANSWERED = "answered"
+
+
+@dataclass(frozen=True)
+class Usage:
+    """The token counts a service reported for one request and the tier it ran on; nothing it carried.
+
+    input_tokens counts every input token, cache_read_tokens and
+    cache_write_tokens among them (two separate parts of it); output_tokens
+    counts every output token, reasoning_tokens among them; total_tokens is
+    input plus output. A count the service did not report is None. malformed
+    says that it reported something that is no count: such usage cannot be
+    priced.
+    """
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    total_tokens: int | None = None
+    service_tier: str | None = None
+    malformed: bool = False
+
+
 class AIProviderError(Exception):
-    pass
+    """A request that gave no usable text.
+
+    sent says how far it got (by default: perhaps to the service); usage is
+    what the service reported for it, if anything. Neither holds anything
+    the request or the answer carried, and the message is a fixed text.
+    """
+
+    SENT = SendState.HANDED
+
+    def __init__(self, *args, sent: SendState | None = None, usage: Usage | None = None):
+        super().__init__(*args)
+        self.sent = sent or self.SENT
+        self.usage = usage
 
 
 class AIProviderConfigError(AIProviderError):
-    pass
+    SENT = SendState.NOT_SENT
 
 
 class AIProviderTimeoutError(AIProviderError):
@@ -61,6 +107,24 @@ class GenerationResult:
     input_tokens: int | None = None
     output_tokens: int | None = None
     total_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    service_tier: str | None = None
+    usage_malformed: bool = False
+
+    @property
+    def usage(self) -> Usage:
+        return Usage(
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            cache_read_tokens=self.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens,
+            reasoning_tokens=self.reasoning_tokens,
+            total_tokens=self.total_tokens,
+            service_tier=self.service_tier,
+            malformed=self.usage_malformed,
+        )
 
 
 @dataclass(frozen=True)
@@ -79,6 +143,7 @@ class ProviderIdentity:
 
 
 SCHEMA_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+SERVICE_TIER_PATTERN = re.compile(r"^[a-z_]{1,20}$")
 
 
 @dataclass(frozen=True)
@@ -136,6 +201,8 @@ class OpenAIProviderConfig:
     # The most output tokens any one request may ask for; None leaves the
     # limit to each request.
     max_output_tokens: int | None = None
+    # The service tier every request asks for; None leaves it to the service.
+    service_tier: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.api_key, str) or not self.api_key.strip():
@@ -181,6 +248,14 @@ class OpenAIProviderConfig:
                 "The output token limit must be an integer 1 or greater."
             )
 
+        if self.service_tier is not None and (
+            not isinstance(self.service_tier, str)
+            or not SERVICE_TIER_PATTERN.match(self.service_tier)
+        ):
+            raise AIProviderConfigError(
+                "The service tier must be a short lowercase name."
+            )
+
 
 def _read_float_setting(name: str, default: float) -> float:
     raw = os.getenv(name)
@@ -216,6 +291,38 @@ def load_openai_config() -> OpenAIProviderConfig:
         max_retries=_read_int_setting(
             "OPENAI_MAX_RETRIES", DEFAULT_MAX_RETRIES
         ),
+    )
+
+
+def is_count(value: object) -> bool:
+    """Whether a reported token count is one: a whole number of 0 or more, never a bool."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _usage_of(response: object) -> Usage:
+    """What a response says about its usage: token counts and the tier, nothing else.
+
+    A count reported as anything but a whole number of 0 or more is left out
+    and marks the usage malformed, so that it is never priced as though that
+    count had not been reported.
+    """
+    usage = getattr(response, "usage", None)
+    inputs = getattr(usage, "input_tokens_details", None)
+    outputs = getattr(usage, "output_tokens_details", None)
+    reported = {
+        "input_tokens": getattr(usage, "input_tokens", None),
+        "output_tokens": getattr(usage, "output_tokens", None),
+        "cache_read_tokens": getattr(inputs, "cached_tokens", None),
+        "cache_write_tokens": getattr(inputs, "cache_write_tokens", None),
+        "reasoning_tokens": getattr(outputs, "reasoning_tokens", None),
+        "total_tokens": getattr(usage, "total_tokens", None),
+    }
+    tier = getattr(response, "service_tier", None)
+
+    return Usage(
+        **{name: value if is_count(value) else None for name, value in reported.items()},
+        service_tier=tier if isinstance(tier, str) else None,
+        malformed=any(value is not None and not is_count(value) for value in reported.values()),
     )
 
 
@@ -293,6 +400,9 @@ class OpenAIProvider(AIProvider):
         if reasoning_effort is not None:
             request["reasoning"] = {"effort": reasoning_effort}
 
+        if self._config.service_tier is not None:
+            request["service_tier"] = self._config.service_tier
+
         if json_schema_format is not None:
             request["text"] = {
                 "format": {
@@ -316,39 +426,46 @@ class OpenAIProvider(AIProvider):
             ) from None
         except RateLimitError:
             raise AIProviderRateLimitError(
-                "The provider rate limit or quota was exceeded."
+                "The provider rate limit or quota was exceeded.",
+                sent=SendState.ANSWERED,
             ) from None
         except APIStatusError as error:
             raise AIProviderResponseError(
                 f"The provider returned an error response "
-                f"(HTTP {error.status_code})."
+                f"(HTTP {error.status_code}).",
+                sent=SendState.ANSWERED,
             ) from None
         except APIError:
             raise AIProviderResponseError(
                 "The provider request failed."
             ) from None
         latency_seconds = time.perf_counter() - started_at
-
+        # Answered: whatever comes of it, what it used is known as far as reported.
+        usage = _usage_of(response)
         status = getattr(response, "status", None)
 
         if status != "completed":
             raise AIProviderResponseError(
-                "The provider returned an unfinished response."
+                "The provider returned an unfinished response.",
+                sent=SendState.ANSWERED,
+                usage=usage,
             )
 
         if _has_refusal(response):
             raise AIProviderRefusalError(
-                "The provider refused to generate text."
+                "The provider refused to generate text.",
+                sent=SendState.ANSWERED,
+                usage=usage,
             )
 
         text = (response.output_text or "").strip()
 
         if not text:
             raise AIProviderEmptyResponseError(
-                "The provider returned no usable text."
+                "The provider returned no usable text.",
+                sent=SendState.ANSWERED,
+                usage=usage,
             )
-
-        usage = getattr(response, "usage", None)
 
         return GenerationResult(
             text=text,
@@ -358,7 +475,12 @@ class OpenAIProvider(AIProvider):
             latency_seconds=latency_seconds,
             requested_max_output_tokens=request.get("max_output_tokens"),
             requested_reasoning_effort=reasoning_effort,
-            input_tokens=getattr(usage, "input_tokens", None),
-            output_tokens=getattr(usage, "output_tokens", None),
-            total_tokens=getattr(usage, "total_tokens", None),
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            total_tokens=usage.total_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
+            reasoning_tokens=usage.reasoning_tokens,
+            service_tier=usage.service_tier,
+            usage_malformed=usage.malformed,
         )

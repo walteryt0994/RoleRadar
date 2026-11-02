@@ -12,13 +12,17 @@ candidates come from local simulated rules and are sent nowhere. The job
 analysis uses the shared job description contracts of
 app.schemas, which hold no database. Importing this module has no side
 effects; create_app() does the work. The analysis uses the simulated
-service only: nothing here sends material to a real one. Run it with
+service only: nothing here sends material to a real one, and an app asked
+to use a real service refuses to start (app.job_analysis.live,
+check_analysis_mode) rather than quietly simulating. Run it with
 `python -m app.web_main`, which only binds to 127.0.0.1 (see main()).
 """
 import argparse
 import asyncio
 import contextlib
 import logging
+import os
+from collections.abc import Mapping
 from datetime import timedelta
 
 import uvicorn
@@ -35,6 +39,7 @@ from app.library.finish_web import install_finish
 from app.library.imports_web import install_imports
 from app.library.models import create_schema, read_library_id
 from app.library.review_web import install_review
+from app.job_analysis.live import check_analysis_mode
 from app.job_analysis.tasks import SWEEP_SECONDS
 from app.job_analysis.web import JobAnalysisRuntime, install_job_analysis
 from app.library.web import LibraryRuntime, build_templates, install_web
@@ -51,14 +56,18 @@ def create_app(
     clock: Clock | None = None,
     simulation_delay: float = 0.0,
     job_sweep_seconds: float = SWEEP_SECONDS,
+    environ: Mapping[str, str] | None = None,
 ) -> FastAPI:
     """Build the app; checks the data paths before anything is created or opened.
 
     The attachment folder belongs to one database. A folder that already
     belongs to a database can only be used with that database, so it is
-    refused before a new database file would be created next to it.
+    refused before a new database file would be created next to it. A real
+    analysis service asked for in environ (the process environment when
+    None) is refused first of all.
     """
     config = config or load_config_from_env()
+    check_analysis_mode(os.environ if environ is None else environ)
     db_path = check_storage_path(config.db_path, test_root=config.test_root)
     files = FileStore(check_files_path(config.files_dir, db_path=db_path, test_root=config.test_root))
 
