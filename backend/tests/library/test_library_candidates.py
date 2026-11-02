@@ -507,7 +507,7 @@ def test_candidates_are_shown_with_their_sources_and_nothing_reaches_the_library
     assert "这不代表内容已经核实" in page and "已验证" not in page and "属实" not in page
     assert "这一栏逐字摘自原文粘贴的文字第 11 行" in page
     assert "原文写的是团队工作" in page and "原文这里是否定的说法" in page and "原文写的是计划或打算" in page
-    assert "仅供参考" in page and "不会改动你现在的求职偏好" in page and "不会当作做过某件事的证据" in page
+    assert "技能与求职意向" in page and "不会改动你现在的求职偏好" in page and "不会被当作做过某件事的证据" in page
     assert "共 8 条：待核对 8 条" in page
     # No adopting: the only posts are leaving out, and logging out.
     posts = {form.action for form in forms_in(page) if form.method == "post"}
@@ -1015,13 +1015,14 @@ def test_export_all_holds_the_candidates_their_sources_and_the_review(app, brows
     record = json.loads(files[entry["candidates_path"]])
     data = json.loads(files["data.json"])
 
-    assert manifest["format_version"] == 5 and entry["candidates"] == 8
+    assert manifest["format_version"] == 6 and entry["candidates"] == 8
     assert data["imports"][0]["review"] == record
     assert "待核对的条目和核对进度（`candidates.json`）" in files["README.md"].decode("utf-8")
     assert record["structured_by"] == "本机模拟整理规则（不是 AI）" and "没有经过核实" in record["note"]
     by_id = {item["id"]: item for item in record["candidates"]}
     assert by_id[award.id]["state"] == "excluded" and by_id[work.id]["fields"]["role"]["edited"] == "数据分析实习生（暑期）"
-    assert {item["kind"] for item in record["candidates"] if item["reference_only"]} == {"skills", "intention"}
+    # Skills may become the user's own words in the profile (U2-B2b); only the job intention is reference alone.
+    assert {item["kind"] for item in record["candidates"] if item["reference_only"]} == {"intention"}
 
 
 def test_the_candidates_download_alone_as_a_file(app, browser_a):

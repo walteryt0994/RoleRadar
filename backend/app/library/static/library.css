@@ -721,6 +721,23 @@ dialog h2 { margin-top: 0; }
 .match-fields { font-size: 13px; color: var(--ink-soft); }
 .found-line { margin: -8px 0 18px; overflow-wrap: anywhere; }
 .found-line p { margin: 2px 0 0; }
+.adopted-line { margin: 10px 0 4px; overflow-wrap: anywhere; }
+
+/* --- adopting a candidate (U2-B2b): how, then which fields --------------- */
+
+.adopt-what { margin-bottom: 8px; }
+.adopt-what h2, .adopt-way h2 { margin: 24px 0 8px; font-size: 17px; }
+.adopt-way { margin-top: 12px; padding-top: 4px; border-top: 1px solid var(--line); }
+.target-list { min-width: 0; margin: 0; padding: 0; border: 0; }
+.target-list legend { margin-bottom: 8px; padding: 0; font-size: 14px; color: var(--ink-soft); }
+.target { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-height: 44px; padding: 8px 12px; margin: 0 0 8px; background: var(--white); border: 1px solid var(--line); border-radius: var(--radius-control); cursor: pointer; }
+.target-title { font-weight: 500; overflow-wrap: anywhere; }
+.adopt-field { min-width: 0; margin: 0 0 16px; padding: 14px 16px; background: var(--white); border: 1px solid var(--line); border-radius: var(--radius-panel); }
+.adopt-field legend { padding: 0 4px; font-size: 15px; font-weight: 600; }
+.adopt-field .compare-cols p.text { margin-top: 2px; }
+.choice-row { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; }
+.choice-row .check { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; }
+.choice-row input[type=radio], .target input[type=radio] { flex: none; width: 18px; height: 18px; margin: 0; accent-color: var(--ink); }
 
 /* --- motion: a skeleton while a page loads, and blocks that rise in -------- */
 

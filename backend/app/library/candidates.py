@@ -55,12 +55,16 @@ MAX_CANDIDATES = 60
 
 SKILLS = "skills"
 INTENTION = "intention"
-# Kept with the import for reference only: never written to the library or the preferences.
+# Neither experiences nor profile fields of their own. Skills go into the profile's 自述技能 field only
+# when the user chooses so (U2-B2b), never as evidence; the job intention is never written anywhere.
 REFERENCE_KINDS = (SKILLS, INTENTION)
 # In the order the review page groups them.
 CANDIDATE_KINDS = (PROFILE, *EXPERIENCE_CATEGORIES, *REFERENCE_KINDS)
+# The profile fields a structurer may fill, fixed as U2-B2a agreed them: the profile has grown a
+# field of its own since (自述技能), which only the skills kind feeds, by the user's choice.
+PROFILE_CANDIDATE_FIELDS = ("name", "phone", "email", "city", "links")
 CANDIDATE_FIELDS = {
-    PROFILE: CATEGORY_FIELDS[PROFILE],
+    PROFILE: tuple(entry for entry in CATEGORY_FIELDS[PROFILE] if entry.name in PROFILE_CANDIDATE_FIELDS),
     **{kind: CATEGORY_FIELDS[kind] for kind in EXPERIENCE_CATEGORIES},
     SKILLS: (Field("text", "技能（自述）", "简历里列出的技能，只是你的自述", True, 5000),),
     INTENTION: (Field("text", "当时的求职意向", "简历里当时写的求职意向，不代表现在的偏好", True, 2000),),

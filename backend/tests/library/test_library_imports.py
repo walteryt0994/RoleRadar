@@ -44,8 +44,10 @@ from app.library.models import (
     AuditEvent,
     ExperienceItem,
     ExperienceVersion,
+    ImportAdoption,
     ImportCandidate,
     ImportState,
+    ImportStructuring,
     PurgeJob,
     ResumeImport,
     User,
@@ -1038,7 +1040,7 @@ def test_export_all_holds_the_kept_imports_and_says_they_are_temporary(app, brow
     readme = files["README.md"].decode("utf-8")
     (entry,) = manifest["imports"]
 
-    assert manifest["format_version"] == 5 and manifest["counts"]["imports"] == 1 and manifest["complete"]
+    assert manifest["format_version"] == 6 and manifest["counts"]["imports"] == 1 and manifest["complete"]
     assert entry["import_id"] == kept_id and entry["original_status"] == "included"
     assert files[entry["original_path"]] == PDF_FILE[1]
     assert files[entry["text_path"]].decode("utf-8").startswith("=== 第 1 页 ===")
@@ -1057,21 +1059,24 @@ def test_export_all_says_when_an_import_file_is_missing(app, browser_a):
     assert manifest["complete"] is False and manifest["imports"][0]["original_status"] == "missing"
 
 
-# --- the structure upgrade from versions 3 and 4 ---------------------------------------------------------
+# --- the structure upgrade from versions 3, 4 and 5 -------------------------------------------------------
 
 # The tables each older structure version lacks, in an order they can be dropped in.
 LACKING = {
-    "3": ("import_candidates", "import_structurings", "resume_imports"),
-    "4": ("import_candidates", "import_structurings"),
+    "3": ("import_adoptions", "import_candidates", "import_structurings", "resume_imports"),
+    "4": ("import_adoptions", "import_candidates", "import_structurings"),
+    "5": ("import_adoptions",),
 }
+OLDER_VERSIONS = list(LACKING)
 
 
 def older_file(path: Path, clock, version: str = "3") -> dict:
     """A library of an older structure version, with a row in each of its tables; returns its row counts.
 
-    Versions 4 and 5 only add tables, so the current file without them and
-    with the older version number is that version's file. A version 4 file
-    holds a resume import too.
+    Versions 4 to 6 only add tables, so the current file without them and
+    with the older version number is that version's file. From version 4 on
+    the file holds a resume import, and a version 5 file its candidates too:
+    one waiting, one edited, one left out.
     """
     engine = make_engine(path)
     create_schema(engine)
@@ -1116,16 +1121,38 @@ def older_file(path: Path, clock, version: str = "3") -> dict:
         )
         db.add(AuditEvent(owner_id=user, item_id=item, object_type="experience", object_id=item, action="created", at=now))
 
-        if version == "4":
+        if version in ("4", "5"):
+            imported = str(uuid.uuid4())
             db.add(
                 ResumeImport(
-                    id=str(uuid.uuid4()), owner_id=user, source="text", state="read", filename=None, media_type=None,
+                    id=imported, owner_id=user, source="text", state="read", filename=None, media_type=None,
                     size=6, sha256="c" * 64, storage_key=None, upload_key="synthetic-import-key-0001", outcome=None,
                     segments=[{"kind": "text", "number": 1, "text": "合成文字"}], details={"lines": 1}, text_chars=4,
                     revision=2, received_at=now, expires_at=now + IMPORT_WINDOW, read_at=now, ended_at=None,
                     cleared_at=None, cleanup_attempts=0, cleanup_error=None, **stamps,
                 )
             )
+
+        if version == "5":
+            db.flush()
+            db.add(
+                ImportStructuring(
+                    import_id=imported, owner_id=user, state="done", attempt=str(uuid.uuid4()), import_revision=2,
+                    structurer="simulation:roleradar-resume-rules-1", contract_version="1", outcome=None,
+                    problems=None, started_at=now, finished_at=now,
+                )
+            )
+
+            for position, (state, edits) in enumerate(
+                (("pending", None), ("pending", {"title": "改过的合成标题"}), ("excluded", None)), start=1
+            ):
+                db.add(
+                    ImportCandidate(
+                        id=str(uuid.uuid4()), import_id=imported, owner_id=user, position=position, kind="other",
+                        extracted={"title": [{"segment": 1, "quote": "合成文字"}]}, edits=edits, cautions=[],
+                        state=state, revision=1, **stamps,
+                    )
+                )
 
     with engine.begin() as connection:
         for name in LACKING[version]:
@@ -1162,7 +1189,13 @@ def digest_of(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-@pytest.mark.parametrize("version", ["3", "4"])
+def rows_of(path: Path, tables) -> dict:
+    """Every row of these tables, every column, in a stable order: what an upgrade must keep as it was."""
+    with sqlite3.connect(path) as connection:
+        return {name: sorted(connection.execute(f'SELECT * FROM "{name}"'), key=repr) for name in tables}
+
+
+@pytest.mark.parametrize("version", OLDER_VERSIONS)
 def test_the_app_refuses_an_older_file_and_says_how_to_upgrade_it(make_config, tmp_path, clock, version):
     path = tmp_path / "library.db"
     older_file(path, clock, version)
@@ -1174,7 +1207,7 @@ def test_the_app_refuses_an_older_file_and_says_how_to_upgrade_it(make_config, t
     assert digest_of(path) == digest
 
 
-@pytest.mark.parametrize("version", ["3", "4"])
+@pytest.mark.parametrize("version", OLDER_VERSIONS)
 def test_checking_an_older_file_changes_nothing(tmp_path, clock, capsys, version):
     path = tmp_path / "library.db"
     older_file(path, clock, version)
@@ -1186,11 +1219,13 @@ def test_checking_an_older_file_changes_nothing(tmp_path, clock, capsys, version
     assert digest_of(path) == digest and meta_of(path)["schema_version"] == version
 
 
-@pytest.mark.parametrize("version", ["3", "4"])
+@pytest.mark.parametrize("version", OLDER_VERSIONS)
 def test_upgrading_an_older_file_keeps_every_row_and_its_identity(make_config, tmp_path, clock, capsys, version):
     path = tmp_path / "library.db"
     counts = older_file(path, clock, version)
     library_id = meta_of(path)["library_id"]
+    # Not only how many: every row as it was, private notes, states, versions and attachment links alike.
+    before = rows_of(path, [name for name in counts if name != "library_meta"])
 
     assert migrate.main(["--db", str(path), "--apply"]) == 0
     out = capsys.readouterr().out
@@ -1205,7 +1240,9 @@ def test_upgrading_an_older_file_keeps_every_row_and_its_identity(make_config, t
     assert "已升级" in out and "原有各表行数不变" in out
     assert meta_of(path) == {"schema_version": SCHEMA_VERSION, "library_id": library_id}
     assert after == counts and set(new.values()) == {0}
+    assert rows_of(path, before) == before
     assert version == "3" or counts["resume_imports"] == 1
+    assert version != "5" or counts["import_candidates"] == 3
     assert tables_of(path) == set(LibraryBase.metadata.tables)
     # Running it again changes nothing, and the app opens the file.
     digest = digest_of(path)
@@ -1213,7 +1250,7 @@ def test_upgrading_an_older_file_keeps_every_row_and_its_identity(make_config, t
     create_app(make_config(db_path=path), clock=clock).state.library.database.engine.dispose()
 
 
-@pytest.mark.parametrize("version", ["3", "4"])
+@pytest.mark.parametrize("version", OLDER_VERSIONS)
 def test_an_upgraded_file_has_the_structure_of_a_new_one(tmp_path, clock, version):
     path, fresh = tmp_path / "library.db", tmp_path / "fresh.db"
     older_file(path, clock, version)
@@ -1225,7 +1262,7 @@ def test_an_upgraded_file_has_the_structure_of_a_new_one(tmp_path, clock, versio
     assert schema_of(path) == schema_of(fresh)
 
 
-@pytest.mark.parametrize(("version", "failing"), [("3", ResumeImport), ("4", ImportCandidate)])
+@pytest.mark.parametrize(("version", "failing"), [("3", ResumeImport), ("4", ImportCandidate), ("5", ImportAdoption)])
 def test_a_failed_upgrade_leaves_the_file_as_it_was(tmp_path, clock, monkeypatch, capsys, version, failing):
     path = tmp_path / "library.db"
     counts = older_file(path, clock, version)
@@ -1245,10 +1282,10 @@ def test_a_failed_upgrade_leaves_the_file_as_it_was(tmp_path, clock, monkeypatch
 
 def test_a_file_that_already_has_a_new_table_is_refused_untouched(tmp_path, clock):
     path = tmp_path / "library.db"
-    older_file(path, clock, "4")
+    older_file(path, clock, "5")
 
     with sqlite3.connect(path) as connection:
-        connection.execute("CREATE TABLE import_structurings (import_id TEXT)")
+        connection.execute("CREATE TABLE import_adoptions (id TEXT)")
 
     digest = digest_of(path)
 
@@ -1256,7 +1293,7 @@ def test_a_file_that_already_has_a_new_table_is_refused_untouched(tmp_path, cloc
     assert digest_of(path) == digest
 
 
-@pytest.mark.parametrize("version", ["2", "6"])
+@pytest.mark.parametrize("version", ["2", "7"])
 def test_other_versions_are_refused_untouched(tmp_path, clock, version):
     path = tmp_path / "library.db"
     older_file(path, clock)

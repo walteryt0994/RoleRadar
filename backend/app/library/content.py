@@ -103,6 +103,9 @@ PROFILE_FIELDS = (
     Field("email", "邮箱", "以后每份简历可以决定是否写上", False, 200, "email"),
     Field("city", "当前所在城市", "只写城市；求职目标城市写在求职偏好里", False, 100),
     Field("links", "个人链接", "个人主页、作品集等，每行一个", True, 2000),
+    # The user's own list of skills (U2-B2b). It is what they say of themselves, kept as written:
+    # never an experience and never evidence of practice; the job analysis does not read the profile.
+    Field("skills", "自述技能", "你自己列出的技能，例如：Python、SQL。只是自述，不是做过的证明；岗位分析不使用它", True, 5000),
 )
 
 # Each of these preferences can be answered three ways, all optional: what

@@ -44,7 +44,7 @@ CATEGORY_GROUP_NAMES = {
         (None, ("notes",)),
     ),
     OTHER: ((None, ("title", "period", "notes")),),
-    PROFILE: ((None, ("name", "phone", "email", "city", "links")),),
+    PROFILE: ((None, ("name", "phone", "email", "city", "links", "skills")),),
 }
 CATEGORY_GROUPS = {
     category: tuple(
@@ -285,6 +285,9 @@ EVENT_LABELS = {
     "attachment_deleted": "删除一个附件",
     "attachment_restored": "恢复一个附件",
     "attachment_purge_requested": "申请永久删除一个附件",
+    # Written at the user's choice from a resume import (U2-B2b): an event, never the words.
+    "adopted_from_import": "从一次简历导入加入（内容未经核实）",
+    "supplemented_from_import": "用一次简历导入的内容补充了所选栏目（未经核实）",
 }
 # What finished when a clean-up of something other than the record itself completed.
 PART_CLEANUP_LABELS = {

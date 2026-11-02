@@ -286,6 +286,7 @@ def import_detail(import_id: str, request: Request, notice: str = "", user: Curr
                 "total": len(candidates),
                 "pending": sum(1 for candidate in candidates if candidate.state == CandidateState.PENDING),
                 "excluded": sum(1 for candidate in candidates if candidate.state == CandidateState.EXCLUDED),
+                "adopted": sum(1 for candidate in candidates if candidate.state == CandidateState.ADOPTED),
             },
             "notice": NOTICES.get(notice),
             "now": now,

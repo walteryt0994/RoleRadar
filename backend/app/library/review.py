@@ -37,6 +37,7 @@ from app.library.candidates import (
     CAUTION_TEXTS,
     CONTRACT_VERSION,
     FAILURE_TEXTS,
+    INTENTION,
     KIND_LABELS,
     PROBLEM_TEXTS,
     REFERENCE_KINDS,
@@ -49,13 +50,15 @@ from app.library.candidates import (
     extracted_value,
     where,
 )
-from app.library.content import PROFILE, TITLE_FIELDS, Field, display_title
+from app.library.content import CATEGORY_FIELDS, EXPERIENCE_CATEGORIES, PROFILE, TITLE_FIELDS, Field, display_title
 from app.library.db import Database
 from app.library.errors import NotFound
 from app.library.imports import IMPORT_OBJECT, is_open, locator, open_import
 from app.library.models import (
+    AdoptionAction,
     CandidateState,
     ExperienceItem,
+    ImportAdoption,
     ImportCandidate,
     ImportState,
     ImportStructuring,
@@ -71,7 +74,16 @@ logger = logging.getLogger("roleradar.library")
 STALE_STRUCTURING_AFTER = timedelta(minutes=10)
 STRUCTURABLE = (ImportState.READ, ImportState.PARTIAL)
 STRUCTURER_LABELS = {SIMULATION_NAME: "本机模拟整理规则（不是 AI）"}
-STATE_LABELS = {CandidateState.PENDING: "待核对", CandidateState.EXCLUDED: "不加入"}
+STATE_LABELS = {CandidateState.PENDING: "待核对", CandidateState.EXCLUDED: "不加入", CandidateState.ADOPTED: "已加入"}
+ACTION_LABELS = {
+    AdoptionAction.NEW: "作为新的经历草稿加入",
+    AdoptionAction.SUPPLEMENT: "补充到已有经历",
+    AdoptionAction.PROFILE: "写入基本资料",
+}
+# What the history of a record says when an adoption wrote it (U2-B2b): events, never the words.
+ADOPTED_FROM_IMPORT = "adopted_from_import"
+SUPPLEMENTED_FROM_IMPORT = "supplemented_from_import"
+IMPORT_EVENTS = (ADOPTED_FROM_IMPORT, SUPPLEMENTED_FROM_IMPORT)
 # A shorter name inside a longer one counts only from this many characters.
 CONTAINED_FROM = 4
 # A space next to a Chinese character or mark carries no meaning: 使用 Python is 使用Python.
@@ -112,7 +124,10 @@ class CandidateConflict(Exception):
 
 
 class NotEditable(Exception):
-    """A candidate left out is taken back before it is edited."""
+    """A candidate is changed only while it waits: one left out is taken back first, one adopted never."""
+
+    def __init__(self, state: str):
+        self.state = state
 
 
 @dataclass(frozen=True)
@@ -314,7 +329,7 @@ def save_edits(
             raise CandidateConflict(CandidateSnapshot.of(candidate))
 
         if candidate.state != CandidateState.PENDING:
-            raise NotEditable()
+            raise NotEditable(candidate.state)
 
         edits = changed_fields(candidate.kind, candidate.extracted, values) or None
 
@@ -337,9 +352,15 @@ def set_candidate_state(
     state: str,
     now: datetime,
 ) -> bool:
-    """Leave a candidate out or take it back; False if it already was (a second click)."""
+    """Leave a candidate out or take it back; False if it already was (a second click).
+
+    An adopted candidate stays adopted: what it wrote is in the user's records.
+    """
     with database.transaction() as db:
         _, candidate = open_candidate(db, owner_id, import_id, candidate_id, now)
+
+        if candidate.state == CandidateState.ADOPTED:
+            raise NotEditable(candidate.state)
 
         if candidate.state == state:
             return False
@@ -352,6 +373,56 @@ def set_candidate_state(
         candidate.updated_at = now
 
     return True
+
+
+# --- where adopted candidates went --------------------------------------------------------------
+
+
+def record_kind(kind: str) -> str:
+    """The kind of record a candidate of this kind is written into: its own, or the profile."""
+    return kind if kind in EXPERIENCE_CATEGORIES else PROFILE
+
+
+@dataclass(frozen=True)
+class AdoptionView:
+    """Where an adopted candidate went, as a page or an export says it."""
+
+    action: str
+    item_id: str
+    category: str
+    # None once that record is in the recycle bin or gone: no link leads to it then.
+    title: str | None
+    # The labels of the fields written.
+    fields: tuple[str, ...]
+    at: datetime
+
+
+def adoption_views(db: Session, owner_id: str, candidates: list[ImportCandidate]) -> dict[str, AdoptionView]:
+    """For each adopted candidate, where it went and whether that record is still there."""
+    kinds = {candidate.id: candidate.kind for candidate in candidates if candidate.state == CandidateState.ADOPTED}
+
+    if not kinds:
+        return {}
+
+    views = {}
+
+    for adoption in db.scalars(
+        select(ImportAdoption).where(ImportAdoption.owner_id == owner_id, ImportAdoption.candidate_id.in_(list(kinds)))
+    ):
+        category = record_kind(kinds[adoption.candidate_id])
+        item = db.get(ExperienceItem, adoption.item_id)
+        here = item is not None and item.owner_id == owner_id and item.deleted_at is None
+        labels = {entry.name: entry.label for entry in CATEGORY_FIELDS[category]}
+        views[adoption.candidate_id] = AdoptionView(
+            action=adoption.action,
+            item_id=adoption.item_id,
+            category=category,
+            title=display_title(item.content, item.category) if here else None,
+            fields=tuple(labels.get(name, name) for name in adoption.fields),
+            at=adoption.created_at,
+        )
+
+    return views
 
 
 # --- comparing with what the user has -------------------------------------------------------
@@ -505,20 +576,27 @@ def _label(matches: list[Match]) -> str:
 # --- taking it away ---------------------------------------------------------------------
 
 
-def review_record(row: ResumeImport, structuring: ImportStructuring, candidates: list[ImportCandidate]) -> dict:
+def review_record(
+    row: ResumeImport,
+    structuring: ImportStructuring,
+    candidates: list[ImportCandidate],
+    adoptions: dict[str, AdoptionView] | None = None,
+) -> dict:
     """The candidates of an import and the user's review, as data a person or a tool can read.
 
     What was found and what the user wrote stay apart, each with its
-    sources; the dropped candidates are listed by place and reason only.
+    sources; the dropped candidates are listed by place and reason only. An
+    adopted candidate says where it went and which fields were written.
     """
+    adoptions = adoptions or {}
     segments = row.segments or []
 
     return {
         "import_id": row.id,
         "note": (
-            "这些是从导入的简历文字里整理出的待核对候选，不是经历库的内容，也没有经过核实。"
+            "这些是从导入的简历文字里整理出的候选，没有经过核实；只有你明确选择加入的，才写进了你的资料（见 adoption）。"
             "found 是逐字摘自原文的内容，sources 是它的出处；edited 是你自己改写的内容，不是原文引用。"
-            "技能和当时的求职意向只作参考，不会加入经历库或改动求职偏好。"
+            "技能只在你选择时作为自述写进基本资料；当时的求职意向只作参考，不会改动求职偏好。"
         ),
         "structured_by": STRUCTURER_LABELS.get(structuring.structurer, structuring.structurer),
         "structurer": structuring.structurer,
@@ -540,11 +618,11 @@ def review_record(row: ResumeImport, structuring: ImportStructuring, candidates:
             }
             for problem in structuring.problems or []
         ],
-        "candidates": [_candidate_record(candidate, segments) for candidate in candidates],
+        "candidates": [_candidate_record(candidate, segments, adoptions.get(candidate.id)) for candidate in candidates],
     }
 
 
-def _candidate_record(candidate: ImportCandidate, segments: list) -> dict:
+def _candidate_record(candidate: ImportCandidate, segments: list, adoption: AdoptionView | None) -> dict:
     edits = candidate.edits or {}
     fields = {}
 
@@ -569,9 +647,18 @@ def _candidate_record(candidate: ImportCandidate, segments: list) -> dict:
         "position": candidate.position,
         "kind": candidate.kind,
         "kind_label": KIND_LABELS[candidate.kind],
-        "reference_only": candidate.kind in REFERENCE_KINDS,
+        "reference_only": candidate.kind == INTENTION,
         "state": candidate.state,
         "state_label": STATE_LABELS.get(candidate.state, candidate.state),
+        "adoption": None if adoption is None else {
+            "action": adoption.action,
+            "action_label": ACTION_LABELS.get(adoption.action, adoption.action),
+            "item_id": adoption.item_id,
+            "item_title": adoption.title,
+            "item_gone": adoption.title is None,
+            "fields": list(adoption.fields),
+            "at": _iso(adoption.at),
+        },
         "fields": fields,
         "cautions": [
             {"field": caution["field"], "code": caution["code"], "text": CAUTION_TEXTS.get(caution["code"], "")}

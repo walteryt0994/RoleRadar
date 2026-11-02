@@ -3,13 +3,13 @@
 {% block title %}核对整理出的条目{% endblock %}
 {% block content %}
 {# One candidate: what it says now, where each value was found, what to be careful about,
-   what it may duplicate, and its two or three actions. #}
+   what it may duplicate, and its actions; once adopted, where it went and which fields. #}
 {% macro candidate_card(view) %}
-<article class="candidate{% if view.state == 'excluded' %} is-excluded{% endif %}" id="c-{{ view.id }}" aria-labelledby="t-{{ view.id }}">
+<article class="candidate{% if view.state in ('excluded', 'adopted') %} is-excluded{% endif %}" id="c-{{ view.id }}" aria-labelledby="t-{{ view.id }}">
   <header class="candidate-head">
     <h3 id="t-{{ view.id }}">{{ view.title }}</h3>
-    {% if view.state == "excluded" %}
-    <span class="badge">{{ CANDIDATE_STATE_LABELS["excluded"] }}</span>
+    {% if view.state in ("excluded", "adopted") %}
+    <span class="badge">{{ CANDIDATE_STATE_LABELS[view.state] }}</span>
     {% elif view.comparison %}
     <span class="badge{% if view.comparison.label != 'new' %} diff{% endif %}">{{ (PROFILE_COMPARISON_LABELS if view.kind == PROFILE else COMPARISON_LABELS)[view.comparison.label] }}</span>
     {% endif %}
@@ -19,6 +19,12 @@
   </header>
   {% if view.state == "excluded" %}
   <p class="muted small">已标为不加入。恢复后可以继续核对和修改。</p>
+  {% elif view.state == "adopted" %}
+  {% set adoption = view.adoption %}
+  {% if adoption %}
+  <p class="adopted-line">{{ ADOPTION_LABELS[adoption.action] }}：{% if adoption.title is none %}对应的{{ "基本资料" if adoption.category == PROFILE else "经历" }}已经删除（在回收站或已永久删除），这里不再提供链接。{% elif adoption.category == PROFILE %}<a href="/basic-profile">基本资料</a>{% else %}<a href="/experiences/{{ adoption.item_id }}">{{ adoption.title }}</a>{% endif %}</p>
+  <p class="muted small">写入的栏目：{{ adoption.fields|join("、") }}。其余栏目没有改动；写入的内容来自这次导入，没有经过核实。</p>
+  {% endif %}
   {% else %}
   {% for caution in view.cautions %}
   <p class="caution">{{ caution }}</p>
@@ -45,7 +51,7 @@
     {% endfor %}
   </dl>
   {% if view.kind == "skills" %}
-  <p class="muted small">技能只作为你的自述留在这次导入里，可以导出；不会加入经历库，也不会当作做过某件事的证据。</p>
+  <p class="muted small">技能只是你的自述：可以保存到基本资料的“自述技能”里，不会成为一段经历，也不会被当作做过某件事的证据。</p>
   {% elif view.kind == "intention" %}
   <p class="muted small">这是简历里当时写的求职意向，不会改动你现在的求职偏好。如果仍然适用，可以到<a href="/job-preferences" target="_blank" rel="noopener">求职偏好</a>里自己修改。</p>
   {% endif %}
@@ -73,13 +79,16 @@
   {% endif %}
   <div class="row-actions">
     {% if view.state == "pending" %}
+    {% if view.kind != "intention" %}
+    <a class="button" href="/imports/{{ row.id }}/candidates/{{ view.id }}/adopt">{{ "保存为自述技能…" if view.kind == "skills" else "加入…" }}</a>
+    {% endif %}
     <a class="button" href="/imports/{{ row.id }}/candidates/{{ view.id }}/edit">修改</a>
     <form method="post" action="/imports/{{ row.id }}/candidates/{{ view.id }}/exclude" class="inline">
       {{ m.csrf() }}
       <input type="hidden" name="expected_revision" value="{{ view.revision }}">
       <button type="submit">不加入</button>
     </form>
-    {% else %}
+    {% elif view.state == "excluded" %}
     <form method="post" action="/imports/{{ row.id }}/candidates/{{ view.id }}/restore" class="inline">
       {{ m.csrf() }}
       <input type="hidden" name="expected_revision" value="{{ view.revision }}">
@@ -96,7 +105,7 @@
 </header>
 <div class="review-terms">
   <p>这些条目由{{ structured_by }}整理：只按标题、日期和列表符号这类简单规则拆分，可能拆错、漏掉或放错类别，什么都没有发送出去。自动整理的每一栏都逐字摘自原文并标出出处，但这不代表内容已经核实。</p>
-  <p>条目、你的修改和“不加入”的选择，都只跟这次导入一起暂存到 {{ row.expires_at|shorttime }}：打开、修改都不会延长，到期或放弃导入时一起清除。这里不会改动你的经历、基本资料或求职偏好；加入经历库的功能还没有建立。</p>
+  <p>条目、你的修改和“不加入”的选择，都只跟这次导入一起暂存到 {{ row.expires_at|shorttime }}：打开、修改都不会延长，到期或放弃导入时一起清除。只有你逐条选择“加入…”并确认的内容，才会写进你的经历或基本资料；已经加入的不会因为放弃或到期而撤销。求职偏好不会被改动。</p>
 </div>
 {% if row.state == "partial" %}
 <p class="warning">这份简历有页面没有读出来，整理结果可能缺内容。</p>
@@ -130,7 +139,7 @@
 </div>
 {% endif %}
 {% if counts.total %}
-<p class="review-progress">共 {{ counts.total }} 条：待核对 {{ counts.pending }} 条，不加入 {{ counts.excluded }} 条；其中你改过 {{ counts.edited }} 条。</p>
+<p class="review-progress">共 {{ counts.total }} 条：待核对 {{ counts.pending }} 条，已加入 {{ counts.adopted }} 条，不加入 {{ counts.excluded }} 条；其中你改过 {{ counts.edited }} 条。</p>
 <p class="import-actions">
   <a href="/imports/{{ row.id }}" target="_blank" rel="noopener">在新标签页对照原文</a>
   <a href="/imports/{{ row.id }}/candidates.json" download>下载这些条目和核对进度（JSON）</a>
@@ -145,8 +154,8 @@
 {% endfor %}
 {% if references %}
 <section class="review-group" aria-labelledby="g-references">
-  <h2 id="g-references">仅供参考</h2>
-  <p class="muted small">下面这些只作为参考留在这次导入里，可以导出；不会加入经历库，也不会改动你的求职偏好。</p>
+  <h2 id="g-references">技能与求职意向</h2>
+  <p class="muted small">这两类都不是经历。技能只能作为你的自述保存到基本资料里；当时的求职意向只供参考，不会改动你的求职偏好。</p>
   {% for kind, label, views in references %}
   {% for view in views %}
   {{ candidate_card(view) }}

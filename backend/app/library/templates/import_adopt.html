@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}加入：{{ title }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/imports">导入简历</a> › <a href="/imports/{{ row.id }}/review#c-{{ candidate.id }}">核对整理出的条目</a></p>
+{# A page shown again after a refused post is read at once: nothing on it waits for an animation. #}
+<header class="pane-head"{% if not error %} data-reveal{% endif %}>
+  <h1>加入：{{ title }}</h1>
+  <p class="lede">{{ kind_label }} · 只有你在这里明确选择，内容才会写进你的资料</p>
+</header>
+{% if error %}
+<p class="error" role="alert">{{ error }}</p>
+{% endif %}
+<section class="adopt-what" aria-labelledby="what-title">
+  <h2 id="what-title">这条候选现在的内容</h2>
+  <dl class="fields">
+    {% for field in fields %}
+    <dt>{{ field.label }}</dt>
+    <dd><p class="text">{{ values[field.name] }}</p></dd>
+    {% endfor %}
+  </dl>
+  <p class="muted small">内容不对的话，可以先<a href="/imports/{{ row.id }}/candidates/{{ candidate.id }}/edit">修改这条候选</a>。</p>
+</section>
+<section class="adopt-way" aria-labelledby="new-title">
+  <h2 id="new-title">作为一段新的经历加入</h2>
+  <p>加入后是一条待核对的草稿，不会自动确认属实；内容就是上面这些。{% if alike %}下面有名称相同或相近的经历，但名称相同不一定是同一段：如果这是另一段经历，就选这里。{% endif %}</p>
+  <form method="post" action="/imports/{{ row.id }}/candidates/{{ candidate.id }}/adopt/new">
+    {{ m.csrf() }}
+    <input type="hidden" name="expected_revision" value="{{ candidate.revision }}">
+    <button type="submit">作为新的经历草稿加入</button>
+  </form>
+</section>
+<section class="adopt-way" aria-labelledby="into-title">
+  <h2 id="into-title">补充到一段已有的经历</h2>
+  {% if targets %}
+  <form method="get" action="/imports/{{ row.id }}/candidates/{{ candidate.id }}/adopt/fields">
+    <fieldset class="target-list">
+      <legend>选择要补充的那一条（{{ kind_label }}）。下一步再逐栏决定写入什么，什么都不会自动写入。</legend>
+      {% for item in targets %}
+      <label class="target">
+        <input type="radio" name="target" value="{{ item.id }}" required>
+        <span class="target-title">{{ display_title(item.content, item.category) }}</span>
+        {{ m.state_badge(item) }}
+        {% if item.id in alike %}<span class="badge diff">名称相同或相近</span>{% endif %}
+      </label>
+      {% endfor %}
+    </fieldset>
+    <div class="form-actions"><button type="submit">下一步：逐栏选择</button></div>
+  </form>
+  {% else %}
+  <p class="muted">你还没有这一类的经历。</p>
+  {% endif %}
+</section>
+{% endblock %}

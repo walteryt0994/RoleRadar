@@ -20,7 +20,10 @@ library: nothing in it is an experience, a profile or a preference.
 The candidates read from an import (U2-B2a) belong to it the same way: an
 ImportStructuring row says how its text was turned into candidates, and
 each ImportCandidate row is one candidate the user checks, edits or leaves
-out. They live and end with their import.
+out. They live and end with their import. An ImportAdoption row (U2-B2b)
+says where an adopted candidate was written: which record, how and which
+fields, never what. It ends with its import too; the record it names lives
+on by its own rules.
 """
 import uuid
 from datetime import datetime
@@ -39,10 +42,11 @@ from app.library.errors import ConfigError
 # 3: attachments, and the library id that ties a database to its attachment folder.
 # 4: resume imports (U2-B1).
 # 5: the candidates read from an import, and how they were read (U2-B2a).
-# A file of version 3 or 4 is upgraded by app.library.migrate.
-SCHEMA_VERSION = "5"
+# 6: where each adopted candidate was written (U2-B2b).
+# A file of version 3, 4 or 5 is upgraded by app.library.migrate.
+SCHEMA_VERSION = "6"
 # The versions app.library.migrate upgrades from.
-UPGRADABLE_SCHEMA_VERSIONS = ("3", "4")
+UPGRADABLE_SCHEMA_VERSIONS = ("3", "4", "5")
 
 
 class ItemState(StrEnum):
@@ -114,6 +118,17 @@ class CandidateState(StrEnum):
     PENDING = "pending"
     # Left out by the user; it can be taken back.
     EXCLUDED = "excluded"
+    # Written into the user's records at their choice (U2-B2b); its ImportAdoption says where.
+    ADOPTED = "adopted"
+
+
+class AdoptionAction(StrEnum):
+    # A new experience, a draft.
+    NEW = "new"
+    # Chosen fields written into an experience that was there.
+    SUPPLEMENT = "supplement"
+    # Chosen fields written into the basic profile, made for it if there was none.
+    PROFILE = "profile"
 
 
 class LibraryMeta(LibraryBase):
@@ -354,6 +369,29 @@ class ImportCandidate(LibraryBase):
     revision: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class ImportAdoption(LibraryBase):
+    """Where one adopted candidate was written (U2-B2b): ids and field names, no content.
+
+    candidate_id is unique, so a candidate is written at most once, however
+    often or from however many pages it is asked. item_id names the record
+    written into but is no foreign key: that record is deleted, restored or
+    purged by its own rules, and a row here never holds it back or brings
+    it back. The row goes with its import (and its candidate).
+    """
+
+    __tablename__ = "import_adoptions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    import_id: Mapped[str] = mapped_column(ForeignKey("resume_imports.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(ForeignKey("import_candidates.id", ondelete="CASCADE"), unique=True)
+    item_id: Mapped[str] = mapped_column(String(36), index=True)
+    action: Mapped[str] = mapped_column(String(20))
+    # The names of the fields written, in the record's terms.
+    fields: Mapped[list] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
 
 
 class AuditEvent(LibraryBase):

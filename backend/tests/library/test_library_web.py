@@ -96,6 +96,13 @@ REVIEW_ROUTES = {
     ("POST", "/imports/{import_id}/candidates/{candidate_id}/restore"),
     ("GET", "/imports/{import_id}/candidates.json"),
 }
+# Adopting a candidate at the user's choice (U2-B2b).
+ADOPTION_ROUTES = {
+    ("GET", "/imports/{import_id}/candidates/{candidate_id}/adopt"),
+    ("POST", "/imports/{import_id}/candidates/{candidate_id}/adopt/new"),
+    ("GET", "/imports/{import_id}/candidates/{candidate_id}/adopt/fields"),
+    ("POST", "/imports/{import_id}/candidates/{candidate_id}/adopt/fields"),
+}
 # One field each kind of record accepts, so the same post is valid for every route.
 SOME_CONTENT = {"actions": "", "name": "", "cities_ideal": ""}
 SENTINEL = "哨兵-c41f"
@@ -224,6 +231,7 @@ def test_every_route_is_either_public_or_listed_as_protected(app):
         | JOB_ROUTES
         | IMPORT_ROUTES
         | REVIEW_ROUTES
+        | ADOPTION_ROUTES
     )
 
     assert found == expected

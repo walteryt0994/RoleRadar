@@ -18,12 +18,12 @@
   {% for line in problems %}<p>{{ line }}</p>{% endfor %}
 </div>
 {% endif %}
-<p class="import-explain">还没有加入经历库。可以先整理成待核对的条目；加入经历库的功能还没有建立。到期后自动清理，不能恢复。</p>
+<p class="import-explain">读到的文字还没有加入经历库，也不会自动加入：可以先整理成待核对的条目，再逐条选择加入。到期后自动清理，不能恢复；已经加入的内容不受影响。</p>
 {% if structurable %}
 <section class="import-structuring" aria-labelledby="structuring-title">
   <h2 id="structuring-title">整理成待核对的条目</h2>
   {% if structuring and structuring.state == "done" %}
-  <p>已整理出 {{ candidate_counts.total }} 条：待核对 {{ candidate_counts.pending }} 条，不加入 {{ candidate_counts.excluded }} 条。</p>
+  <p>已整理出 {{ candidate_counts.total }} 条：待核对 {{ candidate_counts.pending }} 条，已加入 {{ candidate_counts.adopted }} 条，不加入 {{ candidate_counts.excluded }} 条。</p>
   <p class="import-actions"><a class="button primary" href="/imports/{{ row.id }}/review">核对整理出的条目</a></p>
   {% elif structuring and structuring.state == "running" and not can_structure %}
   <p class="notice" role="status">正在整理。稍后<a href="/imports/{{ row.id }}">刷新</a>查看结果。</p>

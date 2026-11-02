@@ -49,7 +49,14 @@ from app.library.attachments import (
 from app.library.db import Database
 from app.library.errors import FileStoreError, NotFound, StorageError
 from app.library.files import IMPORTS, FileStore, StagingFile
-from app.library.models import ImportCandidate, ImportSource, ImportState, ImportStructuring, ResumeImport
+from app.library.models import (
+    ImportAdoption,
+    ImportCandidate,
+    ImportSource,
+    ImportState,
+    ImportStructuring,
+    ResumeImport,
+)
 from app.library.resume_reader import (
     BUSY,
     CRASHED,
@@ -612,9 +619,11 @@ def discard(
 def _end(db: Session, row: ResumeImport, state: str, now: datetime) -> None:
     """End an import: from now on it holds no content; its file is removed next.
 
-    The candidates read from it, with the user's edits, and how they were
-    read go in the same transaction: they are part of the import.
+    The candidates read from it, with the user's edits, how they were read
+    and where adopted ones went go in the same transaction: they are part of
+    the import. What was adopted stays in the records it was written into.
     """
+    db.execute(delete(ImportAdoption).where(ImportAdoption.import_id == row.id))
     db.execute(delete(ImportCandidate).where(ImportCandidate.import_id == row.id))
     db.execute(delete(ImportStructuring).where(ImportStructuring.import_id == row.id))
     row.state = state

@@ -1,9 +1,10 @@
 """Upgrading an experience library database to the current structure version.
 
-Version 4 added resume_imports (U2-B1); version 5 adds import_structurings
-and import_candidates (U2-B2a). An upgrade passes every step from the file's
-version: a version 3 file gets all three tables, a version 4 file the two
-new ones. Nothing already in the file changes; the new tables are created
+Version 4 added resume_imports (U2-B1); version 5 added import_structurings
+and import_candidates (U2-B2a); version 6 adds import_adoptions (U2-B2b). An
+upgrade passes every step from the file's version: a version 3 file gets all
+four tables, a version 4 file the last three, a version 5 file the last one.
+Nothing already in the file changes; the new tables are created
 empty, with their indexes. The upgrade is an explicit command, never a part
 of starting the app. From backend/, with the app stopped and the file
 backed up:
@@ -13,7 +14,7 @@ backed up:
 
 Before anything changes, the file must exist, pass the same path checks as
 the app's database (never the legacy RoleRadar database, never inside the
-repository), be a library database of version 3 or 4 with its library id
+repository), be a library database of version 3, 4 or 5 with its library id
 and without any table the upgrade would create, and pass SQLite's quick
 check. The upgrade is one transaction that takes the write lock first: it
 creates the tables and then sets the version, so any failure leaves the
@@ -38,6 +39,7 @@ from app.library.errors import ConfigError
 from app.library.models import (
     SCHEMA_VERSION,
     UPGRADABLE_SCHEMA_VERSIONS,
+    ImportAdoption,
     ImportCandidate,
     ImportStructuring,
     LibraryMeta,
@@ -48,6 +50,7 @@ from app.library.models import (
 STEPS: tuple[tuple[str, tuple[Table, ...]], ...] = (
     ("4", (ResumeImport.__table__,)),
     ("5", (ImportStructuring.__table__, ImportCandidate.__table__)),
+    ("6", (ImportAdoption.__table__,)),
 )
 REFUSED, FAILED = 2, 1
 FROM_VERSIONS = " 或 ".join(UPGRADABLE_SCHEMA_VERSIONS)
@@ -121,7 +124,7 @@ def check_upgradable(found: Survey) -> bool:
 
 
 def upgrade(engine: Engine) -> bool:
-    """Upgrade a version 3 or 4 file in one transaction; return False if it was current already."""
+    """Upgrade a version 3, 4 or 5 file in one transaction; return False if it was current already."""
     with engine.begin() as connection:
         # Read again under the write lock: another run may have upgraded it meanwhile.
         version = connection.execute(
@@ -176,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m app.library.migrate",
         description=f"把经历库数据库从结构版本 {FROM_VERSIONS} 升级到 {SCHEMA_VERSION}"
-        "（新增简历导入暂存表，以及导入候选的核对表）。不加 --apply 时只检查，不修改文件。",
+        "（新增简历导入暂存表、导入候选的核对表和采纳记录表）。不加 --apply 时只检查，不修改文件。",
     )
     parser.add_argument("--db", required=True, help="要升级的经历库 SQLite 文件的绝对路径")
     parser.add_argument("--apply", action="store_true", help="确认执行升级（请先停止网页应用并备份文件）")

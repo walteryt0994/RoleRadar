@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% set heading = "保存为自述技能" if skills else ("写入基本资料" if target == "profile" else "补充到“" ~ target_title ~ "”") %}
+{% block title %}{{ heading }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/imports">导入简历</a> › <a href="/imports/{{ row.id }}/review#c-{{ candidate.id }}">核对整理出的条目</a></p>
+<header class="pane-head"{% if not error %} data-reveal{% endif %}>
+  <h1>{{ heading }}</h1>
+  <p class="lede">来自导入的“{{ title }}”</p>
+</header>
+{% if error %}
+<p class="error" role="alert">{{ error }}</p>
+{% endif %}
+{% if item is none %}
+<p class="notice">你还没有基本资料；选中的栏目会建立一份新的基本资料。</p>
+{% elif item.state == "confirmed" %}
+<p class="warning">这条经历目前是“已确认”。补充后会变回待核对的草稿，需要你再次确认；之前的确认版本保留在历史里。</p>
+{% endif %}
+{% if skills %}
+<p class="muted small">自述技能只是你自己的说法：保存在基本资料里，可以随时修改或删除；它不会成为一段经历，岗位分析也不会把它当作做过的证据。</p>
+{% endif %}
+<p class="muted small">每一栏默认“保持不变”，只有你选择的栏目会写入；没有选择的栏目{% if target != "profile" %}、私有备注、附件{% endif %}和历史版本都保持原样。写入的内容来自这次导入，没有经过核实。</p>
+{# Only the submit button writes: leaving asks first (keep checking, or drop the choices and go) and never writes. #}
+<form method="post" action="/imports/{{ row.id }}/candidates/{{ candidate.id }}/adopt/fields" class="adopt-fields" data-leave-guard{% if unsaved_input %} data-initially-dirty{% endif %}>
+  {{ m.csrf() }}
+  <input type="hidden" name="expected_revision" value="{{ candidate.revision }}">
+  <input type="hidden" name="target" value="{{ target }}">
+  <input type="hidden" name="expected_target_revision" value="{{ expected_target }}">
+  {% if target == "profile" %}
+  <input type="hidden" name="expected_target_id" value="{{ item.id if item is not none else "" }}">
+  {% endif %}
+  {% for r in rows %}
+  {% set problem = field_errors.get(r.target) %}
+  <fieldset class="adopt-field{% if problem %} has-error{% endif %}">
+    <legend>{{ r.label }}</legend>
+    <div class="compare-cols">
+      <div><span class="muted small">导入的内容</span><p class="text">{{ r.value }}</p></div>
+      <div><span class="muted small">现在的内容</span><p class="text">{{ r.existing or "（空）" }}</p></div>
+    </div>
+    {% if r.actions %}
+    {% set chosen = choices.get(r.source, KEEP) %}
+    <div class="choice-row">
+      <label class="check"><input type="radio" name="choice-{{ r.source }}" value="{{ KEEP }}"{% if chosen == KEEP %} checked{% endif %}>{{ ACTION_LABELS[KEEP] }}</label>
+      {% for action in r.actions %}
+      <label class="check"><input type="radio" name="choice-{{ r.source }}" value="{{ action }}"{% if chosen == action %} checked{% endif %}>{{ ACTION_LABELS[action] }}</label>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="muted small">{{ "和现在的内容相同" if r.state == "same" else "每一行都已经在现在的内容里" }}，不需要处理。</p>
+    {% endif %}
+    {% if problem %}
+    <span class="field-error">{{ problem }}</span>
+    {% endif %}
+  </fieldset>
+  {% endfor %}
+  {% if not rows|selectattr("actions")|list %}
+  <p class="muted">这条候选的内容都已经在这里了，没有可以写入的栏目。不需要的话，可以回到核对页选择“不加入”。</p>
+  {% endif %}
+  <p class="muted small">离开这个页面不会写入任何内容；直接关闭或刷新页面时，浏览器的提醒不一定出现。</p>
+  <div class="form-actions">
+    <button type="submit" class="primary">写入选中的栏目</button>
+    <a href="/imports/{{ row.id }}/review#c-{{ candidate.id }}">取消</a>
+  </div>
+</form>
+<dialog id="leave-dialog" aria-labelledby="leave-title">
+  <h2 id="leave-title">离开后，这里的选择不会保留，也不会写入</h2>
+  <div class="dialog-actions">
+    <button type="button" data-leave-choice="stay" class="secondary">继续核对</button>
+    <button type="button" data-leave-choice="discard" class="danger">放弃选择并离开</button>
+  </div>
+</dialog>
+{% endblock %}
+{% block scripts %}<script src="/static/leave_guard.js"></script>{% endblock %}

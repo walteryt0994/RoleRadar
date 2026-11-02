@@ -110,10 +110,12 @@ def test_the_profile_keeps_what_was_written_and_checks_contacts(app, browser_a):
     }
     response = save_profile(browser_a, **values)
     page = browser_a.get("/basic-profile").text
+    # The self-described skills (U2-B2b) were left empty.
+    saved = {**values, "skills": ""}
 
     assert response.status_code == 303
     assert response.headers["location"] == "/basic-profile?notice=profile_created"
-    assert document(app, "profile").content == values
+    assert document(app, "profile").content == saved
     assert all(value in page for value in ("合成名字", "+86 138-0000-0000", "someone@example.com", "合成市"))
     assert '<a href="https://example.com/me" rel="noopener noreferrer">' in page
     assert 'href="javascript:' not in page
@@ -124,7 +126,7 @@ def test_the_profile_keeps_what_was_written_and_checks_contacts(app, browser_a):
         assert f'aria-describedby="h-{field} e-{field}" aria-invalid="true"' in rejected.text
         assert bad in rejected.text
 
-    assert document(app, "profile").content == values
+    assert document(app, "profile").content == saved
 
 
 def test_an_empty_profile_or_preferences_is_not_saved(app, browser_a):
@@ -142,7 +144,8 @@ def test_education_lives_only_in_education_experiences(browser_a):
     form_page = browser_a.get("/basic-profile/edit").text
     profile_page = browser_a.get("/basic-profile").text
 
-    assert {field.name for field in PROFILE_FIELDS} == {"name", "phone", "email", "city", "links"}
+    # Since U2-B2b the profile also keeps the user's own list of skills; school and major are still not there.
+    assert {field.name for field in PROFILE_FIELDS} == {"name", "phone", "email", "city", "links", "skills"}
     assert 'name="school"' not in form_page and 'name="major"' not in form_page
     assert "合成大学" in profile_page and "合成专业" in profile_page
     assert "不是教育的项目" not in profile_page
@@ -538,7 +541,7 @@ def test_a_new_file_gets_every_table_and_the_version_at_once(tmp_path):
     engine.dispose()
 
     assert tables == set(LibraryBase.metadata.tables)
-    assert meta["schema_version"] == SCHEMA_VERSION == "5"
+    assert meta["schema_version"] == SCHEMA_VERSION == "6"
     # The id that ties the file to its attachment folder.
     assert set(meta) == {"schema_version", "library_id"}
     assert len(meta["library_id"]) == 36
@@ -626,7 +629,7 @@ def test_processes_opening_one_new_file_together_all_start(tmp_path, monkeypatch
     assert errors == []
     # Created once: one version and one library id, not one of each per start.
     assert [key for key, _ in rows] == ["library_id", "schema_version"]
-    assert rows[1][1] == "5"
+    assert rows[1][1] == "6"
 
 
 def test_a_file_that_is_not_sqlite_is_refused_and_left_untouched(tmp_path):

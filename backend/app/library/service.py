@@ -261,7 +261,7 @@ def save_draft(
     item = active_item(db, owner_id, item_id, kinds=(entry.category,))
     check_revision(item, expected_revision)
 
-    if item.content == entry.content and item.private_note == entry.private_note:
+    if same_content(item.content, entry.content) and item.private_note == entry.private_note:
         return item, False
 
     item.content = dict(entry.content)
@@ -277,6 +277,17 @@ def save_draft(
     record_event(db, owner_id, item.id, "experience", item.id, "saved", now)
 
     return item, True
+
+
+def same_content(stored: dict, submitted: dict) -> bool:
+    """Whether two contents say the same, an empty field and a missing one alike.
+
+    A record saved before a field existed has no key for it; its form sends
+    the field empty. That is no change, so it makes no new version.
+    """
+    return {name: value for name, value in stored.items() if value} == {
+        name: value for name, value in submitted.items() if value
+    }
 
 
 def confirm_experience(

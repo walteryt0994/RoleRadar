@@ -24,7 +24,10 @@ original file, said to be temporary and not part of the library. An import
 file that cannot be copied is listed like an attachment that cannot. Since
 U2-B2a an import that was structured also has candidates.json: the
 candidates found in it, where each value stands in the text, the user's
-edits and choices, and the candidates dropped, by place and reason.
+edits and choices, and the candidates dropped, by place and reason. Since
+U2-B2b a record written from an import says so: when, and whether it was
+added or supplemented. That note comes from the record's own history,
+holds no words and is exported only with the record itself.
 """
 import hashlib
 import json
@@ -58,14 +61,15 @@ from app.library.imports import import_text, open_imports
 from app.library.models import (
     Attachment,
     AttachmentState,
+    AuditEvent,
     ExperienceItem,
     ExperienceVersion,
     ImportSource,
     ResumeImport,
     VersionKind,
 )
-from app.library.presentation import format_local, format_size, state_label, version_label
-from app.library.review import candidates_of, review_record, structuring_of
+from app.library.presentation import EVENT_LABELS, format_local, format_size, state_label, version_label
+from app.library.review import IMPORT_EVENTS, adoption_views, candidates_of, review_record, structuring_of
 from app.library.service import (
     active_item,
     current_document,
@@ -79,7 +83,8 @@ EXPORT_FORMAT = "roleradar-library-export"
 # 3: attachment files, their list in data.json and the manifest, and "complete".
 # 4: resume imports still kept (U2-B1), with their text and original files.
 # 5: the candidates of those imports and their review (U2-B2a), in candidates.json.
-EXPORT_FORMAT_VERSION = 5
+# 6: where adopted candidates went, and on each record the imports that wrote it (U2-B2b).
+EXPORT_FORMAT_VERSION = 6
 SHARE_WARNING = (
     "注意：这份文件包含你的私有备注或联系方式。导出文件离开 RoleRadar 后不再受平台的权限保护；"
     "分享或发送之前，请先检查并删掉不想让别人看到的内容。"
@@ -118,6 +123,8 @@ class ExportRecord:
     item: ExperienceItem
     versions: list[ExperienceVersion]
     attachments: list[AttachmentEntry] = field(default_factory=list)
+    # When a resume import added or supplemented it: (event, time), no words (U2-B2b).
+    provenance: list[tuple[str, datetime]] = field(default_factory=list)
 
 
 @dataclass
@@ -150,8 +157,24 @@ def single_export(
     versions = item_versions(db, owner_id, item, now)
     prefix = FILE_PREFIXES.get(item.category, "roleradar-experience")
     attachments = [AttachmentEntry(row) for row in exportable_attachments(db, owner_id, item, now)]
+    markdown = item_markdown(item, versions, now, attachments, import_provenance(db, owner_id, item.id))
 
-    return f"{prefix}-{item.id[:8]}.md", item_markdown(item, versions, now, attachments)
+    return f"{prefix}-{item.id[:8]}.md", markdown
+
+
+def import_provenance(db: Session, owner_id: str, item_id: str) -> list[tuple[str, datetime]]:
+    """When resume imports added or supplemented this record, from its own history; never any words."""
+    return list(
+        db.execute(
+            select(AuditEvent.action, AuditEvent.at)
+            .where(
+                AuditEvent.owner_id == owner_id,
+                AuditEvent.item_id == item_id,
+                AuditEvent.action.in_(IMPORT_EVENTS),
+            )
+            .order_by(AuditEvent.at, AuditEvent.id)
+        ).tuples()
+    )
 
 
 def exportable_attachments(db: Session, owner_id: str, item: ExperienceItem, now: datetime) -> list[Attachment]:
@@ -174,6 +197,7 @@ def item_markdown(
     versions: list[ExperienceVersion],
     now: datetime,
     attachments: list[AttachmentEntry] | None = None,
+    provenance: list[tuple[str, datetime]] = (),
 ) -> str:
     """The record as Markdown. attachments (experiences only) are listed;
     those "export all" handled also say where their file is, or why it is not there."""
@@ -202,6 +226,8 @@ def item_markdown(
         f"- {'编号' if document else '经历编号'}：{item.id}",
         f"- 导出时间：{format_local(now)}",
     ]
+
+    lines += [f"- 来源提示：{format_local(at)} {EVENT_LABELS.get(action, action)}" for action, at in provenance]
 
     if item.deleted_at is not None:
         lines.append(
@@ -338,6 +364,7 @@ def collect_export(db: Session, owner_id: str, now: datetime) -> ExportContent:
             item=item,
             versions=item_versions(db, owner_id, item, now),
             attachments=[AttachmentEntry(row) for row in attachments],
+            provenance=import_provenance(db, owner_id, item.id),
         )
 
     documents = {kind: current_document(db, owner_id, kind) for kind in DOCUMENT_KINDS}
@@ -348,7 +375,8 @@ def collect_export(db: Session, owner_id: str, now: datetime) -> ExportContent:
         structuring = structuring_of(db, row.id)
 
         if structuring is not None:
-            reviews[row.id] = review_record(row, structuring, candidates_of(db, owner_id, row.id))
+            candidates = candidates_of(db, owner_id, row.id)
+            reviews[row.id] = review_record(row, structuring, candidates, adoption_views(db, owner_id, candidates))
 
     return ExportContent(
         current=[record(item) for item in current],
@@ -440,12 +468,14 @@ def _write_zip(content: ExportContent, files: FileStore, owner_label: str, now: 
                 for number, entry in enumerate(in_bin, start=1):
                     add_file(entry, directory, number, "recycle-bin", record_path)
 
-                texts[record_path] = item_markdown(record.item, record.versions, now, record.attachments).encode("utf-8")
+                texts[record_path] = item_markdown(
+                    record.item, record.versions, now, record.attachments, record.provenance
+                ).encode("utf-8")
                 listing[section].append((record_path, record.item))
 
         for kind, record in content.documents.items():
             if record is not None:
-                texts[f"{kind}.md"] = item_markdown(record.item, record.versions, now).encode("utf-8")
+                texts[f"{kind}.md"] = item_markdown(record.item, record.versions, now, None, record.provenance).encode("utf-8")
                 listing["documents"].append((f"{kind}.md", record.item))
 
         manifest_imports = []
@@ -762,11 +792,11 @@ def _listing_label(item: ExperienceItem) -> str:
 
 
 def _document_record(record: ExportRecord | None) -> dict | None:
-    return None if record is None else _record_data(record.item, record.versions)
+    return None if record is None else _record_data(record.item, record.versions, record.provenance)
 
 
 def _item_record(record: ExportRecord) -> dict:
-    data = _record_data(record.item, record.versions)
+    data = _record_data(record.item, record.versions, record.provenance)
     item = record.item
     data["attachments"] = [
         {
@@ -790,11 +820,15 @@ def _item_record(record: ExportRecord) -> dict:
     return data
 
 
-def _record_data(item: ExperienceItem, versions: list[ExperienceVersion]) -> dict:
+def _record_data(item: ExperienceItem, versions: list[ExperienceVersion], provenance=()) -> dict:
     record = {
         "id": item.id,
         "category": item.category,
         "category_label": CATEGORY_LABELS.get(item.category, item.category),
+        # Resume imports that added or supplemented it (U2-B2b): events, never the words.
+        "import_provenance": [
+            {"event": action, "label": EVENT_LABELS.get(action, action), "at": _iso(at)} for action, at in provenance
+        ],
     }
 
     if item.category not in DOCUMENT_KINDS:

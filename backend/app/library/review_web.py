@@ -7,7 +7,8 @@ only). One candidate is changed on its own edit page; leaving it out and
 taking it back are small forms on the review page. Every change names the
 revision its page showed. An edit that the database could not keep is
 shown again as typed, unsaved, to be saved once more under the same
-checks. The candidates, edits and choices are kept with the import, for its
+checks. Adopting a candidate has its own pages (adoption_web, U2-B2b); its
+card then says where it went and which fields were written. The candidates, edits and choices are kept with the import, for its
 seven days and no longer. Nothing here writes to the experiences, the
 profile or the preferences: there is no adopting yet.
 """
@@ -39,6 +40,7 @@ from app.library.imports import locator, open_import
 from app.library.imports_web import BASE, _labels, gone_page
 from app.library.models import CandidateState, ImportCandidate, StructuringState
 from app.library.review import (
+    ACTION_LABELS,
     CONFLICTING,
     CONTAINED,
     DIFFERS,
@@ -48,10 +50,12 @@ from app.library.review import (
     SAME,
     STATE_LABELS,
     STRUCTURER_LABELS,
+    AdoptionView,
     Asked,
     CandidateConflict,
     Comparison,
     NotEditable,
+    adoption_views,
     can_ask_again,
     candidates_of,
     compare,
@@ -84,6 +88,8 @@ NOTICES = {
     "candidate_excluded": "已标为不加入，可以随时恢复。",
     "candidate_restored": "已恢复为待核对。",
     "candidate_already": "这条已经是这个状态，没有重复更改。",
+    "adopted": "已加入。这条卡片上写着它写进了哪里、写入了哪些栏目；其余条目可以继续核对。",
+    "adopted_already": "这条之前已经加入过，这次没有再写入。",
 }
 ASKED_NOTICES = {
     Asked.STORED: "structured",
@@ -143,9 +149,16 @@ class CandidateView:
     fields: list[FieldView]
     cautions: list[str]
     comparison: Comparison | None = None
+    # Where it went, once adopted.
+    adoption: AdoptionView | None = None
 
 
-def candidate_view(candidate: ImportCandidate, segments: list, comparison: Comparison | None = None) -> CandidateView:
+def candidate_view(
+    candidate: ImportCandidate,
+    segments: list,
+    comparison: Comparison | None = None,
+    adoption: AdoptionView | None = None,
+) -> CandidateView:
     values = current_values(candidate.kind, candidate.extracted, candidate.edits)
     edits = candidate.edits or {}
     fields = []
@@ -186,6 +199,7 @@ def candidate_view(candidate: ImportCandidate, segments: list, comparison: Compa
             if caution["field"] is None and caution["code"] in CAUTION_TEXTS
         ],
         comparison=comparison,
+        adoption=adoption,
     )
 
 
@@ -278,6 +292,7 @@ def review_page(import_id: str, request: Request, notice: str = "", user: Curren
             structuring = structuring_of(db, row.id)
             candidates = candidates_of(db, user.id, row.id)
             comparisons = compare(db, user.id, candidates)
+            adoptions = adoption_views(db, user.id, candidates)
     except NotFound:
         return gone_page(request, user)
 
@@ -285,7 +300,10 @@ def review_page(import_id: str, request: Request, notice: str = "", user: Curren
         return see_other(f"{BASE}/{row.id}")
 
     segments = row.segments or []
-    views = [candidate_view(candidate, segments, comparisons.get(candidate.id)) for candidate in candidates]
+    views = [
+        candidate_view(candidate, segments, comparisons.get(candidate.id), adoptions.get(candidate.id))
+        for candidate in candidates
+    ]
     groups = [
         (kind, KIND_LABELS[kind], [view for view in views if view.kind == kind])
         for kind in CANDIDATE_KINDS
@@ -311,8 +329,10 @@ def review_page(import_id: str, request: Request, notice: str = "", user: Curren
                 "total": len(views),
                 "pending": sum(1 for view in views if view.state == CandidateState.PENDING),
                 "excluded": sum(1 for view in views if view.state == CandidateState.EXCLUDED),
+                "adopted": sum(1 for view in views if view.state == CandidateState.ADOPTED),
                 "edited": sum(1 for view in views if view.edited),
             },
+            "ADOPTION_LABELS": ACTION_LABELS,
             "notice": NOTICES.get(notice),
             "now": now,
             "PROFILE": PROFILE,
@@ -380,11 +400,20 @@ def edit_page(
     )
 
 
-def _left_out_page(request: Request, user: CurrentUser, import_id: str, candidate_id: str) -> Response:
+def _left_out_page(
+    request: Request, user: CurrentUser, import_id: str, candidate_id: str, state: str = CandidateState.EXCLUDED
+) -> Response:
+    if state == CandidateState.ADOPTED:
+        title = "这条已经加入"
+        message = "已经加入的条目不能再修改、标为不加入或恢复；要改内容，请到它写进的那条经历或基本资料里修改。"
+    else:
+        title = "这条已标为不加入"
+        message = "标为不加入的条目不能修改。需要的话，先在核对页把它恢复为待核对。"
+
     return message_page(
         request,
-        title="这条已标为不加入",
-        message="标为不加入的条目不能修改。需要的话，先在核对页把它恢复为待核对。",
+        title=title,
+        message=message,
         status_code=LEFT_OUT,
         user=user,
         links=[(f"{BASE}/{import_id}/review#c-{candidate_id}", "回到核对页")],
@@ -402,7 +431,7 @@ def candidate_edit(import_id: str, candidate_id: str, request: Request, user: Cu
         return gone_page(request, user)
 
     if candidate.state != CandidateState.PENDING:
-        return _left_out_page(request, user, import_id, candidate_id)
+        return _left_out_page(request, user, import_id, candidate_id, candidate.state)
 
     return edit_page(request, user, row, candidate)
 
@@ -449,8 +478,8 @@ def candidate_save(
                 "核对后再保存一次，会用你的内容替换。"
             ),
         )
-    except NotEditable:
-        return _left_out_page(request, user, import_id, candidate_id)
+    except NotEditable as refused:
+        return _left_out_page(request, user, import_id, candidate_id, refused.state)
     except NotFound:
         return gone_page(request, user)
     except StorageError as error:
@@ -479,6 +508,8 @@ def _change_state(request: Request, user: CurrentUser, form: dict, import_id: st
         )
     except NotFound:
         return gone_page(request, user)
+    except NotEditable as refused:
+        return _left_out_page(request, user, import_id, candidate_id, refused.state)
     except CandidateConflict:
         return message_page(
             request,
@@ -532,7 +563,8 @@ def download_candidates(import_id: str, request: Request, user: CurrentUser = De
             row = open_import(db, user.id, import_id, rt.now())
             structuring = structuring_of(db, row.id)
             candidates = candidates_of(db, user.id, row.id)
-            record = review_record(row, structuring, candidates) if structuring is not None else None
+            adoptions = adoption_views(db, user.id, candidates)
+            record = review_record(row, structuring, candidates, adoptions) if structuring is not None else None
     except NotFound:
         return gone_page(request, user)
 

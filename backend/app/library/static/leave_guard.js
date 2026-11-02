@@ -1,10 +1,12 @@
 // Unsaved-changes guard for the experience forms.
 //
 // Leaving through a link (or another form) inside this site: if the form has
-// unsaved changes, ask first: save draft / keep editing / discard changes.
-// Closing or reloading the tab: only ask the browser to show its own generic
-// prompt. The browser decides whether that prompt appears, so the page never
-// promises it will.
+// unsaved changes, ask first: save draft / keep editing / discard changes. A
+// page whose dialog has no save choice (such as the adoption page, where
+// saving means writing into the user's records) only offers to stay or to
+// leave without saving. Closing or reloading the tab: only ask the browser
+// to show its own generic prompt. The browser decides whether that prompt
+// appears, so the page never promises it will.
 (function () {
   "use strict";
 
@@ -18,6 +20,10 @@
   // A chosen file counts as input too (the resume import form); browsers never keep it.
   const fields = Array.from(form.querySelectorAll("input[type=text], input[type=file], textarea"));
   const initial = new Map(fields.map((field) => [field, field.value]));
+  // So does a choice among radio buttons (the adoption page: what to do with each field).
+  // Choosing another one and then the first again leaves nothing unsaved.
+  const options = Array.from(form.querySelectorAll("input[type=radio]"));
+  const initialOptions = new Map(options.map((option) => [option, option.checked]));
   const status = document.getElementById("dirty-status");
   const nextField = form.querySelector("input[name=next]");
   const afterSaveField = form.querySelector("input[name=after_save]");
@@ -28,7 +34,11 @@
   let pendingLeave = null;
 
   function isDirty() {
-    return startedDirty || fields.some((field) => field.value !== initial.get(field));
+    return (
+      startedDirty ||
+      fields.some((field) => field.value !== initial.get(field)) ||
+      options.some((option) => option.checked !== initialOptions.get(option))
+    );
   }
 
   function showState() {
@@ -46,6 +56,8 @@
   }
 
   form.addEventListener("input", showState);
+  // A radio button's choice is reported by "change" in every browser.
+  form.addEventListener("change", showState);
   form.addEventListener("submit", function () {
     leaving = true;
   });
