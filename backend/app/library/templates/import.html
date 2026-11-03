@@ -30,18 +30,44 @@
   <p>已整理出 {{ candidate_counts.total }} 条：待核对 {{ candidate_counts.pending }} 条，已加入 {{ candidate_counts.adopted }} 条，不加入 {{ candidate_counts.excluded }} 条。</p>
   <p class="import-actions"><a class="button primary" href="/imports/{{ row.id }}/review">核对整理出的条目</a></p>
   {% elif structuring and structuring.state == "running" and not can_structure %}
+  {% if live_running %}
+  <p class="notice" role="status">正在由外部服务整理。可以在<a href="/imports/{{ row.id }}/review">核对页</a>查看进度或取消。</p>
+  {% else %}
   <p class="notice" role="status">正在整理。稍后<a href="/imports/{{ row.id }}">刷新</a>查看结果。</p>
+  {% endif %}
   {% else %}
   {% if structuring_failure %}
   <p class="warning" role="status">上次没有整理出可以核对的条目：{{ structuring_failure }}{% if structuring.problems %}<a href="/imports/{{ row.id }}/review">查看原因</a>。{% endif %}</p>
   {% elif structuring %}
   <p class="warning" role="status">上次整理没有完成（可能是应用重启了），可以重新整理。</p>
   {% endif %}
+  {% if live_offer %}
+  <p class="muted small">两种方式都会给每一栏标出原文出处，都不会改动经历库：整理出的条目要你逐条核对、选择加入。{% if draft %}条目和你的修改跟这份草稿一起保留。{% else %}条目和你的修改跟这次导入一起暂存到 {{ row.expires_at|shorttime }}，不会延长。{% endif %}</p>
+  <ul class="points">
+    <li>发给外部服务整理：先给你看遮盖联系方式后要发送的全部文字，确认后才发送。</li>
+    <li>用本机规则整理：模拟整理规则（不是 AI），按标题、日期和列表符号拆分，可能拆错或漏掉；什么都不会发送出去。</li>
+  </ul>
+  {% if live_offer.over %}
+  <p class="warning" role="status">遮盖之后有 {{ live_offer.request.outbound.size }} 字节，超过了单次 {{ live_offer.limit }} 字节的上限，不能发给外部服务，也不会自动截短。可以只粘贴简历里需要的部分重新导入，或用本机规则整理。</p>
+  {% elif live_offer.empty %}
+  <p class="warning" role="status">遮盖之后没有可以发送的文字，不能发给外部服务；可以用本机规则整理。</p>
+  {% endif %}
+  <div class="form-actions">
+    {% if live_offer.sendable %}
+    <a class="button primary" href="/imports/{{ row.id }}/structure/confirm">发给外部服务整理…</a>
+    {% endif %}
+    <form method="post" action="/imports/{{ row.id }}/structure" class="inline">
+      {{ m.csrf() }}
+      <button type="submit"{% if not live_offer.sendable %} class="primary"{% endif %}>用本机规则整理（不发送）</button>
+    </form>
+  </div>
+  {% else %}
   <p class="muted small">用本机的模拟整理规则（不是 AI）按标题、日期和列表符号把文字拆成条目，每一栏都标出原文出处，可能拆错或漏掉。什么都不会发送出去，也不会改动经历库。{% if draft %}整理出的条目和你的修改跟这份草稿一起保留。{% else %}整理出的条目和你的修改跟这次导入一起暂存到 {{ row.expires_at|shorttime }}，不会延长。{% endif %}</p>
   <form method="post" action="/imports/{{ row.id }}/structure">
     {{ m.csrf() }}
     <button type="submit" class="primary">{{ "重新整理" if structuring else "整理成待核对的条目" }}</button>
   </form>
+  {% endif %}
   {% endif %}
 </section>
 {% endif %}

@@ -24,7 +24,6 @@ from app.library.candidates import (
     CANDIDATE_FIELDS,
     CANDIDATE_KINDS,
     CAUTION_TEXTS,
-    FAILURE_TEXTS,
     KIND_LABELS,
     PROBLEM_TEXTS,
     REFERENCE_KINDS,
@@ -48,8 +47,8 @@ from app.library.review import (
     FILLS,
     NEW,
     SAME,
+    LIVE_FAILURE_TEXTS,
     STATE_LABELS,
-    STRUCTURER_LABELS,
     AdoptionView,
     Asked,
     CandidateConflict,
@@ -59,11 +58,15 @@ from app.library.review import (
     can_ask_again,
     candidates_of,
     compare,
+    failure_text,
+    is_live,
     open_candidate,
+    running_here,
     review_record,
     save_edits,
     set_candidate_state,
     structure_import,
+    structurer_label,
     structuring_of,
 )
 from app.library.web import (
@@ -83,6 +86,11 @@ NOTICES = {
     "already_structured": "这次导入已经整理过，这次没有重新整理；你的修改和选择都还在。",
     "structuring_running": "正在整理，请稍后刷新。",
     "structuring_dropped": "这次整理的结果没有保存：同一时间另有一次整理。下面是现在的状态。",
+    "structuring_started": "已开始外部整理。请求交给服务之前还会再核对一次；进度显示在下面。",
+    "structuring_cancelled": "已取消，之后不会再发出请求。已经交给外部服务的请求无法撤回，它的回答会被丢弃；有没有发出，以下面的说明为准。",
+    "structuring_too_late": "来不及取消：外部服务的回答已经回来，正在核对和保存。下面是现在的状态。",
+    "structuring_interrupted": "这次整理不是在当前运行的应用里开始的（应用可能重启过），已标为中断，它的结果不会保存。",
+    "structuring_not_running": "这次整理已经不在进行，没有取消任何东西。下面是现在的状态。",
     "candidate_saved": "已保存你的修改。它只暂存在这次导入里，没有加入经历库。",
     "candidate_unchanged": "内容没有变化，什么都没有保存。",
     "candidate_excluded": "已标为不加入，可以随时恢复。",
@@ -230,6 +238,14 @@ def _title(kind: str, values: dict[str, str]) -> str:
     return display_title(values, kind)
 
 
+def _live_refusal(request: Request) -> str | None:
+    """Why a real structuring may not start now, when the app has one (U2-C3, app.live_structuring)."""
+    structuring = request.app.state.structuring
+    refusal = structuring.live.refusal() if structuring.offered else None
+
+    return LIVE_FAILURE_TEXTS[f"gate_{refusal.value}"] if refusal is not None else None
+
+
 def _problem_lines(structuring, segments: list) -> list[str]:
     """The dropped candidates, by place and reason; never their words."""
     lines = []
@@ -300,6 +316,12 @@ def review_page(import_id: str, request: Request, notice: str = "", user: Curren
     if structuring is None:
         return see_other(f"{BASE}/{row.id}")
 
+    handed = running_here(rt.runs, structuring, now)
+
+    if notice == "structuring_started" and handed is None:
+        # The page reloads with its address when the run ends: a run over is no news of a start.
+        notice = ""
+
     segments = row.segments or []
     views = [
         candidate_view(candidate, segments, comparisons.get(candidate.id), adoptions.get(candidate.id))
@@ -320,9 +342,17 @@ def review_page(import_id: str, request: Request, notice: str = "", user: Curren
             "draft": draft,
             "name": row.filename or "粘贴的文字",
             "structuring": structuring,
-            "structured_by": STRUCTURER_LABELS.get(structuring.structurer, "整理服务"),
+            "structured_by": structurer_label(structuring.structurer),
+            "live_structured": is_live(structuring.structurer),
+            "live_offered": request.app.state.structuring.offered,
+            "live_refusal": _live_refusal(request),
+            "handed": handed,
             "running": structuring.state == StructuringState.RUNNING,
-            "failure": FAILURE_TEXTS.get(structuring.outcome) if structuring.state == StructuringState.FAILED else None,
+            "failure": (
+                failure_text(structuring.structurer, structuring.outcome)
+                if structuring.state == StructuringState.FAILED
+                else None
+            ),
             "can_ask_again": can_ask_again(structuring, now),
             "problems": _problem_lines(structuring, segments),
             "groups": [group for group in groups if group[0] not in REFERENCE_KINDS],

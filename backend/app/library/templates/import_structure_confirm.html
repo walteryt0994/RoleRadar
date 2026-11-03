@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}核对要发给外部服务的文字{% endblock %}
+{% block layout %}
+<main id="main" class="job-page job-reading" tabindex="-1">
+  {% if notice %}
+  <p class="notice" role="status">{{ notice }}</p>
+  {% endif %}
+  <p class="crumbs"><a href="/imports">导入简历</a> › <a href="/imports/{{ row.id }}">{{ name }}</a></p>
+  <header class="job-head">
+    <h1>核对要发给外部服务的文字</h1>
+  </header>
+  <form method="post" action="/imports/{{ row.id }}/structure/confirm" class="review">
+    {{ m.csrf() }}
+    <input type="hidden" name="fingerprint" value="{{ fingerprint }}">
+    <section class="review-section" aria-labelledby="who-title">
+      <h2 id="who-title">交给谁，怎样处理</h2>
+      <dl class="facts">
+        <div><dt>接收方</dt><dd>真实的外部 AI 服务：{{ recipient.provider }} 的 {{ recipient.model }}，经 {{ recipient.endpoint }} 发送。</dd></div>
+        <div><dt>处理说明</dt><dd>{% for line in notice_lines %}<p>{{ line }}</p>{% endfor %}</dd></div>
+        <div><dt>用途</dt><dd>只用于把这份简历的文字整理成待核对的条目：发送一次请求，回答最多 {{ offer.output_limit }} 个 token；回答不完整就什么都不保存。</dd></div>
+        <div><dt>结果</dt><dd>每一栏都必须逐字出自原文，对不上的会被丢弃；基本资料只由本机规则整理。整理出的条目只暂存在这次导入里，要你逐条核对、选择加入后，才会写进经历库。</dd></div>
+      </dl>
+    </section>
+
+    <section class="review-section" aria-labelledby="sent-title">
+      <h2 id="sent-title">会发送的文字</h2>
+      <p class="hint">下面就是会发送的全部文字，共 {{ offer.request.outbound.size }} 字节（单次上限 {{ offer.limit }} 字节；中文一个字通常占 3 字节，英文字母和数字占 1 字节）。</p>
+      {% if masked %}
+      <p class="hint">换成了“［已隐去…］”：{% for label, count in masked %}{{ label }} {{ count }} 处{% if not loop.last %}、{% endif %}{% endfor %}。</p>
+      {% endif %}
+      {% if withheld %}
+      <p class="hint">整行不发送：{% for label, count in withheld %}{{ label }}的 {{ count }} 行{% if not loop.last %}、{% endif %}{% endfor %}。</p>
+      {% endif %}
+      {% for place, text in segments %}
+      <h3>{{ place }}</h3>
+      <div class="review-posting text">{{ text }}</div>
+      {% endfor %}
+    </section>
+
+    <section class="review-section" aria-labelledby="kept-title">
+      <h2 id="kept-title">不会发送</h2>
+      <ul class="points">
+        <li>原文件本身、附件和私有备注</li>
+        <li>经历库里的经历、基本资料和求职偏好</li>
+        <li>上面说的整行不发送的内容，以及没有读到文字的页面</li>
+      </ul>
+      <p class="hint">自动遮盖只认得出常见写法的邮箱、电话、证件号、链接、地址、“保密”一类字样，以及写在“姓名：”后面的姓名。没有标签的姓名、简历里其他人的名字和联系方式、不常见的写法都会原样发送。确认前请自己再看一遍上面的文字。</p>
+    </section>
+
+    {% if offer.empty %}
+    <p class="warning" role="status">遮盖之后没有可以发送的文字，所以不能发给外部服务。可以回到导入页用本机规则整理，什么都不会发送出去。</p>
+    {% elif offer.over %}
+    <p class="warning" role="status">遮盖之后有 {{ offer.request.outbound.size }} 字节，超过了单次 {{ offer.limit }} 字节的上限，所以不能发给外部服务，也不会自动截短。可以只粘贴简历里需要的部分重新导入，或回到导入页用本机规则整理。</p>
+    {% elif refusal %}
+    <p class="warning" role="status">{{ refusal }}所以现在不能发给外部服务，什么都没有发送。</p>
+    {% endif %}
+    <div class="form-actions review-actions">
+      {% if offer.sendable and not refusal %}
+      <button type="submit" class="primary">确认并发给外部服务</button>
+      {% endif %}
+      <a href="/imports/{{ row.id }}">返回导入页</a>
+    </div>
+  </form>
+</main>
+{% endblock %}

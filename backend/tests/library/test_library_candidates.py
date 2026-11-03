@@ -25,6 +25,8 @@ from app.library.candidates import (
     CUT_CONTEXT,
     FORMAT,
     INVALID_ANSWER,
+    LOCAL_ONLY,
+    MASKED,
     MAX_CANDIDATES,
     NEGATED,
     NONE_VALID,
@@ -40,10 +42,12 @@ from app.library.candidates import (
     UNKNOWN_KIND,
     UNSPLIT,
     check_answer,
+    check_sent_answer,
     current_values,
     where,
 )
 from app.library.imports import IMPORT_WINDOW, discard
+from app.library.outbound_resume import outbound
 from app.library.models import (
     Attachment,
     AuditEvent,
@@ -1049,3 +1053,47 @@ def test_resume_text_is_shown_as_text_never_as_markup(app, browser_a):
 
     for page in pages:
         assert HOSTILE not in page and "&lt;script&gt;alert(" in page
+
+
+# --- an outside service's answer (U2-C3) -------------------------------------------------------------
+
+
+def outside(kind: str, **fields) -> dict:
+    return {"kind": kind, "fields": {name: [{"segment": 1, "quote": quote}] for name, quote in fields.items()}}
+
+
+def test_an_outside_answer_is_kept_only_where_it_stands_in_what_was_sent_and_in_the_import():
+    own = [{"kind": "text", "number": 1, "text": "姓名：林合成\n邮箱：lin@example.com\n合成数据科技有限公司 | 数据分析实习生\nwe@example.com 负责数据清洗"}]
+    sent = outbound(own).segments
+    answer = json.dumps(
+        {
+            "candidates": [
+                outside("work", organization="合成数据科技有限公司", role="数据分析实习生"),
+                # A placeholder stands in what was sent, never in the import.
+                outside("other", title="邮箱：［已隐去邮箱］"),
+                # In the import, but its line was never sent.
+                outside("other", title="姓名：林合成"),
+                # Whole in what was sent; in the import, a team word around it was masked away.
+                outside("work", actions="负责数据清洗"),
+                outside("profile", email="lin@example.com"),
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    checked = check_sent_answer(answer, sent, own)
+
+    assert [found.extracted for found in checked.candidates] == [
+        {
+            "organization": [{"segment": 1, "quote": "合成数据科技有限公司"}],
+            "role": [{"segment": 1, "quote": "数据分析实习生"}],
+        }
+    ]
+    assert [(problem["position"], problem["reason"]) for problem in checked.problems] == [
+        (2, MASKED),
+        (3, NOT_IN_SOURCE),
+        (4, CUT_CONTEXT),
+        (5, LOCAL_ONLY),
+    ]
+    # The same answer, checked as the local rules' would be, keeps more: the outside one is checked twice.
+    assert len(check_answer(answer, own).candidates) == 3

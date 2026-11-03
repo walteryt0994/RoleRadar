@@ -64,7 +64,7 @@
   </div>
   {% endif %}
   {% block layout %}
-  <main id="main" class="page" tabindex="-1">
+  <main id="main" class="page" tabindex="-1"{% block main_attrs %}{% endblock %}>
     {% if notice %}
     <p class="notice" role="status">{{ notice }}</p>
     {% endif %}

@@ -73,6 +73,10 @@ CONFIDENTIAL_MARKERS = (
 )
 # What a posting may have masked: these patterns match the whole value.
 MASKED_IN_POSTING = (EMAIL, PHONE, ID_NUMBER)
+# What a masked value is replaced by, with the label of its kind: ［已隐去邮箱］.
+MASK = "［已隐去{}］"
+# How every placeholder begins: words that hold it were masked before they went out.
+MASK_START = "［已隐去"
 # Postings often say "薪资保密" or "公司名称保密" about themselves: that alone
 # does not mark them as confidential material.
 POSTING_MARKERS = tuple(marker for marker in CONFIDENTIAL_MARKERS if marker != "保密")
@@ -134,7 +138,7 @@ def masked_posting(text: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
             continue
 
         pieces.append(text[position:finding.start])
-        pieces.append(f"［已隐去{LABELS[finding.kind]}］")
+        pieces.append(MASK.format(LABELS[finding.kind]))
         position = finding.end
         hidden.append(finding.kind)
 

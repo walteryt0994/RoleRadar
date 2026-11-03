@@ -92,8 +92,9 @@ def terms(**changes) -> ApprovalTerms:
         "service_tier": "default",
         "reasoning_effort": "low",
         "max_output_tokens": 100,
+        "structuring_max_output_tokens": 300,
         "timeout_seconds": 30.0,
-        "structuring_max_chars": 20_000,
+        "structuring_max_bytes": 8_000,
         "max_requests": 3,
         "max_cost_micro_usd": 10_000,
         "prices": PRICES,
@@ -316,11 +317,12 @@ def test_another_process_cannot_take_the_lock_while_an_app_holds_it(gates, ledge
         {"purposes": frozenset({"analysis"})},
         {"service_tier": "priority"},
         {"reasoning_effort": "high"},
-        {"structuring_max_chars": 30_000},
+        {"structuring_max_bytes": 7_000},
+        {"structuring_max_output_tokens": 200},
         {"prices": PriceBasis(Decimal("1"), Decimal("0.5"), Decimal("2.5"), Decimal("8"), "synthetic", "2026-11-02", True)},
         {"prices": PriceBasis(Decimal("2"), None, Decimal("2.5"), Decimal("8"), "synthetic", "2026-11-02", True)},
     ],
-    ids=["cost", "requests", "output", "purposes", "tier", "effort", "chars", "price", "cache-item"],
+    ids=["cost", "requests", "output", "purposes", "tier", "effort", "bytes", "structuring-output", "price", "cache-item"],
 )
 def test_changed_terms_under_the_same_approval_are_refused_and_the_snapshot_kept(gates, ledger, changes):
     database, _ = ledger
@@ -400,6 +402,21 @@ def test_every_request_asks_for_the_approved_limit_and_effort_whatever_the_calle
         {"max_output_tokens": 100, "reasoning_effort": "low"},
         {"max_output_tokens": 50, "reasoning_effort": "low"},
     ]
+
+
+def test_a_structuring_request_has_its_own_output_limit_and_is_reserved_by_it(gates, ledger):
+    database, _ = ledger
+    gate = gates()
+    provider = SyntheticProvider()
+
+    with gate.task("structuring", "owner-a", provider) as gated:
+        gated.generate_text(PROMPT, max_output_tokens=4000)
+
+    ask(gate, provider, max_output_tokens=4000)
+
+    assert [call["max_output_tokens"] for call in provider.calls] == [300, 100]
+    # 150 input tokens at the dearest input item (2.5), and the purpose's own output limit at 8.
+    assert sorted(row.reserved_micro_usd for row in requests_of(database)) == [375 + 100 * 8, 375 + 300 * 8]
 
 
 def test_one_real_task_at_a_time_and_only_for_an_approved_purpose(gates):
@@ -672,7 +689,8 @@ APPROVED = {
     "ROLERADAR_LIVE_PURPOSES": "analysis, structuring",
     "ROLERADAR_LIVE_SERVICE_TIER": "default",
     "ROLERADAR_LIVE_REASONING_EFFORT": "omit",
-    "ROLERADAR_LIVE_STRUCTURING_MAX_CHARS": "20000",
+    "ROLERADAR_LIVE_STRUCTURING_MAX_BYTES": "8000",
+    "ROLERADAR_LIVE_STRUCTURING_MAX_OUTPUT_TOKENS": "8000",
     "ROLERADAR_LIVE_MAX_COST_USD": "0.50",
     "ROLERADAR_LIVE_PRICE_INPUT": "2",
     "ROLERADAR_LIVE_PRICE_CACHE_READ": "0.5",
@@ -706,7 +724,9 @@ def test_complete_terms_are_still_refused_while_no_input_bound_has_been_checked(
         ({"ROLERADAR_LIVE_REASONING_EFFORT": "very high"}, "推理强度"),
         ({"ROLERADAR_LIVE_PRICE_SOURCE": "http://synthetic.invalid/pricing"}, "价格来源"),
         ({"ROLERADAR_LIVE_PRICE_CHECKED_ON": "today"}, "核对日期"),
-        ({"ROLERADAR_LIVE_STRUCTURING_MAX_CHARS": "100001"}, "字数上限"),
+        ({"ROLERADAR_LIVE_STRUCTURING_MAX_BYTES": "8001"}, "字节上限"),
+        ({"ROLERADAR_LIVE_STRUCTURING_MAX_OUTPUT_TOKENS": "8001"}, "简历整理输出上限"),
+        ({"ROLERADAR_LIVE_STRUCTURING_MAX_OUTPUT_TOKENS": None}, "ROLERADAR_LIVE_STRUCTURING_MAX_OUTPUT_TOKENS"),
     ],
 )
 def test_terms_that_are_missing_or_doubtful_are_refused(change, says):
@@ -730,6 +750,7 @@ def test_terms_read_from_the_environment_are_exact_and_never_synthetic(monkeypat
 
     assert approval.purposes == {"analysis", "structuring"} and approval.reasoning_effort is None
     assert (approval.max_cost_micro_usd, approval.max_requests, approval.max_output_tokens) == (500_000, 6, 1500)
+    assert (approval.structuring_max_bytes, approval.structuring_max_output_tokens) == (8000, 8000)
     assert approval.prices == PriceBasis(
         Decimal("2"), Decimal("0.5"), None, Decimal("8"), "https://synthetic.invalid/pricing", "2026-11-02"
     )
@@ -752,6 +773,19 @@ def test_an_approved_service_tier_is_asked_for_by_the_real_provider():
         provider.generate_text(PROMPT)
 
     assert request["service_tier"] == "flex" and request["store"] is False
+
+
+@pytest.mark.parametrize("purposes, cap", [("analysis, structuring", 8000), ("analysis", 1500)])
+def test_the_real_provider_is_capped_at_the_largest_output_limit_its_approval_covers(monkeypatch, purposes, cap):
+    checked = InputBound("checked-for-test", BOUND.tokens, "https://synthetic.invalid/docs", "2026-11-02")
+    monkeypatch.setitem(live_gate.CERTIFIED_INPUT_BOUNDS, ("openai", "synthetic-model", "default"), checked)
+    environ = {**APPROVED, "ROLERADAR_ANALYSIS_MODE": "live", "ROLERADAR_LIVE_PURPOSES": purposes}
+
+    with patch("app.ai_provider.OpenAI"), patch("app.ai_provider.DefaultHttpxClient"):
+        provider = live.analysis_setup(environ).make_provider()
+
+    # Each request is capped again by its purpose behind the gate.
+    assert provider._config.max_output_tokens == cap
 
 
 # --- the app ------------------------------------------------------------------------------------------

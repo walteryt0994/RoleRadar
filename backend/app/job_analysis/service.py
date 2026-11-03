@@ -87,15 +87,22 @@ class LiveService:
         self.recipient = Recipient(terms.provider, terms.model, terms.endpoint)
         self.notice_version = LIVE_NOTICE_VERSION
 
+    def provider_for(self, task, sending: Sending):
+        """The analysis task's provider behind the gate, as a context (runner.run_task)."""
+        return self.provider_of(task.owner_id, sending, Purpose.ANALYSIS)
+
     @contextmanager
-    def provider_for(self, task, sending: Sending) -> Iterator[AIProvider]:
-        """The task's provider behind the gate: LiveBlocked or LiveRefused when it may not start."""
+    def provider_of(self, owner_id: str, sending: Sending, purpose: Purpose) -> Iterator[AIProvider]:
+        """A provider behind the gate for one task of this purpose (U2-C3: structuring too).
+
+        LiveBlocked or LiveRefused when it may not start; ProviderUnavailable when it cannot be built.
+        """
         try:
             provider = self._make_provider()
         except Exception as error:
             raise ProviderUnavailable() from error
 
-        with self.gate.task(Purpose.ANALYSIS, task.owner_id, provider, sending=sending) as gated:
+        with self.gate.task(purpose, owner_id, provider, sending=sending) as gated:
             yield gated
 
     def refusal(self) -> Blocked | None:

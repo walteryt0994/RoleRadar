@@ -108,6 +108,13 @@ REVIEW_ROUTES = {
     ("POST", "/imports/{import_id}/candidates/{candidate_id}/restore"),
     ("GET", "/imports/{import_id}/candidates.json"),
 }
+# Structuring an import by a real service (U2-C3); protected like the import pages.
+STRUCTURING_ROUTES = {
+    ("GET", "/imports/{import_id}/structure/confirm"),
+    ("POST", "/imports/{import_id}/structure/confirm"),
+    ("POST", "/imports/{import_id}/structure/cancel"),
+    ("GET", "/imports/{import_id}/structure/status"),
+}
 # Adopting a candidate at the user's choice (U2-B2b).
 ADOPTION_ROUTES = {
     ("GET", "/imports/{import_id}/candidates/{candidate_id}/adopt"),
@@ -243,6 +250,7 @@ def test_every_route_is_either_public_or_listed_as_protected(app):
         | JOB_ROUTES
         | IMPORT_ROUTES
         | REVIEW_ROUTES
+        | STRUCTURING_ROUTES
         | ADOPTION_ROUTES
     )
 

@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
 {% block title %}核对整理出的条目{% endblock %}
+{# A real run of this process going on: job_analysis.js shows its progress and reloads when it ends. #}
+{% block main_attrs %}{% if handed is not none %} data-task-running data-task-status="/imports/{{ row.id }}/structure/status"{% endif %}{% endblock %}
 {% block content %}
 {# One candidate: what it says now, where each value was found, what to be careful about,
    what it may duplicate, and its actions; once adopted, where it went and which fields. #}
@@ -104,7 +106,11 @@
   <p class="import-meta">{{ name }} · {% if draft %}已保存的待核对草稿（{{ draft.saved_at|localtime }} 保存，不会到期）{% else %}保留到 {{ row.expires_at|localtime }}（{{ format_remaining(row.expires_at, now) }}）{% endif %}</p>
 </header>
 <div class="review-terms">
+  {% if live_structured %}
+  <p>这些条目由{{ structured_by }}整理，基本资料由本机规则整理。发给外部服务的是你确认过的、遮盖后的文字；整理可能拆错、漏掉或放错类别。自动整理的每一栏都逐字摘自原文并标出出处，对不上原文的已经丢弃，但这不代表内容已经核实。</p>
+  {% else %}
   <p>这些条目由{{ structured_by }}整理：只按标题、日期和列表符号这类简单规则拆分，可能拆错、漏掉或放错类别，什么都没有发送出去。自动整理的每一栏都逐字摘自原文并标出出处，但这不代表内容已经核实。</p>
+  {% endif %}
   {% if draft %}
   <p>条目、你的修改和“不加入”的选择，都跟这份草稿一起保留，直到你删除草稿；删除后 {{ RESTORE_DAYS }} 天内可以在回收站恢复。保存草稿不代表内容已经核实：只有你逐条选择“加入…”并确认的内容，才会写进你的经历或基本资料；已经加入的不会因为删除草稿而撤销。求职偏好不会被改动。</p>
   {% else %}
@@ -114,7 +120,25 @@
 {% if row.state == "partial" %}
 <p class="warning">这份简历有页面没有读出来，整理结果可能缺内容。</p>
 {% endif %}
-{% if running and not can_ask_again %}
+{% if live_refusal %}
+<p class="warning" role="status">发给外部服务的整理现在不可用：{{ live_refusal }}</p>
+{% endif %}
+{% if running and not can_ask_again and live_structured %}
+<div class="notice" role="status">
+  {% if handed is not none %}
+  <p data-task-step>正在由外部服务整理。已交给服务的请求：{{ handed }} 次。</p>
+  <p class="hint">完成后这一页会自动更新；没有更新时可以<a href="/imports/{{ row.id }}/review">刷新状态</a>。</p>
+  {% else %}
+  <p>正在由外部服务整理，但这次整理不是在当前运行的应用里开始的（应用可能重启过），进度无法确认。</p>
+  {% endif %}
+  <form method="post" action="/imports/{{ row.id }}/structure/cancel" data-task-cancel>
+    {{ m.csrf() }}
+    <input type="hidden" name="attempt" value="{{ structuring.attempt }}">
+    <button type="submit">取消整理</button>
+  </form>
+  <p class="hint">取消会停止还没有发出的请求；已经交给外部服务的请求无法撤回，它的回答会被丢弃。</p>
+</div>
+{% elif running and not can_ask_again %}
 <p class="notice" role="status">正在整理。稍后<a href="/imports/{{ row.id }}/review">刷新</a>查看结果。</p>
 {% elif failure or (running and can_ask_again) %}
 <div class="error" role="alert">
@@ -127,10 +151,20 @@
   </ul>
   {% endif %}
 </div>
+{% if live_offered %}
+<div class="form-actions">
+  <a class="button primary" href="/imports/{{ row.id }}/structure/confirm">重新发给外部服务整理…</a>
+  <form method="post" action="/imports/{{ row.id }}/structure" class="inline">
+    {{ m.csrf() }}
+    <button type="submit">用本机规则整理（不发送）</button>
+  </form>
+</div>
+{% else %}
 <form method="post" action="/imports/{{ row.id }}/structure">
   {{ m.csrf() }}
   <div class="form-actions"><button type="submit" class="primary">重新整理</button></div>
 </form>
+{% endif %}
 {% elif problems %}
 <div class="warning" role="status">
   <p>另有 {{ problems|length }} 条整理结果没有通过原文核对，已经丢弃，没有显示在下面：</p>
@@ -168,5 +202,10 @@
   {% endfor %}
 </section>
 {% endif %}
+{% endif %}
+{% endblock %}
+{% block scripts %}
+{% if handed is not none %}
+<script src="/static/job_analysis.js"></script>
 {% endif %}
 {% endblock %}

@@ -18,8 +18,10 @@ like one already there (by name only), or like one with differences; it
 writes nothing. All of it is part of the import: it is kept as the import
 is (for seven days, or as a saved draft), exported with it, and goes with
 it (imports._end). Nothing here writes to the experiences, the profile or
-the preferences, and nothing is sent anywhere: in this batch the only
-structurer is the local simulation.
+the preferences, and nothing is sent anywhere from here: the local
+simulation answers in this process, and a real service (U2-C3) is asked
+only by app.live_structuring, in the background, through the same run records
+(start_structuring, still_current, finish_structuring, end_attempt).
 """
 import copy
 import logging
@@ -39,10 +41,15 @@ from app.library.candidates import (
     CONTRACT_VERSION,
     FAILURE_TEXTS,
     INTENTION,
+    INVALID_ANSWER,
     KIND_LABELS,
+    MAX_CANDIDATES,
+    NONE_VALID,
+    NOTHING_FOUND,
     PROBLEM_TEXTS,
     REFERENCE_KINDS,
     SERVICE_FAILED,
+    TOO_MANY,
     Checked,
     Structurer,
     changed_fields,
@@ -54,7 +61,7 @@ from app.library.candidates import (
 from app.library.content import CATEGORY_FIELDS, EXPERIENCE_CATEGORIES, PROFILE, TITLE_FIELDS, Field, display_title
 from app.library.db import Database
 from app.library.errors import NotFound
-from app.library.imports import IMPORT_OBJECT, STALE_STRUCTURING_AFTER, is_open, locator, open_import
+from app.library.imports import IMPORT_OBJECT, STALE_STRUCTURING_AFTER, draft_of, is_open, locator, open_import
 from app.library.models import (
     AdoptionAction,
     CandidateState,
@@ -69,12 +76,58 @@ from app.library.models import (
 )
 from app.library.resume_rules import SIMULATION_NAME
 from app.library.service import current_document, list_experiences, new_id, record_event
+from app.library.structuring_runs import Stop
 
 logger = logging.getLogger("roleradar.library")
 
-# A run takes well under a second; one this old lost its request.
 STRUCTURABLE = (ImportState.READ, ImportState.PARTIAL)
 STRUCTURER_LABELS = {SIMULATION_NAME: "本机模拟整理规则（不是 AI）"}
+# A real service's structurer is named live:<provider>/<model>/<prompt version> (app.live_structuring, U2-C3).
+LIVE_PREFIX = "live:"
+# What came of a real run that gave no candidates. Its outcome ends in SENT when its request went
+# out, or may have (ai_provider.went_out), so each text says whether anything was sent.
+SENT = "_sent"
+PROVIDER_UNAVAILABLE = "provider_unavailable"
+PROVIDER_CONFIG = "provider_config"
+PROVIDER_TIMEOUT = "provider_timeout"
+PROVIDER_FAILED = "provider_failed"
+INTERNAL_ERROR = "internal_error"
+# A run of a process that is gone, cancelled after a restart: whether it was sent is not known here.
+INTERRUPTED = "interrupted"
+LIVE_FAILURE_TEXTS = {
+    "cancelled": "这次整理已取消。",
+    "logged_out": "退出登录时，这次整理停止了。",
+    "expired": "这次导入已经到期，整理停止了。",
+    "run_timeout": f"这次整理超过了 {int(STALE_STRUCTURING_AFTER.total_seconds() // 60)} 分钟的运行时限，停止了。",
+    "ended": "这次导入已经结束或有了变化，整理停止了。",
+    "replaced": "另一次整理已经开始，这次停止了。",
+    "shutdown": "应用停止时，这次整理中断了。",
+    "gate_stopped": "真实服务已停用。",
+    "gate_paused": "这批批准已暂停，继续需要新的批准。",
+    "gate_busy": "另一个真实任务正在进行，请等它结束后再整理。",
+    "gate_purpose": "这批批准不包括简历整理。",
+    "gate_requests": "这批批准的请求次数已经用完。",
+    "gate_cost": "这次请求按最坏情况预留会超出这批批准的费用上限。",
+    "gate_closed": "服务正在停止。",
+    "gate_ended": "这次整理已经结束。",
+    PROVIDER_UNAVAILABLE: "外部服务无法使用（无法建立，或和批准的接收方不符）。",
+    PROVIDER_CONFIG: "外部服务的本机设置有问题，请求在发出之前就停止了。",
+    PROVIDER_TIMEOUT: "外部服务没有在时限内回答。",
+    # An unfinished answer, an error response, a refusal or no text: which one is not said.
+    PROVIDER_FAILED: "外部服务没有返回可用的整理结果。",
+    INTERNAL_ERROR: "整理时程序出错。",
+    INVALID_ANSWER: "外部服务返回的整理结果不是约定的格式。",
+    # The service's candidates and the local profile together: more than the contract allows is refused whole.
+    TOO_MANY: f"整理出的条目（连同本机规则整理的基本资料）超过了 {MAX_CANDIDATES} 条的上限。可以只粘贴简历里需要的部分，重新导入后再整理。",
+    NOTHING_FOUND: "外部服务没有整理出任何条目。",
+    NONE_VALID: "外部服务整理出的条目都没有通过原文核对。",
+}
+SENT_TEXT = "这次请求已经交给外部服务，可能已经产生费用；什么都没有保存。"
+NOT_SENT_TEXT = "没有发出请求，什么都没有保存。"
+INTERRUPTED_TEXT = "这次整理已经中断（应用可能重启过），结果不会保存；中断之前请求可能已经发出。"
+# The outcomes of a stopped run (structuring_runs.Stop): a cancel writes its own at once, before
+# its request has come back, so only these may still be set right by what the request showed.
+STOPPED = frozenset(stop.value for stop in Stop)
 STATE_LABELS = {CandidateState.PENDING: "待核对", CandidateState.EXCLUDED: "不加入", CandidateState.ADOPTED: "已加入"}
 ACTION_LABELS = {
     AdoptionAction.NEW: "作为新的经历草稿加入",
@@ -115,6 +168,9 @@ class Attempt:
     id: str
     import_revision: int
     segments: list
+    # When it began, and when its import stops being in use (None: a saved draft does not expire).
+    started_at: datetime | None = None
+    valid_until: datetime | None = None
 
 
 class CandidateConflict(Exception):
@@ -160,10 +216,30 @@ def structuring_of(db: Session, import_id: str) -> ImportStructuring | None:
 
 
 def start_structuring(
-    database: Database, owner_id: str, import_id: str, structurer_name: str, now: datetime
+    database: Database,
+    owner_id: str,
+    import_id: str,
+    structurer_name: str,
+    clock: Callable[[], datetime],
+    *,
+    prepare: Callable[[ResumeImport, ImportStructuring | None], None] | None = None,
+    begin: Callable[[Attempt], None] | None = None,
 ) -> tuple[Asked | None, Attempt | None]:
-    """Begin a run, or say why none begins; NotFound if the import is not open (or is another's)."""
+    """Begin a run, or say why none begins; NotFound if the import is not open (or is another's).
+
+    The time is read once the transaction holds the write lock, so a request
+    that waited for it is judged by the moment it acts. prepare(row, current),
+    if given, runs once a run may begin and before anything is written, with
+    the record of the run this one would replace (or None): whatever it raises
+    begins nothing. A real run's confirmation is checked there (U2-C3): it
+    names the run it replaces, so the run begun here uses it up. begin(attempt), if given, runs once the run is written and
+    before it is committed: a real run is entered in its registry there, so
+    no stop can miss it once it exists.
+    """
     with database.transaction() as db:
+        # The first statement takes the write lock; the clock is read after it.
+        db.get(ResumeImport, import_id)
+        now = clock()
         row = open_import(db, owner_id, import_id, now)
 
         if row.state not in STRUCTURABLE or not row.segments:
@@ -178,6 +254,9 @@ def start_structuring(
             if current.state == StructuringState.RUNNING and now < current.started_at + STALE_STRUCTURING_AFTER:
                 return Asked.RUNNING, None
 
+        if prepare is not None:
+            prepare(row, current)
+
         if current is None:
             current = ImportStructuring(import_id=row.id, owner_id=owner_id)
             db.add(current)
@@ -191,8 +270,42 @@ def start_structuring(
         current.problems = None
         current.started_at = now
         current.finished_at = None
+        attempt = Attempt(
+            current.attempt,
+            row.revision,
+            copy.deepcopy(row.segments),
+            started_at=now,
+            valid_until=None if draft_of(db, row.id) is not None else row.expires_at,
+        )
 
-        return None, Attempt(current.attempt, row.revision, copy.deepcopy(row.segments))
+        if begin is not None:
+            begin(attempt)
+
+        return None, attempt
+
+
+def still_current(database: Database, owner_id: str, import_id: str, attempt: Attempt, clock: Callable[[], datetime]) -> bool:
+    """Whether a run may still send: its import open and unchanged, and the run the import's, running and in time.
+
+    Read once the write lock is held. A real run asks this before its gate
+    reserves anything (U2-C3); the last word before its request is handed on
+    is its registry's (structuring_runs).
+    """
+    with database.transaction() as db:
+        row = db.get(ResumeImport, import_id)
+        now = clock()
+        current = db.get(ImportStructuring, import_id)
+
+        return (
+            row is not None
+            and row.owner_id == owner_id
+            and is_open(db, row, now)
+            and row.revision == attempt.import_revision
+            and current is not None
+            and current.state == StructuringState.RUNNING
+            and current.attempt == attempt.id
+            and now < current.started_at + STALE_STRUCTURING_AFTER
+        )
 
 
 def finish_structuring(
@@ -218,6 +331,8 @@ def finish_structuring(
             or current is None
             or current.state != StructuringState.RUNNING
             or current.attempt != attempt.id
+            # A run past its time is over: asking again may already be allowed (U2-C3).
+            or now >= current.started_at + STALE_STRUCTURING_AFTER
         ):
             return Asked.DROPPED
 
@@ -259,7 +374,7 @@ def structure_import(
     database: Database, structurer: Structurer, owner_id: str, import_id: str, clock: Callable[[], datetime]
 ) -> Asked:
     """Ask for candidates once: start a run, let the structurer answer, check and store the answer."""
-    asked, attempt = start_structuring(database, owner_id, import_id, structurer.name, clock())
+    asked, attempt = start_structuring(database, owner_id, import_id, structurer.name, clock)
 
     if attempt is None:
         return asked
@@ -273,6 +388,112 @@ def structure_import(
         checked = check_answer(answer, attempt.segments)
 
     return finish_structuring(database, owner_id, import_id, attempt, checked, clock)
+
+
+def end_attempt(
+    database: Database, owner_id: str, import_id: str, attempt_id: str, outcome: str, clock: Callable[[], datetime]
+) -> bool:
+    """End a run that gave no candidates with its outcome; False if it is no longer the import's running run."""
+    with database.transaction() as db:
+        current = db.get(ImportStructuring, import_id)
+        now = clock()
+
+        if (
+            current is None
+            or current.owner_id != owner_id
+            or current.state != StructuringState.RUNNING
+            or current.attempt != attempt_id
+        ):
+            return False
+
+        current.state = StructuringState.FAILED
+        current.outcome = outcome
+        current.problems = None
+        current.finished_at = now
+
+        return True
+
+
+def reconcile_sent(database: Database, owner_id: str, import_id: str, attempt_id: str, sent: bool) -> bool:
+    """Make a stopped run's outcome say what its request showed once it came back (U2-C3); True if it changed.
+
+    A cancel is written at once, while the run's request may still be out,
+    and says sent if it was handed on: it may have gone out. When the request
+    comes back, its provider's evidence decides (ai_provider.went_out): only
+    one explicitly not sent, with nothing reported, takes the mark off; a
+    timeout or anything unknown keeps it. The stop stays the outcome. Only
+    that run's own record is changed, while a stop still ends it: never a
+    newer run's, and a record that is gone stays gone.
+    """
+    with database.transaction() as db:
+        current = db.get(ImportStructuring, import_id)
+
+        if (
+            current is None
+            or current.owner_id != owner_id
+            or current.attempt != attempt_id
+            or current.state != StructuringState.FAILED
+            or current.outcome is None
+            or current.outcome.removesuffix(SENT) not in STOPPED
+        ):
+            return False
+
+        outcome = current.outcome.removesuffix(SENT) + (SENT if sent else "")
+
+        if outcome == current.outcome:
+            return False
+
+        current.outcome = outcome
+
+        return True
+
+
+def is_live(structurer: str) -> bool:
+    return structurer.startswith(LIVE_PREFIX)
+
+
+def running_here(runs, structuring: ImportStructuring | None, now: datetime) -> int | None:
+    """For a real run of this process still going on: its requests handed on so far (runs.handed); else None."""
+    if structuring is None or structuring.state != StructuringState.RUNNING or not is_live(structuring.structurer):
+        return None
+
+    if can_ask_again(structuring, now):
+        return None
+
+    return runs.handed(structuring.attempt)
+
+
+def structurer_label(structurer: str) -> str:
+    """Who structured an import, as the pages and the export say it."""
+    if structurer in STRUCTURER_LABELS:
+        return STRUCTURER_LABELS[structurer]
+
+    if is_live(structurer):
+        provider, _, rest = structurer.removeprefix(LIVE_PREFIX).partition("/")
+        model = rest.rpartition("/")[0]
+
+        return f"外部 AI 服务（{provider} {model}）"
+
+    return "整理服务"
+
+
+def failure_text(structurer: str, outcome: str | None) -> str | None:
+    """What the outcome of a run says, for the local rules or for a real service."""
+    if outcome is None:
+        return None
+
+    if not is_live(structurer):
+        return FAILURE_TEXTS.get(outcome)
+
+    if outcome == INTERRUPTED:
+        return INTERRUPTED_TEXT
+
+    text = LIVE_FAILURE_TEXTS.get(outcome.removesuffix(SENT))
+
+    if text is None:
+        return None
+
+    return text + (SENT_TEXT if outcome.endswith(SENT) else NOT_SENT_TEXT)
 
 
 def can_ask_again(structuring: ImportStructuring | None, now: datetime) -> bool:
@@ -602,12 +823,12 @@ def review_record(
             "found 是逐字摘自原文的内容，sources 是它的出处；edited 是你自己改写的内容，不是原文引用。"
             "技能只在你选择时作为自述写进基本资料；当时的求职意向只作参考，不会改动求职偏好。"
         ),
-        "structured_by": STRUCTURER_LABELS.get(structuring.structurer, structuring.structurer),
+        "structured_by": structurer_label(structuring.structurer),
         "structurer": structuring.structurer,
         "contract_version": structuring.contract_version,
         "state": structuring.state,
         "outcome": structuring.outcome,
-        "outcome_text": FAILURE_TEXTS.get(structuring.outcome) if structuring.outcome else None,
+        "outcome_text": failure_text(structuring.structurer, structuring.outcome),
         "started_at": _iso(structuring.started_at),
         "finished_at": _iso(structuring.finished_at),
         **kept_record(row, draft),

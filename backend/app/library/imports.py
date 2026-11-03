@@ -86,6 +86,7 @@ from app.library.resume_reader import (
     failed,
 )
 from app.library.service import new_id, record_event
+from app.library.structuring_runs import StructuringRuns
 from app.library.upload import MULTIPART_OVERHEAD, UNEXPECTED_PART, UploadForm
 
 IMPORT_WINDOW = timedelta(days=7)
@@ -764,6 +765,7 @@ def discard(
     now: datetime,
     *,
     check: Callable[[Session], None] | None = None,
+    runs: StructuringRuns | None = None,
 ) -> Ended:
     """End one open import at the user's request; NotFound if it is not open (or is another's).
 
@@ -773,7 +775,9 @@ def discard(
     restore period, never discarded by an older page's form. check, if
     given, runs in the same transaction before anything ends; whatever it
     raises leaves the import as it was (U2-B3b: the copies a finish page
-    described must still be there).
+    described must still be there). A real structuring run of the import is
+    stopped in its registry, runs, before this commits (U2-C3): from then on
+    it hands nothing on.
     """
     with database.transaction() as db:
         row = open_import(db, owner_id, import_id, now)
@@ -783,6 +787,9 @@ def discard(
 
         if check is not None:
             check(db)
+
+        if runs is not None:
+            runs.stop_import(row.id)
 
         _end(db, row, ImportState.DISCARDED, now)
         record_event(db, owner_id, row.id, IMPORT_OBJECT, row.id, "import_discarded", now)
@@ -949,13 +956,15 @@ def delete_draft(
     clock: Callable[[], datetime],
     *,
     check: Callable[[Session], None] | None = None,
+    runs: StructuringRuns | None = None,
 ) -> None:
     """Put a saved draft in the recycle bin until RESTORE_WINDOW from now; nothing it holds is removed.
 
     A reading, or a search for candidates, still running for it is ended
     here as interrupted and the revision moves on: a late result is never
     taken in, now or after a restore, and restoring starts nothing. The
-    caller stops the reading process itself. check works as for discard.
+    caller stops the reading process itself. check and runs work as for
+    discard.
     """
     with database.transaction() as db:
         row, now = _locked(db, owner_id, import_id, clock)
@@ -968,6 +977,9 @@ def delete_draft(
 
         if check is not None:
             check(db)
+
+        if runs is not None:
+            runs.stop_import(row.id)
 
         draft = draft_of(db, row.id)
         draft.deleted_at = now

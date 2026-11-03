@@ -26,7 +26,6 @@ from fastapi.responses import Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from app.library.attachments import UploadRejected, UploadTokenRejected
-from app.library.candidates import FAILURE_TEXTS
 from app.library.errors import FileStoreError, NotFound, StorageError
 from app.library.files import IMPORTS, read_chunks
 from app.library.identity import CurrentUser
@@ -86,7 +85,7 @@ from app.library.resume_reader import (
     TRUNCATED,
     UNREADABLE_PAGES,
 )
-from app.library.review import STRUCTURABLE, can_ask_again, candidates_of, structuring_of
+from app.library.review import STRUCTURABLE, can_ask_again, candidates_of, failure_text, is_live, structuring_of
 from app.library.web import NOTICES as LIBRARY_NOTICES
 from app.library.web import (
     DOWNLOAD_POLICY,
@@ -326,6 +325,9 @@ def import_detail(import_id: str, request: Request, notice: str = "", user: Curr
         return gone_page(request, user)
 
     failed = structuring is not None and structuring.state == StructuringState.FAILED
+    can_structure = row.state in STRUCTURABLE and can_ask_again(structuring, now)
+    # With a real service for structuring, what it would send of this import, against its limits (U2-C3).
+    live_offer = request.app.state.structuring.offer(row.segments) if can_structure and row.segments else None
 
     return render(
         request,
@@ -341,8 +343,10 @@ def import_detail(import_id: str, request: Request, notice: str = "", user: Curr
             "can_retry": retryable(row),
             "structurable": row.state in STRUCTURABLE,
             "structuring": structuring,
-            "can_structure": row.state in STRUCTURABLE and can_ask_again(structuring, now),
-            "structuring_failure": FAILURE_TEXTS.get(structuring.outcome) if failed else None,
+            "can_structure": can_structure,
+            "structuring_failure": failure_text(structuring.structurer, structuring.outcome) if failed else None,
+            "live_running": structuring is not None and is_live(structuring.structurer),
+            "live_offer": live_offer,
             "candidate_counts": {
                 "total": len(candidates),
                 "pending": sum(1 for candidate in candidates if candidate.state == CandidateState.PENDING),
@@ -625,7 +629,7 @@ def discard_import(import_id: str, request: Request, user: CurrentUser = Depends
     rt = runtime(request)
 
     try:
-        ended = discard(rt.database, rt.files, rt.readings, user.id, import_id, rt.now())
+        ended = discard(rt.database, rt.files, rt.readings, user.id, import_id, rt.now(), runs=rt.runs)
     except NotFound:
         return gone_page(request, user)
     except SavedDraft:
@@ -734,7 +738,7 @@ def delete_import(
     back = [(f"{BASE}/{import_id}", "回到这份草稿")]
 
     try:
-        delete_draft(rt.database, user.id, import_id, _expected_revision(form), rt.now)
+        delete_draft(rt.database, user.id, import_id, _expected_revision(form), rt.now, runs=rt.runs)
     except NotFound:
         return gone_page(request, user)
     except ImportChanged:

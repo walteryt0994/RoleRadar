@@ -183,9 +183,12 @@ class ApprovalTerms:
     service_tier: str
     # None: requests send no reasoning effort at all.
     reasoning_effort: str | None
+    # The output limit of an analysis request; a structuring request has its own (U2-C3).
     max_output_tokens: int
+    structuring_max_output_tokens: int
     timeout_seconds: float
-    structuring_max_chars: int
+    # The most a structuring request may send of a resume: UTF-8 bytes of its masked text (U2-C3).
+    structuring_max_bytes: int
     max_requests: int
     max_cost_micro_usd: int
     prices: PriceBasis
@@ -203,14 +206,19 @@ class ApprovalTerms:
             "service_tier": self.service_tier,
             "reasoning_effort": self.reasoning_effort,
             "max_output_tokens": self.max_output_tokens,
+            "structuring_max_output_tokens": self.structuring_max_output_tokens,
             "timeout_seconds": self.timeout_seconds,
-            "structuring_max_chars": self.structuring_max_chars,
+            "structuring_max_bytes": self.structuring_max_bytes,
             "max_requests": self.max_requests,
             "max_cost_micro_usd": self.max_cost_micro_usd,
             "prices": self.prices.snapshot(),
             "input_bound": self.input_bound,
             "rules_checked_on": self.rules_checked_on,
         }
+
+    def output_limit(self, purpose: str) -> int:
+        """The output limit of a request for this purpose."""
+        return self.structuring_max_output_tokens if purpose == Purpose.STRUCTURING else self.max_output_tokens
 
 
 @dataclass(frozen=True)
@@ -671,7 +679,7 @@ class GatedProvider(AIProvider):
     for; blocked those the gate stopped, which never went out; handed those
     that went out or may have (ai_provider.went_out), which the ledger never
     releases. Every request asks for the approval's reasoning effort and at
-    most its output limit, whatever the caller asks.
+    most its output limit for the task's purpose, whatever the caller asks.
     """
 
     def __init__(
@@ -705,7 +713,7 @@ class GatedProvider(AIProvider):
         json_schema_format: JsonSchemaFormat | None = None,
     ) -> GenerationResult:
         gate = self._gate
-        limit = gate.terms.max_output_tokens
+        limit = gate.terms.output_limit(self._purpose)
         limit = limit if max_output_tokens is None else min(max_output_tokens, limit)
         self.attempts += 1
 

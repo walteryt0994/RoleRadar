@@ -328,9 +328,9 @@ def finish_import(
 
     try:
         if ending == "discard":
-            ended = discard(rt.database, rt.files, rt.readings, user.id, import_id, rt.now(), check=check)
+            ended = discard(rt.database, rt.files, rt.readings, user.id, import_id, rt.now(), check=check, runs=rt.runs)
         else:
-            delete_draft(rt.database, user.id, import_id, _expected_revision(form), rt.now, check=check)
+            delete_draft(rt.database, user.id, import_id, _expected_revision(form), rt.now, check=check, runs=rt.runs)
     except KeepingChanged:
         return finish_page(request, user, import_id, status_code=409, error=KEEPING_CHANGED)
     except NotFound:

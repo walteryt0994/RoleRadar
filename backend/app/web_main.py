@@ -8,7 +8,9 @@ as an attachment (app.library.finish_web), the job analysis pages
 (app.job_analysis), stores data in its own SQLite file and attachment
 folder, and never imports the legacy database, models or routers. A resume
 import is read on this machine in a child process and sent nowhere; its
-candidates come from local simulated rules and are sent nowhere. The job
+candidates come from local simulated rules, or, with a real service whose
+approval covers structuring, from that service, sent only the masked text
+the user confirmed (app.live_structuring, U2-C3). The job
 analysis uses the shared job description contracts of
 app.schemas, which hold no database. Importing this module has no side
 effects; create_app() does the work. The analysis uses the simulated
@@ -46,6 +48,7 @@ from app.job_analysis.live import analysis_setup
 from app.job_analysis.service import LiveService
 from app.job_analysis.tasks import SWEEP_SECONDS
 from app.job_analysis.web import JobAnalysisRuntime, install_job_analysis
+from app.live_structuring.web import install_structuring
 from app.library.web import LibraryRuntime, build_templates, install_web
 from app.live_gate import LiveRefused, LiveSetup, open_gate
 
@@ -127,6 +130,8 @@ def create_app(
     install_review(app)
     install_adoption(app)
     install_finish(app)
+    # One real service, one gate: structuring (U2-C3) and the analysis share it.
+    install_structuring(app, live=service)
     install_job_analysis(app, simulation_delay=simulation_delay, sweep_seconds=job_sweep_seconds, live=service)
 
     return app
@@ -159,7 +164,9 @@ async def _lifespan(app: FastAPI):
                 with contextlib.suppress(asyncio.CancelledError):
                     await running
 
-        # Running analyses stop before their next request; their tasks are forgotten.
+        # Real structuring runs and running analyses stop before their next request; the gate
+        # closes once (jobs.shutdown), after any request still out is settled.
+        app.state.structuring.shutdown()
         jobs.shutdown()
         runtime.database.engine.dispose()
 

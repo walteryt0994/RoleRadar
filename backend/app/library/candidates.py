@@ -48,6 +48,7 @@ from app.library.content import (
 )
 from app.library.errors import ContentError
 from app.library.imports import locator, segment_text
+from app.outbound_review import MASK_START
 
 CONTRACT_VERSION = "1"
 # A resume holds a few dozen entries at most; the bound keeps a page and its rows small.
@@ -84,6 +85,9 @@ NOT_IN_SOURCE = "not_in_source"
 NOT_ONE_LINE = "not_one_line"
 TOO_LONG = "too_long"
 CUT_CONTEXT = "cut_context"
+# Only for an outside service's answer (U2-C3): it quoted a placeholder, or gave a basic profile.
+MASKED = "masked"
+LOCAL_ONLY = "local_only"
 PROBLEM_TEXTS = {
     FORMAT: "格式不符合约定",
     UNKNOWN_KIND: "类别不是可以整理的类别",
@@ -93,6 +97,8 @@ PROBLEM_TEXTS = {
     NOT_ONE_LINE: "只能写一行的栏目里有多行",
     TOO_LONG: "超过了这一栏的字数上限",
     CUT_CONTEXT: "引用截掉了同一句里的否定、团队、计划或不确定时间的说法",
+    MASKED: "引用了发送前已经隐去的内容",
+    LOCAL_ONLY: "基本资料只由本机规则整理，外部服务给出的这一条不采用",
 }
 
 # Why an answer gave nothing to keep. SERVICE_FAILED is said by review.py.
@@ -177,9 +183,11 @@ BREAK = re.compile(r"[\n。！？；;!?|｜\t]|\.(?=\s)| {2,}|　")
 class Structurer(Protocol):
     """Who turns an import's segments into an answer of this contract.
 
-    Only the local simulation (resume_rules.SimulatedStructurer) exists in
-    this batch. What a real service may be sent, and how it is approved, is
-    for U2-C to decide; nothing here prepares or allows that.
+    The local simulation (resume_rules.SimulatedStructurer) answers at once,
+    in this process. A real service (app.live_structuring, U2-C3) is not one of
+    these: it is sent only the masked text the user confirmed, in the
+    background and behind its gate, and its answer is checked by
+    check_sent_answer.
     """
 
     # Kept with the result: who answered, by which rules or model.
@@ -213,6 +221,24 @@ class _Dropped(Exception):
 
 def check_answer(answer: str, segments: list[dict]) -> Checked:
     """Check a structurer's answer against the import's segments."""
+    return _checked(answer, segments)
+
+
+def check_sent_answer(answer: str, sent: list[dict], segments: list[dict]) -> Checked:
+    """Check an outside service's answer against the text it was sent, and again against the import's (U2-C3).
+
+    sent holds what went out, segment by segment (outbound_resume). A
+    candidate is kept only if it passes both checks: its words stand in what
+    was sent and in the import's own text, and nothing around them in either
+    changes what they say; its cautions are read from the import's text. A
+    piece that quotes a placeholder drops its candidate, and so does a basic
+    profile, which only the local rules give. So nothing masked or kept back
+    comes into a candidate through a quote.
+    """
+    return _checked(answer, segments, sent)
+
+
+def _checked(answer: str, segments: list[dict], sent: list[dict] | None = None) -> Checked:
     try:
         payload = json.loads(answer)
     except (TypeError, ValueError):
@@ -224,11 +250,15 @@ def check_answer(answer: str, segments: list[dict]) -> Checked:
     if len(payload["candidates"]) > MAX_CANDIDATES:
         return Checked([], [], TOO_MANY)
 
-    texts = [_Text(text) if text is not None else None for text in map(readable_text, segments)]
+    texts = _texts(segments)
+    sent_texts = _texts(sent) if sent is not None else None
     found, problems = [], []
 
     for position, item in enumerate(payload["candidates"], start=1):
         try:
+            if sent_texts is not None:
+                _check_sent(item, sent_texts)
+
             found.append(_check_candidate(item, texts))
         except _Dropped as dropped:
             kind = item.get("kind") if isinstance(item, dict) else None
@@ -245,6 +275,21 @@ def check_answer(answer: str, segments: list[dict]) -> Checked:
         return Checked(found, problems, None)
 
     return Checked([], problems, NONE_VALID if problems else NOTHING_FOUND)
+
+
+def _texts(segments: list[dict]) -> list["_Text | None"]:
+    return [_Text(text) if text is not None else None for text in map(readable_text, segments)]
+
+
+def _check_sent(item, texts: list["_Text | None"]) -> None:
+    """Drop a candidate of an outside service unless it may be kept by what it was sent."""
+    if isinstance(item, dict) and item.get("kind") == PROFILE:
+        raise _Dropped(LOCAL_ONLY)
+
+    _check_candidate(item, texts)
+
+    if any(MASK_START in piece["quote"] for pieces in item["fields"].values() for piece in pieces):
+        raise _Dropped(MASKED)
 
 
 def readable_text(segment: dict) -> str | None:

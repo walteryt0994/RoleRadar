@@ -21,7 +21,9 @@ never shown, logged or written anywhere.
 
 load_live_approval reads the terms of the approval a real run is under
 (U2-C1): its id, the purposes, the service tier, the reasoning effort, the
-limits, and the price of every item a request may be billed for. Even
+limits (a structuring request has an output limit of its own and a limit on
+the bytes of resume text it may send, U2-C3), and the price of every item a
+request may be billed for. Even
 complete terms are refused while no input bound has been checked for the
 model and the tier (app.live_gate.CERTIFIED_INPUT_BOUNDS, empty), so no
 real service can be used yet. analysis_setup turns what the environment asks
@@ -79,7 +81,8 @@ APPROVAL_SETTINGS = {
     "purposes": "ROLERADAR_LIVE_PURPOSES",
     "service_tier": "ROLERADAR_LIVE_SERVICE_TIER",
     "reasoning_effort": "ROLERADAR_LIVE_REASONING_EFFORT",
-    "structuring_max_chars": "ROLERADAR_LIVE_STRUCTURING_MAX_CHARS",
+    "structuring_max_bytes": "ROLERADAR_LIVE_STRUCTURING_MAX_BYTES",
+    "structuring_max_output_tokens": "ROLERADAR_LIVE_STRUCTURING_MAX_OUTPUT_TOKENS",
     "max_cost_usd": "ROLERADAR_LIVE_MAX_COST_USD",
     "price_input": "ROLERADAR_LIVE_PRICE_INPUT",
     "price_cache_read": "ROLERADAR_LIVE_PRICE_CACHE_READ",
@@ -97,7 +100,10 @@ REASONING_EFFORT = re.compile(r"[a-z]{1,20}")
 PRICE = re.compile(r"\d{1,6}(\.\d{1,6})?")
 # Upper bounds for any approval of this batch, as above.
 MAX_COST_USD = Decimal("5")
-MAX_STRUCTURING_CHARS = 100_000
+# A structuring request's ceilings (U2-C3): suggested starting values for the
+# offline wiring, not shown to be enough and not an approval of any cost.
+MAX_STRUCTURING_BYTES = 8_000
+MAX_STRUCTURING_OUTPUT_TOKENS = 8_000
 
 
 @dataclass(frozen=True)
@@ -219,7 +225,10 @@ def load_live_approval(policy: LivePolicy, environ=None) -> ApprovalTerms:
     if not 0 < max_cost <= MAX_COST_USD:
         raise LiveRefused(f"费用上限要大于 0、不超过 {MAX_COST_USD} 美元。")
 
-    structuring_max_chars = _whole(values["structuring_max_chars"], 1, MAX_STRUCTURING_CHARS, "简历整理单次外发字数上限")
+    structuring_max_bytes = _whole(values["structuring_max_bytes"], 1, MAX_STRUCTURING_BYTES, "简历整理单次外发字节上限")
+    structuring_max_output_tokens = _whole(
+        values["structuring_max_output_tokens"], 1, MAX_STRUCTURING_OUTPUT_TOKENS, "简历整理输出上限"
+    )
     bound = CERTIFIED_INPUT_BOUNDS.get((policy.provider, policy.model, values["service_tier"]))
 
     if bound is None or bound.synthetic:
@@ -236,8 +245,9 @@ def load_live_approval(policy: LivePolicy, environ=None) -> ApprovalTerms:
         service_tier=values["service_tier"],
         reasoning_effort=None if effort == OMIT else effort,
         max_output_tokens=policy.max_output_tokens,
+        structuring_max_output_tokens=structuring_max_output_tokens,
         timeout_seconds=policy.timeout_seconds,
-        structuring_max_chars=structuring_max_chars,
+        structuring_max_bytes=structuring_max_bytes,
         max_requests=policy.max_requests,
         max_cost_micro_usd=int(max_cost * 1_000_000),
         prices=prices,
@@ -281,13 +291,23 @@ def analysis_setup(environ: Mapping[str, str]) -> LiveSetup | None:
 
     bound = CERTIFIED_INPUT_BOUNDS[(terms.provider, terms.model, terms.service_tier)]
 
-    return LiveSetup(terms, bound, lambda: make_live_provider(policy, environ, service_tier=terms.service_tier))
+    # The provider's own cap covers every approved purpose; the gate caps each request by its purpose.
+    limit = max(terms.output_limit(purpose) for purpose in terms.purposes)
+
+    return LiveSetup(
+        terms,
+        bound,
+        lambda: make_live_provider(policy, environ, service_tier=terms.service_tier, max_output_tokens=limit),
+    )
 
 
-def make_live_provider(policy: LivePolicy, environ=None, *, service_tier: str | None = None) -> OpenAIProvider:
+def make_live_provider(
+    policy: LivePolicy, environ=None, *, service_tier: str | None = None, max_output_tokens: int | None = None
+) -> OpenAIProvider:
     """The provider of a checked policy: fixed endpoint, no proxies from the environment, no retries, capped output.
 
     service_tier, when given, is asked for by every request (an approval's tier).
+    max_output_tokens, when given, replaces the policy's output cap (an approval's largest limit).
     """
     environ = os.environ if environ is None else environ
 
@@ -299,7 +319,7 @@ def make_live_provider(policy: LivePolicy, environ=None, *, service_tier: str | 
             max_retries=0,
             base_url=policy.endpoint,
             use_environment_proxies=False,
-            max_output_tokens=policy.max_output_tokens,
+            max_output_tokens=max_output_tokens or policy.max_output_tokens,
             service_tier=service_tier,
         )
     )
