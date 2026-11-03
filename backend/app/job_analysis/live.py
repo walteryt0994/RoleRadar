@@ -23,16 +23,18 @@ load_live_approval reads the terms of the approval a real run is under
 (U2-C1): its id, the purposes, the service tier, the reasoning effort, the
 limits (a structuring request has an output limit of its own and a limit on
 the bytes of resume text it may send, U2-C3), the price of every item a
-request may be billed for, and, since the U2-C4 prerequisites, the price a
-reservation takes every input token at, the price of one count of a
-request's input and the most input tokens a request may have. Every one is
-written out: a count's price is never taken to be 0. Even complete terms
-are refused while no counted input bound has been checked for the model
-and the tier (app.live_gate.CERTIFIED_INPUT_BOUNDS, empty), so no real
-service can be used yet. analysis_setup turns what the environment asks
-for into the app's service (U2-C2): the simulated one, or a real one from
-approved terms; asked for and refused, it stops the app from starting rather
-than quietly simulating.
+request may be billed for, the price a reservation takes every input token
+at, and the most input tokens those prices were checked for. Since the U2-C
+cost control a real approval is under a budget policy (app.live_gate
+FixedReserve, RESERVE_POLICIES): it writes out the policy, that its cost
+limit is an application-side budget, the input tokens each request is
+reserved at and the most bytes a request may be. Each request is one
+generation, never counted, so no count's price is asked for: one written
+anyway must say not_applicable, never 0. Nothing is taken from an earlier
+approval, and terms for a model and tier with no policy are refused.
+analysis_setup turns what the environment asks for into the app's service
+(U2-C2): the simulated one, or a real one from approved terms; asked for
+and refused, it stops the app from starting rather than quietly simulating.
 """
 import os
 import re
@@ -45,7 +47,8 @@ from app.ai_provider import OpenAIProvider, OpenAIProviderConfig
 from app.analysis_contracts import Recipient
 from app.library.errors import ConfigError
 from app.live_gate import (
-    CERTIFIED_INPUT_BOUNDS,
+    APPLICATION,
+    RESERVE_POLICIES,
     ApprovalTerms,
     LiveRefused,
     LiveSetup,
@@ -102,11 +105,17 @@ APPROVAL_SETTINGS = {
     "price_output": "ROLERADAR_LIVE_PRICE_OUTPUT",
     # Reservations only: the dearest price any input token may be billed at.
     "price_reserve_input": "ROLERADAR_LIVE_PRICE_RESERVE_INPUT",
-    # Dollars per count of a request's input.
-    "price_count": "ROLERADAR_LIVE_PRICE_COUNT",
     "price_source": "ROLERADAR_LIVE_PRICE_SOURCE",
     "price_checked_on": "ROLERADAR_LIVE_PRICE_CHECKED_ON",
+    # The budget policy and its terms (U2-C cost control).
+    "budget_policy": "ROLERADAR_LIVE_BUDGET_POLICY",
+    "budget_scope": "ROLERADAR_LIVE_BUDGET_SCOPE",
+    "reserve_input_tokens": "ROLERADAR_LIVE_RESERVE_INPUT_TOKENS",
+    "max_payload_bytes": "ROLERADAR_LIVE_MAX_PAYLOAD_BYTES",
 }
+# No count goes out under a budget policy: a count's price, if written at all, says so.
+COUNT_PRICE_VARIABLE = "ROLERADAR_LIVE_PRICE_COUNT"
+NOT_APPLICABLE = "not_applicable"
 NOT_BILLED = "none"
 # The reasoning effort of an approval whose requests send none.
 OMIT = "omit"
@@ -120,9 +129,10 @@ MAX_COST_USD = Decimal("5")
 # offline wiring, not shown to be enough and not an approval of any cost.
 MAX_STRUCTURING_BYTES = 8_000
 MAX_STRUCTURING_OUTPUT_TOKENS = 8_000
-# The most input tokens an approval may let one request have (U2-C4 prerequisites): far below
-# the short-context band of the model in view (272,000 input tokens for gpt-5.6-sol, pricing page
-# checked 2026-11-03), so that an approval's short-context prices hold for any request it lets out.
+# The most input tokens an approval's prices may be checked for: usage above its own figure is
+# not priced (unknown). Far below the short-context band of the model in view (272,000 input
+# tokens for gpt-5.6-sol, pricing page checked 2026-11-03). A range for accounting, not a promise
+# made before a request goes out.
 MAX_INPUT_TOKENS = 32_000
 
 
@@ -199,8 +209,8 @@ def load_live_approval(policy: LivePolicy, environ=None) -> ApprovalTerms:
     """The terms of the approval the environment names for this policy, or LiveRefused saying what is wrong.
 
     Every term must be written out. Prices read here are never synthetic.
-    Complete terms are refused all the same while no input bound has been
-    checked for this model and service tier.
+    The terms must name the budget policy of this model and service tier
+    (RESERVE_POLICIES) with its very terms; none other is taken.
     """
     environ = os.environ if environ is None else environ
     missing = [variable for variable in APPROVAL_SETTINGS.values() if not environ.get(variable, "").strip()]
@@ -241,8 +251,8 @@ def load_live_approval(policy: LivePolicy, environ=None) -> ApprovalTerms:
             reserve_input=_price(values["price_reserve_input"], "预留输入单价"),
             source=values["price_source"],
             checked_on=values["price_checked_on"],
-            # Written out like the others, 0 included: an unknown price is never taken to be 0.
-            count=_price(values["price_count"], "计数单价"),
+            # Not applicable: no count goes out.
+            count=None,
         )
     except ValueError:
         raise LiveRefused("预留输入单价不能低于普通输入、缓存读取或缓存写入的单价。") from None
@@ -256,12 +266,29 @@ def load_live_approval(policy: LivePolicy, environ=None) -> ApprovalTerms:
     structuring_max_output_tokens = _whole(
         values["structuring_max_output_tokens"], 1, MAX_STRUCTURING_OUTPUT_TOKENS, "简历整理输出上限"
     )
-    max_input_tokens = _whole(values["max_input_tokens"], 1, MAX_INPUT_TOKENS, "单次输入上限")
-    bound = CERTIFIED_INPUT_BOUNDS.get((policy.provider, policy.model, values["service_tier"]))
+    max_input_tokens = _whole(values["max_input_tokens"], 1, MAX_INPUT_TOKENS, "价格核实的输入范围")
+    count_price = environ.get(COUNT_PRICE_VARIABLE, "").strip()
 
-    if bound is None or bound.synthetic or not bound.counted:
+    if count_price and count_price != NOT_APPLICABLE:
+        raise LiveRefused(f"这条路径不计数：{COUNT_PRICE_VARIABLE} 不写，或写 {NOT_APPLICABLE}，不能写成金额（0 也不行）。")
+
+    budget = RESERVE_POLICIES.get((policy.provider, policy.model, values["service_tier"]))
+
+    if budget is None or budget.synthetic:
+        raise LiveRefused(f"还没有为模型 {policy.model}（服务档 {values['service_tier']}）定义预算策略，真实服务不能启用。")
+
+    if values["budget_policy"] != budget.name:
+        raise LiveRefused(f"预算策略要写 {budget.name}。")
+
+    if values["budget_scope"] != APPLICATION:
+        raise LiveRefused(f"预算性质要写 {APPLICATION}：费用上限是应用内的预算，不是服务商账单的硬上限。")
+
+    if (values["reserve_input_tokens"], values["max_payload_bytes"]) != (
+        str(budget.reserve_input_tokens),
+        str(budget.max_payload_bytes),
+    ):
         raise LiveRefused(
-            f"还没有为模型 {policy.model}（服务档 {values['service_tier']}）核验过输入上界，真实服务不能启用。"
+            f"{budget.name} 的预留输入是 {budget.reserve_input_tokens} tokens、完整请求最多 {budget.max_payload_bytes} 字节，条款要照写。"
         )
 
     return ApprovalTerms(
@@ -279,11 +306,15 @@ def load_live_approval(policy: LivePolicy, environ=None) -> ApprovalTerms:
         max_requests=policy.max_requests,
         max_cost_micro_usd=int(max_cost * 1_000_000),
         prices=prices,
-        input_bound=bound.name,
+        input_bound=None,
         rules_checked_on=policy.rules_checked_on,
-        # A request of a counted bound is a count and at most one generation.
-        request_unit=RequestUnit.COUNTED_GENERATION,
+        # Under a budget policy a request is one generation, never counted.
+        request_unit=RequestUnit.GENERATION,
         max_input_tokens=max_input_tokens,
+        budget_policy=budget.name,
+        budget_scope=APPLICATION,
+        reserve_input_tokens=budget.reserve_input_tokens,
+        max_payload_bytes=budget.max_payload_bytes,
     )
 
 
@@ -301,10 +332,10 @@ def _price(raw: str, name: str, *, may_be_none: bool = False) -> Decimal | None:
 def analysis_setup(environ: Mapping[str, str]) -> LiveSetup | None:
     """The real service the environment asks for, None for the simulated one, or ConfigError saying why not.
 
-    An unset mode means the simulated service. A real one comes only from
-    complete approved terms whose model and tier have a checked input bound
-    (load_live_approval); none has one yet, so asking for a real service
-    stops the app from starting instead.
+    An unset mode means the simulated service, whatever else is set. A real
+    one comes only from complete approved terms under the budget policy of
+    their model and tier (load_live_approval); anything less stops the app
+    from starting instead.
     """
     mode = environ.get(MODE_VARIABLE, "").strip()
 
@@ -320,14 +351,14 @@ def analysis_setup(environ: Mapping[str, str]) -> LiveSetup | None:
     except LiveRefused as refused:
         raise ConfigError(f"要求使用真实服务，但不能启用：{refused}") from None
 
-    bound = CERTIFIED_INPUT_BOUNDS[(terms.provider, terms.model, terms.service_tier)]
+    budget = RESERVE_POLICIES[(terms.provider, terms.model, terms.service_tier)]
 
     # The provider's own cap covers every approved purpose; the gate caps each request by its purpose.
     limit = max(terms.output_limit(purpose) for purpose in terms.purposes)
 
     return LiveSetup(
         terms,
-        bound,
+        budget,
         lambda: make_live_provider(policy, environ, service_tier=terms.service_tier, max_output_tokens=limit),
     )
 

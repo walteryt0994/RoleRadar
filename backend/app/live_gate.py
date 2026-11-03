@@ -1,22 +1,21 @@
 """The gate every real AI request goes through, and the ledger of what each one cost (U2-C1).
 
-Nothing here sends anything by itself, and the pages do not use it yet:
-U2-C2 and U2-C3 put it in front of the real provider. An app opens one gate,
-for one approval (open_gate):
+Nothing here sends anything by itself: U2-C2 and U2-C3 put it in front of
+the real provider. An app opens one gate, for one approval (open_gate):
 
 - First an exclusive lock on a file next to the library database: one app
   at a time may use its ledger. A second app is refused before it reads or
   writes any of it.
-- Holding the lock, requests a previous run left reserved are charged at
+- Holding the lock, requests a previous run left reserved are kept at
   their reservation as unknown, and their approvals paused for good. Then
   the approval's terms are compared with the snapshot taken when they were
   first used: any difference is refused, so neither a restart nor a changed
-  setting widens an approval.
+  setting widens an approval, nor turns it into another kind.
 - One real task at a time (task()), and its provider lets requests through
   only while that task runs and the gate is open. Before each request, in
   one write transaction: no stop file, the approval not paused, no other
-  request unsettled, and room under both the request and the cost limit for
-  this request's worst case, which is reserved; then the task and the gate
+  request unsettled, and room under both the request limit and the cost
+  limit for what this request is reserved at; then the task and the gate
   are checked once more, the caller's own task last of all (task(),
   sending), and only then is the request handed on.
 - Closing the gate, or leaving a task, lets nothing more through and waits
@@ -24,37 +23,40 @@ for one approval (open_gate):
   given up or the next task allowed. status() still answers afterwards.
 - After it, the reservation is settled once: the reported usage priced item
   by item; above the reservation it is charged in full and the approval
-  paused; without usable usage it is kept at a conservative amount and the
-  approval paused; a request its provider says never left is released.
-  Settling it again changes nothing.
+  paused; without usable usage it is kept at a conservative amount, as cost
+  still to be checked, and the approval paused; a request its provider says
+  never left is released. Settling it again changes nothing.
 
-A request behind a counted input bound (the only kind a real service may
-use, U2-C4 prerequisites) is a group of two, one ledger row and one request
-of the approval: first the service counts the request's input, then at
-most one generation. Its worst case is reserved before anything goes out,
-with the approval's largest input (max_input_tokens); the count is handed on
-like a generation, through the same last checks; a count that is a whole
-number within that largest input narrows the reservation in a write
-transaction; then stop file, pause, gate, task and the task's sending are
-checked once more, and only then is the generation handed on. Both share
-the approval's timeout, the generation getting what the count left, and
-neither is retried. A group whose count went out, or may have, is never
-released, whatever became of its generation; the row's reason says how far
-it got (COUNTING, COUNTED while reserved, so a restart can tell).
+What a request is reserved at comes from the approval's basis. A real
+service uses a budget policy (FixedReserve, U2-C cost control): every
+request is one generation, reserved at a fixed number of input tokens at
+the reservation price plus its output limit, and refused before anything
+is reserved or sent when its whole body, measured here, is too large.
+That reservation is an engineering choice, not an input bound and not a
+count: the cost limit is a budget this app checks before each request,
+never a hard limit on the provider's bill, and a request already out may
+cost more than its reservation. A counted input bound (U2-C4 prerequisites,
+kept; none is registered) makes each request a group of two, one ledger
+row: the service counts the request's input first, then at most one
+generation, the reservation taken at the approval's largest input and
+narrowed by the count; the row's reason says how far a reserved group got
+(COUNTING, COUNTED), so a restart can tell. Bounds worked out here are for
+tests only.
 
 Amounts are in millionths of a US dollar, rounded up. Prices come from the
-approval's terms only, never from this code: a reservation takes every input
-token at the reservation price, the dearest on the price list, never used to
-settle; a counted group adds the count's price, which a counted bound needs
-written out. Usage is checked whole before it is priced, and priced only
-within what the approval's prices were checked for. A worst case is only as
-good as its input bound: real use needs a counted bound checked against the
-provider's documents for the model and the service tier, added to
-CERTIFIED_INPUT_BOUNDS as a reviewed change of this code, never by a setting.
-It is empty, so no real request can pass. Synthetic prices and bounds exist
-for tests: a gate with either refuses any provider that is not synthetic
-itself (a provider made up for tests says so with SYNTHETIC = True;
-OpenAIProvider never does).
+approval's terms only, never from this code: a reservation takes every
+input token it plans for at the reservation price, the dearest on the
+price list, never used to settle. Usage is checked whole before it is
+priced, and priced only within what the approval's prices were checked for
+(max_input_tokens, a range for accounting, never a promise made before a
+request goes out). A real service needs its model and service tier given a
+budget policy in RESERVE_POLICIES, or a counted bound in
+CERTIFIED_INPUT_BOUNDS, each a reviewed change of this code, never a
+setting; and even then nothing goes out without an approval the Owner
+writes out in full. Synthetic prices, policies and bounds exist for tests:
+a gate with any of them refuses any provider that is not synthetic itself
+(a provider made up for tests says so with SYNTHETIC = True; OpenAIProvider
+never does).
 """
 import logging
 import threading
@@ -79,6 +81,7 @@ from app.ai_provider import (
     Usage,
     how_far,
     is_count,
+    request_bytes,
     went_out,
 )
 from app.library.clock import Clock
@@ -143,7 +146,7 @@ class Blocked(StrEnum):
     PURPOSE = "purpose"
     # The approval has no request left.
     REQUESTS = "requests"
-    # This request's worst case would pass the approval's cost limit.
+    # What this request is reserved at would pass the approval's cost limit.
     COST = "cost"
     # The gate was closed: nothing more goes out through it.
     CLOSED = "closed"
@@ -151,8 +154,13 @@ class Blocked(StrEnum):
     ENDED = "ended"
     # The count failed, was no whole number, or left no time for the generation.
     COUNT = "count"
+    # With no count before it, the work here (its body built and measured, its reservation, the last
+    # checks) used up the generation's time before it was handed on: nothing of it went out.
+    TIME = "time"
     # The request's input is above the approval's largest (counted, or worked out here).
     INPUT = "input"
+    # The request's whole body, measured here, is larger than its budget policy allows, or is no plain text.
+    PAYLOAD = "payload"
 
 
 class LiveBlocked(Exception):
@@ -246,10 +254,47 @@ class InputBound:
 
 
 # Input bounds checked against the provider's documents, by (provider, model,
-# service tier); only counted bounds belong here. A real service is refused
-# for anything not listed. Empty: no bound has been registered yet (U2-C1;
-# the counting it needs exists since the U2-C4 prerequisites, unregistered).
+# service tier); only counted bounds belong here. Empty: no bound has been
+# registered (U2-C1; the counting it needs exists since the U2-C4
+# prerequisites, unregistered). A real service now goes by a budget policy
+# (RESERVE_POLICIES) instead.
 CERTIFIED_INPUT_BOUNDS: dict[tuple[str, str, str], InputBound] = {}
+# What an approval's cost limit is under a budget policy: a budget this app checks before each request,
+# never a hard limit on the provider's bill.
+APPLICATION = "application"
+# What a request body under a budget policy may hold: plain text in, a format out; never tools, files,
+# images, earlier responses or conversations, which a fixed reservation was never made for.
+PLAIN_TEXT_REQUEST = frozenset({"model", "input", "store", "max_output_tokens", "reasoning", "service_tier", "text"})
+
+
+@dataclass(frozen=True)
+class FixedReserve:
+    """A budget policy (U2-C cost control): what each request is reserved at, and how large it may be.
+
+    Every request is one generation, reserved at reserve_input_tokens at the
+    reservation price plus its output limit at the output price, whatever
+    its input: an engineering choice, neither a count nor a bound any
+    documents give. Before anything is reserved or sent, the whole body the
+    request goes out with (AIProvider.request_body, measured by
+    ai_provider.request_bytes) must be plain text of at most
+    max_payload_bytes: a limit on what is seen here, not on tokens. What a
+    request cost is then accounted from its usage. The cost limit it serves
+    is an application-side budget (APPLICATION), checked before each
+    request: a request already out may cost more than it was reserved at.
+    name is its version; synthetic ones are made up for tests.
+    """
+
+    name: str
+    reserve_input_tokens: int
+    max_payload_bytes: int
+    synthetic: bool = False
+
+
+FIXED_RESERVE_V1 = FixedReserve("fixed_reserve_v1", reserve_input_tokens=16_000, max_payload_bytes=32_000)
+# Budget policies by (provider, model, service tier): a reviewed change of this code, never a setting. Being
+# listed lets nothing out by itself: a real service also needs ROLERADAR_ANALYSIS_MODE=live and an approval
+# written out in full, and the default stays the simulation.
+RESERVE_POLICIES: dict[tuple[str, str, str], FixedReserve] = {("openai", "gpt-5.6-sol", "default"): FIXED_RESERVE_V1}
 
 
 @dataclass(frozen=True)
@@ -274,14 +319,21 @@ class ApprovalTerms:
     max_requests: int
     max_cost_micro_usd: int
     prices: PriceBasis
-    # The name of the input bound the worst cases are worked out with.
-    input_bound: str
+    # The name of the input bound reservations are worked out with; None under a budget policy.
+    input_bound: str | None
     rules_checked_on: str
-    # What one of max_requests is (RequestUnit): its bound decides.
+    # What one of max_requests is (RequestUnit): its basis decides.
     request_unit: str
-    # The most input tokens one request may have, counted before it goes out; the
-    # prices were checked for no larger input, and a larger one is not priced.
+    # The most input tokens the prices were checked for: usage above it is not priced (unknown). A
+    # range for accounting, never a promise made before a request goes out; a counted request is also
+    # never let through with more.
     max_input_tokens: int
+    # The budget policy and its terms (FixedReserve), or None for an input bound; written out, never taken
+    # from another approval.
+    budget_policy: str | None = None
+    budget_scope: str | None = None
+    reserve_input_tokens: int | None = None
+    max_payload_bytes: int | None = None
 
     def snapshot(self) -> dict:
         return {
@@ -303,6 +355,10 @@ class ApprovalTerms:
             "rules_checked_on": self.rules_checked_on,
             "request_unit": self.request_unit,
             "max_input_tokens": self.max_input_tokens,
+            "budget_policy": self.budget_policy,
+            "budget_scope": self.budget_scope,
+            "reserve_input_tokens": self.reserve_input_tokens,
+            "max_payload_bytes": self.max_payload_bytes,
         }
 
     def output_limit(self, purpose: str) -> int:
@@ -312,14 +368,16 @@ class ApprovalTerms:
 
 @dataclass(frozen=True)
 class LiveSetup:
-    """What an app needs for a real service (U2-C2): an approval, its input bound and how to build its provider.
+    """What an app needs for a real service (U2-C2): an approval, its basis and how to build its provider.
 
-    web_main opens the gate for it. Tests pass synthetic ones, and the gate
-    never lets those reach a provider that is not synthetic itself.
+    The basis is its budget policy (a real service, U2-C cost control) or an
+    input bound. web_main opens the gate for it. Tests pass synthetic ones,
+    and the gate never lets those reach a provider that is not synthetic
+    itself.
     """
 
     terms: ApprovalTerms
-    bound: InputBound
+    basis: "FixedReserve | InputBound"
     make_provider: Callable[[], AIProvider]
 
 
@@ -330,13 +388,19 @@ class GateStatus:
     paused_reason: str | None
     requests_used: int
     requests_left: int
-    # Charged, with any reservation not settled yet counted at its full amount.
+    # All that counts against the budget: settled, reserved and still to be checked together.
     committed_micro_usd: int
     micro_usd_left: int
+    # Accounted from the usage reported (settled, or above its reservation); none of it is a bill.
+    settled_micro_usd: int = 0
+    # Reservations of requests not settled yet.
+    reserved_micro_usd: int = 0
+    # Kept at a conservative amount because what they cost could not be known: still to be checked.
+    unknown_micro_usd: int = 0
 
 
 def reservation(input_tokens: int, output_tokens: int, prices: PriceBasis, *, counted: bool = False) -> int:
-    """The most a request of these sizes may cost: every input token at the reservation price; a counted one adds its count."""
+    """What a request of these sizes is reserved at: every input token at the reservation price; a counted one adds its count."""
     amount = input_tokens * prices.reserve_input + output_tokens * prices.output
 
     if counted:
@@ -479,24 +543,30 @@ class ExclusiveLock:
             self._handle = None
 
 
-def open_gate(database: Database, db_path: Path, terms: ApprovalTerms, bound: InputBound, clock: Clock) -> "LiveGate":
-    """The gate for one approval, or LiveRefused saying why not (see the module docstring for the order)."""
-    if terms.input_bound != bound.name:
-        raise LiveRefused("批准写明的输入上界和这里用来预留的不是同一个。")
+def open_gate(
+    database: Database, db_path: Path, terms: ApprovalTerms, basis: "FixedReserve | InputBound", clock: Clock
+) -> "LiveGate":
+    """The gate for one approval, or LiveRefused saying why not (see the module docstring for the order).
 
-    if terms.request_unit != (RequestUnit.COUNTED_GENERATION if bound.counted else RequestUnit.GENERATION):
-        raise LiveRefused("批准写明的请求计量单位和这里的输入上界不符。")
+    basis is the approval's budget policy or its input bound, each checked
+    against what the approval wrote out.
+    """
+    key = (terms.provider, terms.model, terms.service_tier)
 
-    if bound.counted and terms.prices.count is None:
-        raise LiveRefused("每个请求都要先计数，但批准没有写明计数的单价；单价未知时不能当作 0。")
+    if isinstance(basis, FixedReserve):
+        _check_policy(terms, basis)
 
-    synthetic = terms.prices.synthetic or bound.synthetic
+        if not (terms.prices.synthetic or basis.synthetic) and RESERVE_POLICIES.get(key) is not basis:
+            raise LiveRefused("这个模型和服务档还没有定义预算策略，不能启用真实服务。")
+    else:
+        _check_bound(terms, basis)
+        synthetic = terms.prices.synthetic or basis.synthetic
 
-    if not synthetic and not bound.counted:
-        raise LiveRefused("真实服务只能用发送前由服务计数的输入上界。")
+        if not synthetic and not basis.counted:
+            raise LiveRefused("真实服务不能用在本地算出的输入上界：只能用预算策略，或由服务计数的输入上界。")
 
-    if not synthetic and CERTIFIED_INPUT_BOUNDS.get((terms.provider, terms.model, terms.service_tier)) is not bound:
-        raise LiveRefused("这个模型和服务档还没有核验过的输入上界，不能启用真实服务。")
+        if not synthetic and CERTIFIED_INPUT_BOUNDS.get(key) is not basis:
+            raise LiveRefused("这个模型和服务档还没有核验过的输入上界，不能启用真实服务。")
 
     lock = ExclusiveLock(db_path.with_name(db_path.name + LOCK_SUFFIX))
     lock.acquire()
@@ -508,7 +578,39 @@ def open_gate(database: Database, db_path: Path, terms: ApprovalTerms, bound: In
         lock.release()
         raise
 
-    return LiveGate(database, terms, bound, clock, lock, db_path.parent / STOP_FILE)
+    return LiveGate(database, terms, basis, clock, lock, db_path.parent / STOP_FILE)
+
+
+def _check_policy(terms: ApprovalTerms, policy: FixedReserve) -> None:
+    """An approval under a budget policy must write out that very policy and its meaning, and no input bound."""
+    written = (terms.budget_policy, terms.reserve_input_tokens, terms.max_payload_bytes)
+
+    if written != (policy.name, policy.reserve_input_tokens, policy.max_payload_bytes):
+        raise LiveRefused(f"批准写明的预算策略或它的参数和 {policy.name} 不符。")
+
+    if terms.budget_scope != APPLICATION:
+        raise LiveRefused("批准要写明费用上限是应用内的预算（application），不是服务商账单的硬上限。")
+
+    if terms.input_bound is not None or terms.request_unit != RequestUnit.GENERATION:
+        raise LiveRefused("预算策略下每个请求就是一次生成，不用输入上界，也不计数。")
+
+    if terms.prices.count is not None:
+        raise LiveRefused("预算策略下不计数，计数单价应为不适用，不能写成金额。")
+
+
+def _check_bound(terms: ApprovalTerms, bound: InputBound) -> None:
+    """An approval under an input bound must name that bound, its unit and, for a counted one, the count's price."""
+    if terms.budget_policy is not None:
+        raise LiveRefused("批准写明的是预算策略，这里却用输入上界预留。")
+
+    if terms.input_bound != bound.name:
+        raise LiveRefused("批准写明的输入上界和这里用来预留的不是同一个。")
+
+    if terms.request_unit != (RequestUnit.COUNTED_GENERATION if bound.counted else RequestUnit.GENERATION):
+        raise LiveRefused("批准写明的请求计量单位和这里的输入上界不符。")
+
+    if bound.counted and terms.prices.count is None:
+        raise LiveRefused("每个请求都要先计数，但批准没有写明计数的单价；单价未知时不能当作 0。")
 
 
 def _recover(database: Database, clock: Clock) -> int:
@@ -558,10 +660,14 @@ def _pause(db, approval_id: str, reason: str, now) -> None:
 class LiveGate:
     """An open gate: one approval, its ledger, the lock and the stop file. Made by open_gate()."""
 
-    def __init__(self, database: Database, terms: ApprovalTerms, bound: InputBound, clock: Clock, lock, stop_file: Path):
+    def __init__(
+        self, database: Database, terms: ApprovalTerms, basis: "FixedReserve | InputBound", clock: Clock, lock, stop_file: Path
+    ):
         self._database = database
         self.terms = terms
-        self.bound = bound
+        # One of the two: a budget policy, or an input bound.
+        self.policy = basis if isinstance(basis, FixedReserve) else None
+        self.bound = basis if isinstance(basis, InputBound) else None
         self._clock = clock
         self._lock = lock
         self.stop_file = stop_file
@@ -656,10 +762,15 @@ class LiveGate:
             gated._out -= 1
             self._guard.notify_all()
 
+    @property
+    def counted(self) -> bool:
+        """Whether each request is a count and then a generation (a counted input bound)."""
+        return self.bound is not None and self.bound.counted
+
     def _check_provider(self, provider: AIProvider) -> None:
-        if self.terms.prices.synthetic or self.bound.synthetic:
+        if self.terms.prices.synthetic or (self.policy or self.bound).synthetic:
             if isinstance(provider, OpenAIProvider) or not getattr(provider, "SYNTHETIC", False):
-                raise LiveRefused("合成的价格或输入上界只能配合合成服务商使用，不能放行真实服务。")
+                raise LiveRefused("合成的价格、预算策略或输入上界只能配合合成服务商使用，不能放行真实服务。")
 
         identity = provider.identity()
         approved = (self.terms.provider, self.terms.model, self.terms.endpoint)
@@ -667,12 +778,34 @@ class LiveGate:
         if identity is None or (identity.provider, identity.requested_model, identity.endpoint) != approved:
             raise LiveRefused("这个服务商不是批准里写明的接收方。")
 
-    def worst_case(self, prompt: str, output_format: JsonSchemaFormat | None, output_limit: int) -> int:
-        """What a request is reserved at before anything goes out; LiveBlocked(INPUT) when its bound is too large.
+    def reserve_for(
+        self, provider: AIProvider, prompt: str, output_format: JsonSchemaFormat | None, output_limit: int
+    ) -> int:
+        """What a request is reserved at before anything goes out, or LiveBlocked with nothing reserved or sent.
 
-        A counted request is taken at the approval's largest input, and its count's price added.
+        Under a budget policy: its fixed input tokens and its output limit,
+        once the body provider would send has been measured (PAYLOAD when it
+        is too large or no plain text). A counted request is taken at the
+        approval's largest input, and its count's price added; a bound worked
+        out here gives its own tokens (INPUT when they are too many).
         """
         terms = self.terms
+
+        if self.policy is not None:
+            body = provider.request_body(
+                prompt,
+                max_output_tokens=output_limit,
+                reasoning_effort=terms.reasoning_effort,
+                json_schema_format=output_format,
+            )
+
+            if not set(body) <= PLAIN_TEXT_REQUEST or not isinstance(body.get("input"), str):
+                raise LiveBlocked(Blocked.PAYLOAD)
+
+            if request_bytes(body) > self.policy.max_payload_bytes:
+                raise LiveBlocked(Blocked.PAYLOAD)
+
+            return reservation(self.policy.reserve_input_tokens, output_limit, terms.prices)
 
         if self.bound.counted:
             return reservation(terms.max_input_tokens, output_limit, terms.prices, counted=True)
@@ -685,7 +818,7 @@ class LiveGate:
         return reservation(tokens, output_limit, terms.prices)
 
     def _reserve(self, purpose: str, owner_id: str, micro_usd: int) -> str:
-        """Reserve one request's worst case; its id, or LiveBlocked with nothing written."""
+        """Reserve what one request is reserved at; its id, or LiveBlocked with nothing written."""
         with self._guard:
             if self._closed:
                 raise LiveBlocked(Blocked.CLOSED)
@@ -727,7 +860,7 @@ class LiveGate:
                     cache_write_tokens=None,
                     output_tokens=None,
                     service_tier=None,
-                    reason=COUNTING if self.bound.counted else None,
+                    reason=COUNTING if self.counted else None,
                     reserved_at=self._clock.now(),
                     settled_at=None,
                 )
@@ -824,7 +957,7 @@ class LiveGate:
                     above = input_count is not None and usage.input_tokens > input_count
 
                     if above or total > row.reserved_micro_usd:
-                        # The worst case was not one, or the count was wrong: charge what is known, all of it, and stop.
+                        # The reservation did not cover it, or the count was wrong: charge what is known, all of it, and stop.
                         row.state = LiveRequestState.OVER if total > row.reserved_micro_usd else LiveRequestState.SETTLED
                         row.charged_micro_usd = total
                         row.reason = ABOVE_COUNT if above else OVER_RESERVATION
@@ -850,14 +983,22 @@ class LiveGate:
 
         with self._database.transaction() as db:
             approval = db.get(LiveApproval, terms.approval_id)
-            used, committed = _committed(db, terms.approval_id)
+            rows = _counted(db, terms.approval_id)
+
+        settled = sum(row.charged_micro_usd for row in rows if row.state in (LiveRequestState.SETTLED, LiveRequestState.OVER))
+        reserved = sum(row.reserved_micro_usd for row in rows if row.state == LiveRequestState.RESERVED)
+        unknown = sum(row.charged_micro_usd for row in rows if row.state == LiveRequestState.UNKNOWN)
+        committed = settled + reserved + unknown
 
         return GateStatus(
             paused_reason=None if approval is None else approval.paused_reason,
-            requests_used=used,
-            requests_left=max(terms.max_requests - used, 0),
+            requests_used=len(rows),
+            requests_left=max(terms.max_requests - len(rows), 0),
             committed_micro_usd=committed,
             micro_usd_left=max(terms.max_cost_micro_usd - committed, 0),
+            settled_micro_usd=settled,
+            reserved_micro_usd=reserved,
+            unknown_micro_usd=unknown,
         )
 
 
@@ -865,11 +1006,20 @@ def _kept(count: object) -> int | None:
     return count if is_count(count) else None
 
 
+def _counted(db, approval_id: str) -> list[LiveRequest]:
+    """The requests that count against an approval: all but those released."""
+    return list(
+        db.scalars(
+            select(LiveRequest).where(
+                LiveRequest.approval_id == approval_id, LiveRequest.state != LiveRequestState.RELEASED
+            )
+        )
+    )
+
+
 def _committed(db, approval_id: str) -> tuple[int, int]:
     """Requests that count against an approval, and what they are charged (reservations at full)."""
-    rows = db.scalars(
-        select(LiveRequest).where(LiveRequest.approval_id == approval_id, LiveRequest.state != LiveRequestState.RELEASED)
-    ).all()
+    rows = _counted(db, approval_id)
     committed = sum(
         row.reserved_micro_usd if row.state == LiveRequestState.RESERVED else row.charged_micro_usd for row in rows
     )
@@ -977,8 +1127,10 @@ class GatedProvider(AIProvider):
 
         try:
             group = _Group(
-                gate._reserve(self._purpose, self._owner_id, gate.worst_case(prompt, json_schema_format, limit)),
-                gate.bound.counted,
+                gate._reserve(
+                    self._purpose, self._owner_id, gate.reserve_for(self._provider, prompt, json_schema_format, limit)
+                ),
+                gate.counted,
             )
         except LiveBlocked:
             self.blocked += 1
@@ -987,9 +1139,13 @@ class GatedProvider(AIProvider):
         if group.counted:
             self._count(group, prompt, limit, json_schema_format, deadline)
 
+        # What stops a generation out of time before it goes out: behind a count, the count, which had its
+        # share of the time; with none, only the work here had it.
+        late = Blocked.COUNT if group.counted else Blocked.TIME
+
         if deadline - gate.monotonic() <= 0:
-            # The count used up the time the two had: the generation is never handed on.
-            self._stop(group, Blocked.COUNT)
+            # The time the group had is used up: the generation is never handed on.
+            self._stop(group, late)
 
         self._hand_on(group, Call.GENERATION)
         left = deadline - gate.monotonic()
@@ -997,7 +1153,7 @@ class GatedProvider(AIProvider):
         if left <= 0:
             # Out of time while it was being handed on: nothing went out, and the task is told so.
             self._came_back(Call.GENERATION, Delivery.NOT_SENT)
-            self._stop(group, Blocked.COUNT)
+            self._stop(group, late)
 
         try:
             result = self._provider.generate_text(

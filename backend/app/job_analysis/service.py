@@ -11,9 +11,9 @@ never started under another.
 A task's provider tells the task's sending (app.live_gate.Sending) of each
 request right before it is handed on and again when it comes back: for the
 simulation at once, for a real service only after the gate's last check, so
-a request the gate stopped never reaches it. A real service's request is a
-count of its input and then the generation (U2-C4 prerequisites); the
-simulation only generates. Either way the sending has the last word before
+a request the gate stopped never reaches it. Under a budget policy a real
+service's request is one generation, never counted (U2-C cost control); a
+counted bound would count it first. Either way the sending has the last word before
 a request is handed on, and a request counts as sent when it was answered,
 as maybe sent when no answer came (app.live_gate.delivery).
 """
@@ -27,14 +27,14 @@ from app.live_gate import Blocked, LiveGate, Purpose, Sending, delivery
 
 # What the review page says about a real service. Changing a word changes the version,
 # and with it every fingerprint: a confirmation of the old text does not carry over.
-LIVE_NOTICE_VERSION = "live-2"
+LIVE_NOTICE_VERSION = "live-3"
 LIVE_NOTICE = (
-    "确认后，上面勾选的内容会发给这个外部 AI 服务，只用于生成这一次分析。按服务商的政策，API 数据默认不用于训练模型。",
-    "每次生成之前，同样的内容会先发给服务商计数一次：只数 token、不生成回答，但这也是一次外发。"
-    "计数请求没有“不保存”的设置，服务商是否保留它的处理状态还没有核实，所以不承诺不保存。",
-    "生成请求设置为不保存回答，但这不等于不留存：按服务商的默认政策，滥用监控日志最多保留 30 天，"
+    "确认后，上面勾选的内容会发给这个外部 AI 服务，只用于生成这一次分析：一次分析通常发出两个请求，先解析岗位，再分析经历。"
+    "按服务商的政策，API 数据默认不用于训练模型。",
+    "请求设置为不保存回答，但这不等于不留存：按服务商的默认政策，滥用监控日志最多保留 30 天，"
     "法律要求或为防止伤害时可能更长；为了提速，服务商还可能缓存由提示内容算出的加密中间数据（不是原文），最长 24 小时。",
-    "每次发送前按最坏情况预留费用。已经发出的请求无法撤回，取消只能停止之后的发送。",
+    "每次发送前按固定的保守额度预留费用，返回后按服务商报告的用量核算。这是应用内的预算检查，不是服务商账单的硬上限："
+    "正在进行的请求可能超出预留。已经发出的请求无法撤回，取消只能停止之后的发送。",
 )
 
 

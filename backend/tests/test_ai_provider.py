@@ -1214,3 +1214,34 @@ def test_cache_writes_by_how_long_they_are_kept_are_read_as_the_sdk_keeps_them(p
 
     assert (result.cache_write_30m_tokens, result.cache_write_12h_tokens, result.usage_malformed) == kept
     assert result.usage.cache_write_30m_tokens == kept[0]
+
+
+# --- the body a request goes out with, measured before it is sent (U2-C cost control) -------------------
+
+
+def test_a_request_body_is_measured_by_one_fixed_rule():
+    from app.ai_provider import request_bytes
+
+    # Keys sorted, no spaces, Chinese as UTF-8 (3 bytes each), a quote and a line break escaped (2 bytes each).
+    assert request_bytes({"b": 1, "a": "中\"\n"}) == len('{"a":"中\\"\\n","b":1}'.encode("utf-8")) == 21
+
+
+def test_the_body_a_provider_tells_is_the_body_it_sends(counting):
+    body = counting.request_body("Parse this.", max_output_tokens=300, reasoning_effort="low", json_schema_format=SCHEMA)
+    counting.generate_text("Parse this.", max_output_tokens=300, reasoning_effort="low", json_schema_format=SCHEMA, timeout_seconds=9)
+    sent = dict(counting._client.responses.create.call_args.kwargs)
+
+    assert sent.pop("timeout") == 9 and body == sent
+    # Telling it sends nothing, and counts nothing.
+    assert counting._client.responses.input_tokens.count.call_count == 0
+
+
+def test_a_provider_that_cannot_tell_its_body_stops_before_anything_is_sent():
+    class Generating(AIProvider):
+        def generate_text(self, prompt, **options):
+            raise AssertionError("never asked")
+
+    with pytest.raises(AIProviderConfigError) as refused:
+        Generating().request_body("Parse this.")
+
+    assert refused.value.sent is SendState.NOT_SENT

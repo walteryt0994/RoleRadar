@@ -19,16 +19,27 @@ from app.ai_provider import (
     AIProviderTimeoutError,
     GenerationResult,
     ProviderIdentity,
+    responses_request,
 )
 from app.job_analysis.simulation import SimulatedProvider
 from app.job_analysis.tasks import MAX_RUN_SECONDS, TaskStore
 from app.library.models import LiveRequestState
 from app.library.sends import Sends, sends_text
-from app.live_gate import LOCK_SUFFIX, InputBound, LiveSetup
+from app.live_gate import FIXED_RESERVE_V1, LOCK_SUFFIX, FixedReserve, InputBound, LiveSetup
 from app.web_main import create_app
 from job_helpers import InlineExecutor, confirmed, handed, review, start, task_of, text_of, wait_until
 from library_helpers import LOCAL_BASE_URL, Browser
-from test_live_gate import BOUND, COUNT_PRICE, COUNTED_BOUND, FEE, PRICES, requests_of, terms
+from test_live_gate import (
+    ANALYSIS_RESERVE,
+    BOUND,
+    BUDGET_PRICES,
+    COUNT_PRICE,
+    COUNTED_BOUND,
+    FEE,
+    PRICES,
+    requests_of,
+    terms,
+)
 
 RECIPIENT = ("synthetic", "synthetic-model", "https://synthetic.invalid/v1")
 # 1000 input tokens at 2 and 200 output tokens at 8 (test_live_gate.PRICES), in millionths of a dollar.
@@ -106,6 +117,17 @@ class LiveAnswering(AIProvider):
 
         return step() if callable(step) else step
 
+    def request_body(self, prompt, max_output_tokens=None, reasoning_effort=None, json_schema_format=None):
+        # Built as the real provider builds its own, for the same arguments.
+        return responses_request(
+            "synthetic-model",
+            prompt,
+            max_output_tokens=max_output_tokens,
+            reasoning_effort=reasoning_effort,
+            service_tier="default",
+            json_schema_format=json_schema_format,
+        )
+
 
 class Ticks:
     def __init__(self):
@@ -169,7 +191,7 @@ def test_a_live_review_names_its_recipient_notice_and_what_is_left(live):
     assert "还剩 6 次请求" in text and "确认并开始分析" in text and "本机模拟服务" not in text
     # The fingerprint binds the recipient and the notice the page showed.
     assert (stored.request.recipient.provider, stored.request.recipient.model) == ("synthetic", "synthetic-model")
-    assert stored.request.notice_version == "live-2"
+    assert stored.request.notice_version == "live-3"
 
 
 def test_a_live_task_goes_through_the_gate_and_says_whose_result_it_is(live):
@@ -199,7 +221,7 @@ def test_a_confirmation_does_not_carry_over_to_another_service_or_notice(live):
     assert fresh != simulated and "真实的外部 AI 服务" in page_text(browser, fresh)
 
     # A notice that changed after the review is no different.
-    service.notice_version = "live-3"
+    service.notice_version = "live-4"
     again = start(browser, fresh)
 
     assert again.status_code == 303 and "notice=service_changed" in again.headers["location"]
@@ -211,7 +233,7 @@ def test_a_confirmation_does_not_carry_over_to_another_service_or_notice(live):
 STOPPED_AFTER_ONE = {
     "stopped": "真实服务已停用，之后的生成请求没有发出",
     "requests": "这批批准的请求次数已经用完，这次请求没有发出",
-    "cost": "超出这批批准的费用上限，所以没有发出",
+    "cost": "超出这批批准剩下的应用内预算，所以没有发出",
 }
 
 
@@ -472,11 +494,13 @@ def test_a_count_over_the_largest_input_stops_the_analysis_after_the_parse(live)
     assert states_of(app) == sorted([(LiveRequestState.SETTLED, FEE + COST), (LiveRequestState.SETTLED, FEE)])
 
 
-def test_the_review_says_the_count_goes_out_too_and_promises_no_keeping_back(live):
-    app, browser = live(approval_terms=counted(), bound=COUNTED_BOUND)
+def test_the_review_says_what_goes_out_and_that_the_budget_is_no_bill_limit(live):
+    app, browser = live()
     page = text_of(browser.get(task_of(review(browser, [project(browser)]))).text)
 
-    assert "这也是一次外发" in page and "不承诺不保存" in page and "法律要求或为防止伤害时可能更长" in page
+    # Generations only, two to an analysis; no count, and no promise about the provider's bill.
+    assert "一次分析通常发出两个请求" in page and "计数" not in page
+    assert "不是服务商账单的硬上限" in page and "法律要求或为防止伤害时可能更长" in page
 
 
 @pytest.mark.parametrize("took", [30.0, 31.0], ids=["all-of-it", "more-than-all"])
@@ -521,3 +545,146 @@ def test_a_task_cancelled_while_its_count_is_out_counts_the_count_and_no_generat
     assert provider.calls == [] and (stored.sends, stored.out) == (Sends(count_sent=1), Sends())
     assert "分析已取消" in text and handed(counted=1) in text
     assert states_of(app) == [(LiveRequestState.SETTLED, FEE)]
+
+
+# --- under the budget policy: generations only, a fixed reservation, accounted from usage (U2-C cost control) -
+
+
+# What LiveAnswering reports (1,000 in, 200 out) at BUDGET_PRICES, in millionths of a dollar.
+BUDGET_COST = 1_000 * 4 + 200 * 20
+
+
+def budgeted(**changes):
+    values = {
+        "prices": BUDGET_PRICES,
+        "input_bound": None,
+        "request_unit": "generation",
+        "max_output_tokens": 4_000,
+        "max_input_tokens": 32_000,
+        "budget_policy": "fixed_reserve_v1",
+        "budget_scope": "application",
+        "reserve_input_tokens": 16_000,
+        "max_payload_bytes": 32_000,
+    }
+    values.update(changes)
+
+    return approval(**values)
+
+
+def test_under_the_budget_policy_an_analysis_generates_twice_and_never_counts(live):
+    # Were a count ever asked for, it would fail the task.
+    provider = LiveAnswering(counts=[AssertionError("never counted")])
+    app, browser = live(provider, approval_terms=budgeted(), bound=FIXED_RESERVE_V1)
+    text = page_text(browser, run(browser))
+
+    assert provider.counted == [] and len(provider.calls) == 2
+    assert "真实服务的结果：由外部 AI 模型生成" in text and handed(2) in text
+    assert [(row.reserved_micro_usd, row.state, row.charged_micro_usd) for row in ledger(app)] == [
+        (ANALYSIS_RESERVE, LiveRequestState.SETTLED, BUDGET_COST)
+    ] * 2
+
+
+def test_the_second_step_of_an_analysis_stops_when_the_budget_cannot_take_its_reservation(live):
+    provider = LiveAnswering()
+    app, browser = live(provider, approval_terms=budgeted(max_cost_micro_usd=ANALYSIS_RESERVE + BUDGET_COST - 1), bound=FIXED_RESERVE_V1)
+    text = page_text(browser, run(browser))
+
+    # The parse went out and is accounted; the analysis never did.
+    assert len(provider.calls) == 1 and handed(1) in text
+    assert "保守预留会超出这批批准剩下的应用内预算" in text
+    assert states_of(app) == [(LiveRequestState.SETTLED, BUDGET_COST)]
+
+
+def test_a_request_too_large_for_its_budget_policy_is_refused_and_nothing_goes_out(live):
+    small = FixedReserve("synthetic_small", reserve_input_tokens=16_000, max_payload_bytes=100, synthetic=True)
+    provider = LiveAnswering()
+    app, browser = live(provider, approval_terms=budgeted(budget_policy=small.name, max_payload_bytes=100), bound=small)
+    text = page_text(browser, run(browser))
+
+    assert provider.calls == [] and ledger(app) == [] and handed() in text
+    assert "完整内容超过了这批批准允许的大小" in text and "不会被截短或拆开重发" in text
+
+
+@pytest.mark.parametrize("when", ["building", "handing_on"])
+def test_under_the_budget_policy_a_request_out_of_time_before_it_goes_out_blames_no_count_or_service(live, monkeypatch, when):
+    ticks = Ticks()
+
+    class Slow(LiveAnswering):
+        # All of the approval's 30 seconds go while the parse is built and measured here,
+        def request_body(self, *args, **options):
+            if when == "building":
+                ticks.now += 30.0
+
+            return super().request_body(*args, **options)
+
+    provider = Slow(counts=[AssertionError("never counted")])
+    app, browser = live(provider, approval_terms=budgeted(), bound=FIXED_RESERVE_V1)
+    app.state.job_analysis.live.gate.monotonic = ticks
+    store = app.state.job_analysis.store
+    hand_on = store.hand_on
+
+    def slow_hand_on(task_id, call):
+        # or while the task takes it in.
+        handed_on = hand_on(task_id, call)
+
+        if when == "handing_on":
+            ticks.now += 30.0
+
+        return handed_on
+
+    monkeypatch.setattr(store, "hand_on", slow_hand_on)
+    task = run(browser)
+    stored = store._tasks[task.rsplit("/", 1)[1]]
+    text = page_text(browser, task)
+
+    # Nothing out and nothing left out; its reservation given back (cost control F1).
+    assert provider.calls == [] and provider.counted == [] and (stored.sends, stored.out) == (Sends(), Sends())
+    assert states_of(app) == [(LiveRequestState.RELEASED, 0)] and handed() in text
+    assert "本机的准备和发送前检查用完了这次请求的时限，所以没有发出生成请求。" in text
+    # Neither a count nor the service failed, and the parse never falls back to rules for it.
+    assert "计数没有完成" not in text and "没有在限定时间内回答" not in text and "服务超时" not in text
+
+
+def test_under_the_budget_policy_a_request_out_when_the_task_is_cancelled_is_accounted_and_its_answer_dropped(live):
+    arrived, release = threading.Event(), threading.Event()
+
+    def hold():
+        arrived.set()
+        assert release.wait(10)
+
+    provider = LiveAnswering(hold)
+    app, browser = live(provider, approval_terms=budgeted(), bound=FIXED_RESERVE_V1, inline=False)
+    task = run(browser)
+    assert arrived.wait(10)
+    assert browser.post(f"{task}/cancel", {"csrf_token": browser.csrf_token()}).status_code == 303
+    release.set()
+    wait_until(lambda: [row.state for row in ledger(app)] == [LiveRequestState.SETTLED])
+    app.state.job_analysis.executor.shutdown(wait=True)
+    page = browser.get(task).text
+
+    assert "分析已取消" in page and handed(1) in page and "岗位分析结果" not in page
+    assert states_of(app) == [(LiveRequestState.SETTLED, BUDGET_COST)] and len(provider.calls) == 1
+
+
+def test_a_request_whose_cost_is_unknown_keeps_its_reservation_still_to_be_checked_and_the_paused_review_says_so(live):
+    provider = LiveAnswering(AIProviderTimeoutError("The provider request timed out."))
+    app, browser = live(provider, approval_terms=budgeted(), bound=FIXED_RESERVE_V1)
+    page_text(browser, run(browser))
+    page = text_of(browser.get(task_of(review(browser, [project(browser)]))).text)
+
+    # Kept at its whole reservation, never settled, never free; the analysis step was not let through.
+    assert states_of(app) == [(LiveRequestState.UNKNOWN, ANALYSIS_RESERVE)] and len(provider.calls) == 1
+    assert "已暂停：有一次请求的费用无法确认" in page and "确认并开始分析" not in page
+    assert "还剩约 $0.76（按用量核算 $0.00、预留占用 $0.00、费用待核实 $0.24）" in page
+
+
+def test_the_review_tells_what_is_accounted_reserved_or_still_to_be_checked_and_promises_no_bill_limit(live):
+    app, browser = live(approval_terms=budgeted(), bound=FIXED_RESERVE_V1)
+    before = text_of(browser.get(task_of(review(browser, [project(browser)]))).text)
+    page_text(browser, run(browser))
+    after = text_of(browser.get(task_of(review(browser, [project(browser)]))).text)
+
+    assert "应用内预算 $1.00，还剩约 $1.00（按用量核算 $0.00、预留占用 $0.00、费用待核实 $0.00）" in before
+    # Two requests accounted from their usage, $0.008 each: never called charged or billed.
+    assert "还剩约 $0.98（按用量核算 $0.02、预留占用 $0.00、费用待核实 $0.00）" in after
+    assert "不是服务商账单的硬上限" in after and "已扣款" not in after

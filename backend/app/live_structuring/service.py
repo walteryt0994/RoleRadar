@@ -17,8 +17,9 @@ after that run failed or was cancelled, it no longer holds, and the user
 confirms again for another. Text over the approval's limit
 (structuring_max_bytes), or no text at all, begins nothing either.
 
-A run has one request of the approval: behind a counted bound, a count of
-its input and then the generation (U2-C4 prerequisites). In the background
+A run has one request of the approval: under a budget policy one
+generation (U2-C cost control); behind a counted bound, a count of its
+input and then the generation (U2-C4 prerequisites). In the background
 it is checked once more against its record (review.still_current), then goes
 through the gate like any real request (app.live_gate): reserved, checked
 by the gate, and each part handed on only if the run's registry lets it
@@ -90,14 +91,13 @@ logger = logging.getLogger("roleradar.library")
 PROMPT_VERSION = "1"
 # What the confirmation page says about the service. A changed word changes the version: a
 # confirmation of the old text does not carry over. Like the analysis notice (live-1), a draft.
-NOTICE_VERSION = "resume-live-2"
+NOTICE_VERSION = "resume-live-3"
 NOTICE = (
-    "确认后，下面列出的文字会发给这个外部 AI 服务，只用于这一次简历整理。按服务商的政策，API 数据默认不用于训练模型。",
-    "生成之前，同样的文字会先发给服务商计数一次：只数 token、不生成回答，但这也是一次外发。"
-    "计数请求没有“不保存”的设置，服务商是否保留它的处理状态还没有核实，所以不承诺不保存。",
-    "生成请求设置为不保存回答，但这不等于不留存：按服务商的默认政策，滥用监控日志最多保留 30 天，"
+    "确认后，下面列出的文字会发给这个外部 AI 服务，只用于这一次简历整理，发出一个请求。按服务商的政策，API 数据默认不用于训练模型。",
+    "请求设置为不保存回答，但这不等于不留存：按服务商的默认政策，滥用监控日志最多保留 30 天，"
     "法律要求或为防止伤害时可能更长；为了提速，服务商还可能缓存由提示内容算出的加密中间数据（不是原文），最长 24 小时。",
-    "发送前按最坏情况预留费用。已经发出的请求无法撤回，取消只能停止还没有发出的请求。",
+    "发送前按固定的保守额度预留费用，返回后按服务商报告的用量核算。这是应用内的预算检查，不是服务商账单的硬上限："
+    "正在进行的请求可能超出预留。已经发出的请求无法撤回，取消只能停止还没有发出的请求。",
 )
 SCHEMA_NAME = "resume_candidates"
 SEGMENTS_START = "<<<RESUME_SEGMENTS_START>>>"

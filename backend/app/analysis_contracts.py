@@ -165,8 +165,12 @@ class RejectionReason(StrEnum):
     GATE_PURPOSE = "gate_purpose"
     # The count before a generation failed or gave no usable number; it may have gone out.
     GATE_COUNT = "gate_count"
+    # With no count, the work before a generation used up its time: nothing of it went out.
+    GATE_TIME = "gate_time"
     # The counted input is above the approval's largest; the count went out.
     GATE_INPUT = "gate_input"
+    # The request's whole body is larger than its budget policy allows: nothing of it went out.
+    GATE_PAYLOAD = "gate_payload"
 
 
 class AnalysisFailure(StrEnum):

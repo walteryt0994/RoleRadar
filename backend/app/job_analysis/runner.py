@@ -53,7 +53,9 @@ GATE_REASONS = {
     Blocked.CLOSED: RejectionReason.GATE_CLOSED,
     Blocked.ENDED: RejectionReason.GATE_ENDED,
     Blocked.COUNT: RejectionReason.GATE_COUNT,
+    Blocked.TIME: RejectionReason.GATE_TIME,
     Blocked.INPUT: RejectionReason.GATE_INPUT,
+    Blocked.PAYLOAD: RejectionReason.GATE_PAYLOAD,
 }
 
 

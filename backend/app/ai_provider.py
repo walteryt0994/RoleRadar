@@ -1,3 +1,4 @@
+import json
 import math
 import os
 import re
@@ -222,6 +223,18 @@ class AIProvider(ABC):
         before anything is sent."""
         raise AIProviderConfigError("The provider cannot count input tokens.")
 
+    def request_body(
+        self,
+        prompt: str,
+        max_output_tokens: int | None = None,
+        reasoning_effort: str | None = None,
+        json_schema_format: JsonSchemaFormat | None = None,
+    ) -> dict:
+        """The body generate_text would send with these arguments, to be
+        measured before it goes out (request_bytes); nothing is sent. A
+        provider that cannot tell stops before anything is sent."""
+        raise AIProviderConfigError("The provider cannot tell its request body.")
+
     def identity(self) -> ProviderIdentity | None:
         """The service and model the next request would go to, from the
         configuration alone: nothing is sent and no key is read. None when
@@ -395,6 +408,50 @@ def _has_refusal(response: object) -> bool:
     return False
 
 
+def responses_request(
+    model: str,
+    prompt: str,
+    *,
+    max_output_tokens: int | None = None,
+    reasoning_effort: str | None = None,
+    service_tier: str | None = None,
+    json_schema_format: JsonSchemaFormat | None = None,
+) -> dict:
+    """The body of a Responses API request for plain text: never stored, never with tools, files or history."""
+    request = {"model": model, "input": prompt, "store": False}
+
+    if max_output_tokens is not None:
+        request["max_output_tokens"] = max_output_tokens
+
+    if reasoning_effort is not None:
+        request["reasoning"] = {"effort": reasoning_effort}
+
+    if service_tier is not None:
+        request["service_tier"] = service_tier
+
+    if json_schema_format is not None:
+        request["text"] = {
+            "format": {
+                "type": "json_schema",
+                "name": json_schema_format.name,
+                "schema": json_schema_format.schema,
+                "strict": True,
+            }
+        }
+
+    return request
+
+
+def request_bytes(body: dict) -> int:
+    """How large a request body is by this app's one rule: the UTF-8 bytes of its JSON, keys sorted, no spaces,
+    nothing escaped that need not be. A measure of what is seen here, not the SDK's own encoding, and no token count."""
+    return len(
+        json.dumps(
+            body, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+    )
+
+
 # What a count of the input takes of a generation request (POST /v1/responses/input_tokens, its
 # reference checked 2026-11-03). The rest of the request, store, max_output_tokens and
 # service_tier, is not among the count's parameters.
@@ -525,6 +582,18 @@ class OpenAIProvider(AIProvider):
 
         return count
 
+    def request_body(
+        self,
+        prompt: str,
+        max_output_tokens: int | None = None,
+        reasoning_effort: str | None = None,
+        json_schema_format: JsonSchemaFormat | None = None,
+    ) -> dict:
+        """The very body generate_text would send with these arguments; nothing is sent."""
+        return self._request(
+            prompt, max_output_tokens, reasoning_effort, json_schema_format
+        )
+
     def _request(
         self,
         prompt: str,
@@ -532,13 +601,7 @@ class OpenAIProvider(AIProvider):
         reasoning_effort: str | None,
         json_schema_format: JsonSchemaFormat | None,
     ) -> dict:
-        """The one request both generate_text and count_input_tokens start from."""
-        request = {
-            "model": self._config.model,
-            "input": prompt,
-            "store": False,
-        }
-
+        """The one request generate_text, count_input_tokens and request_body start from."""
         # The caller's limit, never above the configured one.
         output_limit = self._config.max_output_tokens
 
@@ -549,26 +612,14 @@ class OpenAIProvider(AIProvider):
                 else min(max_output_tokens, output_limit)
             )
 
-        if output_limit is not None:
-            request["max_output_tokens"] = output_limit
-
-        if reasoning_effort is not None:
-            request["reasoning"] = {"effort": reasoning_effort}
-
-        if self._config.service_tier is not None:
-            request["service_tier"] = self._config.service_tier
-
-        if json_schema_format is not None:
-            request["text"] = {
-                "format": {
-                    "type": "json_schema",
-                    "name": json_schema_format.name,
-                    "schema": json_schema_format.schema,
-                    "strict": True,
-                }
-            }
-
-        return request
+        return responses_request(
+            self._config.model,
+            prompt,
+            max_output_tokens=output_limit,
+            reasoning_effort=reasoning_effort,
+            service_tier=self._config.service_tier,
+            json_schema_format=json_schema_format,
+        )
 
     def _answer(self, method, request: dict, timeout_seconds: float | None):
         """Hand one request to the SDK and tell its errors apart by how far it got.

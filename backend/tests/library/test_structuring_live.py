@@ -24,6 +24,7 @@ from app.ai_provider import (
     ProviderIdentity,
     SendState,
     Usage,
+    responses_request,
 )
 from app.library.candidates import MAX_CANDIDATES, TOO_MANY
 from app.library.identity import token_hash
@@ -43,14 +44,24 @@ from app.library.resume_rules import SIMULATION_NAME, SimulatedStructurer, struc
 from app.library.review import Asked, candidates_of, sent_suffix, split_outcome, structure_import, structuring_of
 from app.library.sends import Sends, sends_text
 from app.library.web import SESSION_COOKIE
-from app.live_gate import LiveSetup, Purpose
+from app.live_gate import FIXED_RESERVE_V1, FixedReserve, LiveSetup, Purpose
 from app.web_main import create_app
 from job_helpers import InlineExecutor, handed, text_of, wait_until
 from library_helpers import LOCAL_BASE_URL, Browser, form_for
 from structuring_cases import C4_CASES, CASES, assess
 from test_library_adoption import adopt_new, adoptions
 from test_library_candidates import owner_id, paste, rt
-from test_live_gate import BOUND, COUNT_PRICE, COUNTED_BOUND, FEE, PRICES, requests_of, terms
+from test_live_gate import (
+    BOUND,
+    BUDGET_PRICES,
+    COUNT_PRICE,
+    COUNTED_BOUND,
+    FEE,
+    PRICES,
+    STRUCTURING_RESERVE,
+    requests_of,
+    terms,
+)
 
 RECIPIENT = ("synthetic", "synthetic-model", "https://synthetic.invalid/v1")
 OUTPUT_LIMIT = 800
@@ -177,6 +188,17 @@ class Structuring(AIProvider):
             raise step
 
         return step() if callable(step) else step
+
+    def request_body(self, prompt, max_output_tokens=None, reasoning_effort=None, json_schema_format=None):
+        # Built as the real provider builds its own, for the same arguments.
+        return responses_request(
+            "synthetic-model",
+            prompt,
+            max_output_tokens=max_output_tokens,
+            reasoning_effort=reasoning_effort,
+            service_tier="default",
+            json_schema_format=json_schema_format,
+        )
 
 
 @pytest.fixture
@@ -975,13 +997,15 @@ def test_a_counted_run_cancelled_after_its_count_sends_no_generation(live, clock
     assert f"已交给外部服务的请求：{sends_text(Sends(count_sent=1))}。" in review_text(browser, held["import"])
 
 
-def test_the_confirmation_page_says_the_count_goes_out_too_and_promises_no_keeping_back(live):
-    app, browser = live(approval_terms=counted(), bound=COUNTED_BOUND)
+def test_the_confirmation_page_says_what_goes_out_and_that_the_budget_is_no_bill_limit(live):
+    app, browser = live()
     import_id = paste(browser)
     page = text_of(browser.get(confirm_url(import_id)).text)
 
-    assert NOTICE_VERSION == "resume-live-2"
-    assert "这也是一次外发" in page and "不承诺不保存" in page and "法律要求或为防止伤害时可能更长" in page
+    # One generation; no count, and no promise about the provider's bill.
+    assert NOTICE_VERSION == "resume-live-3"
+    assert "发出一个请求" in page and "计数" not in page
+    assert "不是服务商账单的硬上限" in page and "法律要求或为防止伤害时可能更长" in page
 
 
 def test_a_counted_run_whose_count_used_up_the_time_hands_no_generation_on(live):
@@ -1092,3 +1116,98 @@ def test_an_outcome_written_before_counts_existed_still_explains_itself_and_offe
     # Confirmed again, a new run writes the new marks.
     assert send(browser, import_id).status_code == 303
     assert record(app, import_id)[:2] == ("failed", "provider_failed_-s")
+
+
+# --- under the budget policy: one generation, a fixed reservation, accounted from usage (U2-C cost control) ---
+
+
+# What Structuring reports (1,000 in, 200 out) at BUDGET_PRICES, in millionths of a dollar.
+BUDGET_COST = 1_000 * 4 + 200 * 20
+
+
+def budgeted(**changes):
+    values = {
+        "prices": BUDGET_PRICES,
+        "input_bound": None,
+        "request_unit": "generation",
+        "structuring_max_output_tokens": 8_000,
+        "max_input_tokens": 32_000,
+        "budget_policy": "fixed_reserve_v1",
+        "budget_scope": "application",
+        "reserve_input_tokens": 16_000,
+        "max_payload_bytes": 32_000,
+    }
+    values.update(changes)
+
+    return approval(**values)
+
+
+def test_under_the_budget_policy_a_structuring_run_generates_once_and_never_counts(live):
+    provider = Structuring(counts=[AssertionError("never counted")])
+    app, browser = live(provider, approval_terms=budgeted(), bound=FIXED_RESERVE_V1)
+    import_id = paste(browser)
+
+    assert send(browser, import_id).status_code == 303
+    assert provider.counted == [] and len(provider.calls) == 1 and record(app, import_id)[0] == "done"
+    assert [(row.reserved_micro_usd, row.state, row.charged_micro_usd) for row in requests_of(rt(app).database)] == [
+        (STRUCTURING_RESERVE, LiveRequestState.SETTLED, BUDGET_COST)
+    ]
+
+
+def test_a_structuring_request_too_large_for_its_budget_policy_sends_nothing(live):
+    small = FixedReserve("synthetic_small", reserve_input_tokens=16_000, max_payload_bytes=100, synthetic=True)
+    provider = Structuring()
+    app, browser = live(provider, approval_terms=budgeted(budget_policy=small.name, max_payload_bytes=100), bound=small)
+    import_id = paste(browser)
+
+    assert send(browser, import_id).status_code == 303
+    assert provider.calls == [] and requests_of(rt(app).database) == []
+    assert record(app, import_id)[:2] == ("failed", "gate_payload")
+
+    text = review_text(browser, import_id)
+
+    assert "完整内容超过了这批批准允许的大小" in text and "没有发出请求" in text
+
+
+@pytest.mark.parametrize("when", ["building", "handing_on"])
+def test_under_the_budget_policy_a_run_out_of_time_before_its_request_goes_out_blames_no_count_or_service(live, monkeypatch, when):
+    now = [100.0]
+
+    class Slow(Structuring):
+        # All of the approval's 30 seconds go while the request is built and measured here,
+        def request_body(self, *args, **options):
+            if when == "building":
+                now[0] += 30.0
+
+            return super().request_body(*args, **options)
+
+    provider = Slow(counts=[AssertionError("never counted")])
+    app, browser = live(provider, approval_terms=budgeted(), bound=FIXED_RESERVE_V1)
+    app.state.structuring.live.gate.monotonic = lambda: now[0]
+    runs = app.state.structuring.runs
+    hand_on, taken = runs.hand_on, []
+
+    def slow_hand_on(attempt, call):
+        # or while the run takes it in.
+        why = hand_on(attempt, call)
+        taken.append(runs._runs[attempt])
+
+        if when == "handing_on":
+            now[0] += 30.0
+
+        return why
+
+    monkeypatch.setattr(runs, "hand_on", slow_hand_on)
+    import_id = paste(browser)
+
+    assert send(browser, import_id).status_code == 303
+    # Nothing out and nothing left out; its reservation given back (cost control F1).
+    assert provider.calls == [] and provider.counted == [] and record(app, import_id)[:2] == ("failed", "gate_time")
+    assert states_of(app) == [(LiveRequestState.RELEASED, 0)]
+    assert [run.out for run in taken] == ([Sends()] if when == "handing_on" else [])
+
+    text = review_text(browser, import_id)
+
+    assert "本机的准备和发送前检查用完了这次请求的时限，所以没有发出生成请求。没有发出请求，什么都没有保存。" in text
+    # Neither a count nor the service failed.
+    assert "计数" not in text and "没有在时限内回答" not in text

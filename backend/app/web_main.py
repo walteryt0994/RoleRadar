@@ -102,7 +102,7 @@ def create_app(
 
     if live is not None:
         try:
-            service = LiveService(open_gate(database, db_path, live.terms, live.bound, clock), live.make_provider)
+            service = LiveService(open_gate(database, db_path, live.terms, live.basis, clock), live.make_provider)
         except LiveRefused as refused:
             engine.dispose()
             raise ConfigError(f"要求使用真实服务，但不能启用：{refused}") from None

@@ -95,13 +95,16 @@ REJECTED = {
     RejectionReason.GATE_PAUSED: "这批批准已暂停，之后的生成请求没有发出；继续需要新的批准。",
     RejectionReason.GATE_BUSY: "另一个真实分析正在进行，这次请求没有发出。请等它结束后重新分析。",
     RejectionReason.GATE_REQUESTS: "这批批准的请求次数已经用完，这次请求没有发出。",
-    RejectionReason.GATE_COST: "这次请求按最坏情况预留会超出这批批准的费用上限，所以没有发出。",
+    RejectionReason.GATE_COST: "这次请求的保守预留会超出这批批准剩下的应用内预算，所以没有发出。",
     RejectionReason.GATE_CLOSED: "服务正在停止，之后的生成请求没有发出。",
     RejectionReason.GATE_ENDED: "这次分析已经结束，之后的请求没有发出。",
     RejectionReason.GATE_PURPOSE: "这批批准不包括岗位分析，这次请求没有发出。",
     RejectionReason.GATE_COUNT: "发送前的计数没有完成，或者结果不能用、用完了这次请求的时限，所以没有发出生成请求。"
     "计数请求有没有发出，以下面的次数为准。",
+    RejectionReason.GATE_TIME: "本机的准备和发送前检查用完了这次请求的时限，所以没有发出生成请求。",
     RejectionReason.GATE_INPUT: "计数显示这次请求的输入超过了这批批准的单次输入上限，所以没有发出生成请求；计数请求已经发出。",
+    RejectionReason.GATE_PAYLOAD: "这次请求的完整内容超过了这批批准允许的大小，所以没有发出，也不会被截短或拆开重发。"
+    "请减少这次选用的资料，或缩短岗位描述后重新分析。",
 }
 FAILED = {
     AnalysisFailure.TIMEOUT: "分析服务没有在限定时间内回答。",
@@ -127,9 +130,9 @@ REFUSALS = {
     Blocked.REQUESTS: "这批批准的请求次数已经用完，不能再发送；继续需要新的批准。",
 }
 PAUSE_REASONS = {
-    "interrupted": "上次运行中断，有请求的费用按预留记账",
-    "unknown_usage": "有一次请求的费用无法确认，按保守估算记账",
-    "over_reservation": "有一次请求的实际费用超过了预留",
+    "interrupted": "上次运行中断，有请求按预留占用记为费用待核实",
+    "unknown_usage": "有一次请求的费用无法确认，按保守占用记为费用待核实",
+    "over_reservation": "有一次请求按用量核算的费用超过了它的预留",
     "above_count": "有一次请求的实际输入超过了发送前的计数",
     "count_maybe": "有一次计数请求可能已发出，费用无法确认，按计数单价记账",
 }
@@ -170,10 +173,19 @@ def service_view(jobs) -> dict:
         "notice": LIVE_NOTICE,
         "approval": jobs.live.gate.terms.approval_id,
         "requests_left": status.requests_left,
-        "usd_left": f"{status.micro_usd_left / 1_000_000:.2f}",
+        "usd_left": _usd(status.micro_usd_left),
+        "usd_budget": _usd(jobs.live.gate.terms.max_cost_micro_usd),
+        # Never one figure called charged: what usage accounted for, what is only reserved, what is still to be checked.
+        "usd_settled": _usd(status.settled_micro_usd),
+        "usd_reserved": _usd(status.reserved_micro_usd),
+        "usd_unknown": _usd(status.unknown_micro_usd),
         "paused": PAUSE_REASONS.get(status.paused_reason, status.paused_reason) if status.paused_reason else None,
         "refusal": REFUSALS[refusal] if refusal is not None else None,
     }
+
+
+def _usd(micro_usd: int) -> str:
+    return f"{micro_usd / 1_000_000:.2f}"
 
 
 def running_label(task) -> str:
