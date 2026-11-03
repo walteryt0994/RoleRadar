@@ -15,9 +15,9 @@ file, a cookie or a log, and a restart forgets them all. Ending a session
 cancels its running task and forgets its tasks.
 
 Time limits never wait for someone to look at a page. A running task is
-checked before each of its requests goes out and when its result comes back
-(still_running, finish): past MAX_RUN_SECONDS it is cancelled there, so its
-next request is never sent and a late answer is dropped. The app also
+checked right before each of its requests is handed on and when its result
+comes back (hand_on, finish): past MAX_RUN_SECONDS it is cancelled there, so
+its next request is never sent and a late answer is dropped. The app also
 sweeps every SWEEP_SECONDS (web_main), so an idle task's material is gone
 at most TASK_TTL_SECONDS + SWEEP_SECONDS after its last change, and an
 overdue running task is cancelled within SWEEP_SECONDS of its limit even
@@ -83,13 +83,20 @@ class Task:
     stage: Stage = Stage.REVIEW
     step: Step | None = None
     cancel: threading.Event = field(default_factory=threading.Event)
-    # Requests handed to the service so far; also counted for a cancelled task.
+    # Requests that came back having gone out, or perhaps gone out (ai_provider.went_out); also for a cancelled task.
     requests_sent: int = 0
+    # Requests handed on that have not come back yet: each may have gone out.
+    requests_out: int = 0
     result: AnalysisResult | None = None
     # "user", "logout", "timeout" or "shutdown".
     cancelled_by: str | None = None
     touched: float = 0.0
     started: float | None = None
+
+    @property
+    def requests_handed(self) -> int:
+        """What the pages call 已交给服务: the requests sent, and those still out, which may have gone out."""
+        return self.requests_sent + self.requests_out
 
 
 class TaskStore:
@@ -172,15 +179,43 @@ class TaskStore:
             return task is not None and self._in_time(task)
 
     def progress(self, task_id: str, step: Step) -> None:
-        """A request of the task is about to go out."""
+        """A request of the task is about to be asked for: only its step; a gate or hand_on may still stop it."""
+        with self._lock:
+            task = self._tasks.get(task_id)
+
+            if task is not None and task.stage is Stage.RUNNING:
+                task.step, task.touched = step, self._clock()
+
+    def hand_on(self, task_id: str) -> bool:
+        """Whether a request of the task may be handed to its provider now; if so, it is out from here.
+
+        The boundary between stopping a task and handing on its request:
+        every stop (cancelling, logging out, the time limit, shutting down)
+        takes this same lock. One that comes first keeps the request back,
+        unsent and uncounted; once the request is out, a stop cannot call it
+        back, and it is counted when it comes back (came_back). Only this
+        check is made under the lock, never the request.
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+
+            if task is None or not self._in_time(task):
+                return False
+
+            task.requests_out += 1
+
+            return True
+
+    def came_back(self, task_id: str, went_out: bool) -> None:
+        """A request handed on came back: counted as sent if it went out or may have, even for a cancelled task."""
         with self._lock:
             task = self._tasks.get(task_id)
 
             if task is not None:
-                task.requests_sent += 1
+                task.requests_out -= 1
 
-                if task.stage is Stage.RUNNING:
-                    task.step, task.touched = step, self._clock()
+                if went_out:
+                    task.requests_sent += 1
 
     def finish(self, task_id: str, result: AnalysisResult) -> None:
         """The analysis returned. A task cancelled meanwhile stays cancelled: its late answer is dropped."""

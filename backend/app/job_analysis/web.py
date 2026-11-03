@@ -13,6 +13,13 @@ session's CSRF token and comes from this site (app.library.web). A GET never
 sends anything to a service; only confirming a reviewed task starts one,
 once (tasks.TaskStore.begin). A task is the user's and the session's: an id
 alone opens nothing.
+
+The service is the simulated one unless the app was built with a real one
+(app.job_analysis.service, U2-C2). A task binds the service's recipient and
+notice version in its fingerprint; confirming a task reviewed under another
+service or notice starts nothing and reviews it afresh. While the real
+service's gate refuses to start (stopped, paused, no request left), the
+review offers no start, and a start posted anyway is refused.
 """
 import secrets
 import time
@@ -27,6 +34,7 @@ from app.analysis_contracts import AnalysisStatus, RequirementGroup, task_finger
 from app.experience_analysis import PREFERENCE_TOPICS
 from app.job_analysis import presentation
 from app.job_analysis.runner import run_task
+from app.job_analysis.service import LiveService, local_provider
 from app.job_analysis.scope import (
     BLOCKED,
     LEFT_OUT,
@@ -58,6 +66,7 @@ NOTICES = {
     "already": "这次确认已经开始过，没有重复执行。",
     "scope_updated": "已按你的选择更新核对内容，请再看一遍后确认。",
     "scope_changed": "你改动了发送范围，所以还没有开始。下面已按新的范围更新，请再看一遍后确认。",
+    "service_changed": "接收方或处理说明已经变化，所以没有开始。下面已按当前的服务重新生成核对内容，请再看一遍后确认。",
 }
 
 router = APIRouter()
@@ -73,10 +82,31 @@ class JobAnalysisRuntime:
     sweep_seconds: float = SWEEP_SECONDS
     # The lifespan's sweeping task, while the app runs.
     sweeper: object = None
+    # The real service, when the app was built with one (web_main); otherwise the simulation answers.
+    live: LiveService | None = None
+
+    @property
+    def recipient(self):
+        return self.live.recipient if self.live is not None else RECIPIENT
+
+    @property
+    def notice_version(self) -> str:
+        return self.live.notice_version if self.live is not None else NOTICE_VERSION
 
     def make_provider(self, task):
         # The simulated service waits on the task's cancel signal, so cancelling ends its wait.
         return SimulatedProvider(self.simulation_delay, stop=task.cancel)
+
+    def provider_for(self, task, sending):
+        """The task's provider as a context (runner.run_task): the real service's, else the simulation's."""
+        if self.live is not None:
+            return self.live.provider_for(task, sending)
+
+        return local_provider(self.make_provider)(task, sending)
+
+    def refusal(self):
+        """Why no task may start now (app.live_gate.Blocked), or None; the simulation never refuses."""
+        return self.live.refusal() if self.live is not None else None
 
     def end_session(self, session: str) -> None:
         self.store.end_session(session)
@@ -88,6 +118,9 @@ class JobAnalysisRuntime:
         self.store.shutdown()
         self.executor.shutdown(wait=False, cancel_futures=True)
 
+        if self.live is not None:
+            self.live.close()
+
 
 def install_job_analysis(
     app: FastAPI,
@@ -96,12 +129,14 @@ def install_job_analysis(
     sweep_seconds: float = SWEEP_SECONDS,
     clock=None,
     executor=None,
+    live: LiveService | None = None,
 ) -> JobAnalysisRuntime:
     jobs = JobAnalysisRuntime(
         store=TaskStore(clock or time.monotonic),
         executor=executor or ThreadPoolExecutor(max_workers=2, thread_name_prefix="job-analysis"),
         simulation_delay=simulation_delay,
         sweep_seconds=sweep_seconds,
+        live=live,
     )
     app.state.job_analysis = jobs
     # Logging out, or signing in as someone else, ends the session's tasks.
@@ -243,7 +278,7 @@ def new_review(request: Request, user: CurrentUser, inputs: TaskInputs, *, repla
     except InputProblem as problem:
         return input_form(request, user, inputs, problem)
 
-    analysis_request = build_request(user.id, plan, RECIPIENT, NOTICE_VERSION)
+    analysis_request = build_request(user.id, plan, jobs.recipient, jobs.notice_version)
 
     try:
         task = jobs.store.create(
@@ -305,6 +340,7 @@ def task_page(task_id: str, request: Request, notice: str = "", user: CurrentUse
         "area": "jobs",
         "task": task,
         "notice": NOTICES.get(notice),
+        "running_label": presentation.running_label(task),
         "STEP_LABELS": presentation.STEP_LABELS,
         "TASK_TTL_MINUTES": TASK_TTL_SECONDS // 60,
     }
@@ -325,6 +361,7 @@ def review_page(request: Request, user: CurrentUser, task, *, notice=None, error
         {
             "area": "jobs",
             "task": task,
+            "service": presentation.service_view(jobs_of(request)),
             "plan": task.plan,
             "notice": notice,
             "error": error,
@@ -383,6 +420,10 @@ def confirm(
 
         return see_other(f"{BASE}/tasks/{task.id}{notice}")
 
+    if (task.request.recipient, task.request.notice_version) != (jobs.recipient, jobs.notice_version):
+        # Reviewed under another service or notice: that review is not confirmed, it is redone.
+        return new_review(request, user, task.inputs, replaces=task.id, notice="service_changed")
+
     sendable = _sendable(task.plan)
     ticked = set(form.getlist("send")) & sendable
 
@@ -395,11 +436,16 @@ def confirm(
     if form.get("action") != "start":
         return see_other(f"{BASE}/tasks/{task.id}")
 
+    refusal = jobs.refusal()
+
+    if refusal is not None:
+        return review_page(request, user, task, error=presentation.REFUSALS[refusal], status_code=409)
+
     outcome, started = jobs.store.begin(task.id, user.id, user.token_hash, form.get("fingerprint", ""))
 
     if outcome is Start.STARTED:
         rt = runtime(request)
-        jobs.executor.submit(run_task, jobs.store, rt.database, started.id, jobs.make_provider)
+        jobs.executor.submit(run_task, jobs.store, rt.database, started.id, jobs.provider_for)
         return see_other(f"{BASE}/tasks/{started.id}")
 
     if outcome is Start.ALREADY:
@@ -481,7 +527,8 @@ def task_status(task_id: str, request: Request, user: CurrentUser = Depends(curr
         {
             "stage": task.stage.value,
             "step": presentation.STEP_LABELS[task.step] if task.step else None,
-            "requests_sent": task.requests_sent,
+            # What the page calls 已交给服务: those sent, and any still out.
+            "requests_handed": task.requests_handed,
         }
     )
 
@@ -516,6 +563,7 @@ def result_context(request: Request, user: CurrentUser, task) -> dict:
         "result": result,
         "changed_since": changed,
         "outcome": presentation.outcome_message(result),
+        "mode_label": presentation.mode_label(result),
         "conditions": [finding for finding in findings if finding.group is RequirementGroup.HARD_CONSTRAINT],
         "skill_groups": groups,
         "titles": titles,

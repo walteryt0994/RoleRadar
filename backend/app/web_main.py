@@ -12,10 +12,13 @@ candidates come from local simulated rules and are sent nowhere. The job
 analysis uses the shared job description contracts of
 app.schemas, which hold no database. Importing this module has no side
 effects; create_app() does the work. The analysis uses the simulated
-service only: nothing here sends material to a real one, and an app asked
-to use a real service refuses to start (app.job_analysis.live,
-check_analysis_mode) rather than quietly simulating. Run it with
-`python -m app.web_main`, which only binds to 127.0.0.1 (see main()).
+service unless it is built with a real one (U2-C2): from approved terms in
+the environment (app.job_analysis.live, analysis_setup, which refuses while
+no input bound is checked), or a synthetic LiveSetup a test passes. The real
+service's gate (app.live_gate) is opened on the library's ledger before the
+app serves anything, and closed when it stops. An app asked to use a real
+service it cannot have refuses to start rather than quietly simulating. Run
+it with `python -m app.web_main`, which only binds to 127.0.0.1 (see main()).
 """
 import argparse
 import asyncio
@@ -39,10 +42,12 @@ from app.library.finish_web import install_finish
 from app.library.imports_web import install_imports
 from app.library.models import create_schema, read_library_id
 from app.library.review_web import install_review
-from app.job_analysis.live import check_analysis_mode
+from app.job_analysis.live import analysis_setup
+from app.job_analysis.service import LiveService
 from app.job_analysis.tasks import SWEEP_SECONDS
 from app.job_analysis.web import JobAnalysisRuntime, install_job_analysis
 from app.library.web import LibraryRuntime, build_templates, install_web
+from app.live_gate import LiveRefused, LiveSetup, open_gate
 
 LOCAL_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -57,17 +62,21 @@ def create_app(
     simulation_delay: float = 0.0,
     job_sweep_seconds: float = SWEEP_SECONDS,
     environ: Mapping[str, str] | None = None,
+    live: LiveSetup | None = None,
 ) -> FastAPI:
     """Build the app; checks the data paths before anything is created or opened.
 
     The attachment folder belongs to one database. A folder that already
     belongs to a database can only be used with that database, so it is
-    refused before a new database file would be created next to it. A real
-    analysis service asked for in environ (the process environment when
-    None) is refused first of all.
+    refused before a new database file would be created next to it. The
+    analysis service comes from live, else from environ (the process
+    environment when None); a real one asked for and refused stops the app
+    first of all. A real service's gate is opened once the database is ready.
     """
     config = config or load_config_from_env()
-    check_analysis_mode(os.environ if environ is None else environ)
+
+    if live is None:
+        live = analysis_setup(os.environ if environ is None else environ)
     db_path = check_storage_path(config.db_path, test_root=config.test_root)
     files = FileStore(check_files_path(config.files_dir, db_path=db_path, test_root=config.test_root))
 
@@ -86,6 +95,14 @@ def create_app(
 
     database = Database(engine)
     clock = clock or SystemClock(config.dev_clock_offset)
+    service = None
+
+    if live is not None:
+        try:
+            service = LiveService(open_gate(database, db_path, live.terms, live.bound, clock), live.make_provider)
+        except LiveRefused as refused:
+            engine.dispose()
+            raise ConfigError(f"要求使用真实服务，但不能启用：{refused}") from None
 
     if config.dev_login:
         with database.transaction() as db:
@@ -110,7 +127,7 @@ def create_app(
     install_review(app)
     install_adoption(app)
     install_finish(app)
-    install_job_analysis(app, simulation_delay=simulation_delay, sweep_seconds=job_sweep_seconds)
+    install_job_analysis(app, simulation_delay=simulation_delay, sweep_seconds=job_sweep_seconds, live=service)
 
     return app
 

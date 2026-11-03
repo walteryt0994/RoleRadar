@@ -153,6 +153,16 @@ class RejectionReason(StrEnum):
     OUTBOUND_BLOCKED = "outbound_blocked"
     SELECTION_INVALID = "selection_invalid"
     SOURCES_CHANGED = "sources_changed"
+    # The gate in front of a real service let a request no further (app.live_gate.Blocked):
+    # that request was not sent; any sent before it were.
+    GATE_STOPPED = "gate_stopped"
+    GATE_PAUSED = "gate_paused"
+    GATE_BUSY = "gate_busy"
+    GATE_REQUESTS = "gate_requests"
+    GATE_COST = "gate_cost"
+    GATE_CLOSED = "gate_closed"
+    GATE_ENDED = "gate_ended"
+    GATE_PURPOSE = "gate_purpose"
 
 
 class AnalysisFailure(StrEnum):
@@ -172,6 +182,10 @@ class AnalysisFailure(StrEnum):
     RECIPIENT_MISMATCH = "recipient_mismatch"
     # The parsed job description does not belong to this posting.
     JOB_RECORD = "job_record"
+    # The real service could not be set up for the task, or is not the approved one; nothing was sent.
+    PROVIDER_UNAVAILABLE = "provider_unavailable"
+    # The provider stopped a request on its own setup, before it went out (AIProviderConfigError).
+    PROVIDER_CONFIG = "provider_config"
 
 
 class RequirementGroup(StrEnum):

@@ -19,7 +19,13 @@
     <section class="review-section"{% if not error %} data-reveal{% endif %} aria-labelledby="who-title">
       <h2 id="who-title">交给谁，怎样处理</h2>
       <dl class="facts">
+        {% if service.live %}
+        <div><dt>接收方</dt><dd>真实的外部 AI 服务：{{ service.provider }} 的 {{ service.model }}，经 {{ service.endpoint }} 发送。</dd></div>
+        <div><dt>处理说明</dt><dd>{% for line in service.notice %}<p>{{ line }}</p>{% endfor %}</dd></div>
+        <div><dt>本批批准</dt><dd>{% if service.paused %}已暂停：{{ service.paused }}。{% else %}{{ service.approval }}：还剩 {{ service.requests_left }} 次请求、约 ${{ service.usd_left }} 额度。{% endif %}</dd></div>
+        {% else %}
         <div><dt>接收方</dt><dd>本机模拟服务：RoleRadar 内置的固定规则，不是 AI。在这台电脑上运行，不联网，不保存请求。</dd></div>
+        {% endif %}
         <div><dt>用途</dt><dd>只用于对照这一份岗位描述分析所选经历{% if plan.sent_preferences %}和求职偏好{% endif %}。</dd></div>
         <div><dt>步骤</dt><dd>确认后连续进行两步：先解析岗位描述，再对照分析。中途不再逐步询问，随时可以取消。</dd></div>
         <div><dt>结果</dt><dd>只临时显示 {{ TASK_TTL_MINUTES }} 分钟，服务重启后也会清除；不会存进经历库，不会投递，也不会发给任何人。</dd></div>
@@ -93,8 +99,13 @@
       <p class="hint">自动检查只认得出常见写法的邮箱、电话、证件号、地址和“保密”一类字样，可能漏掉别的敏感内容，也可能误拦。确认前请自己再看一遍上面的文字。</p>
     </section>
 
+    {% if service.refusal %}
+    <p class="warning" role="status">{{ service.refusal }}</p>
+    {% endif %}
     <div class="form-actions review-actions">
+      {% if not service.refusal %}
       <button type="submit" name="action" value="start" class="primary">确认并开始分析</button>
+      {% endif %}
       <button type="submit" name="action" value="update" class="secondary">更新核对</button>
       <a href="/job-analysis?from={{ task.id }}">返回修改</a>
     </div>

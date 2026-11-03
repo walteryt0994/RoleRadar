@@ -95,6 +95,29 @@ class AIProviderRefusalError(AIProviderError):
     pass
 
 
+def went_out(sent: SendState, usage: Usage | None) -> bool:
+    """Whether a request counts as sent: it went out, or may have.
+
+    Only a request its provider stopped before handing it to the SDK, with
+    nothing reported for it, did not; one that timed out or lost its
+    connection may have reached the service. The ledger, the task and its
+    pages all count by this one rule.
+    """
+    return sent is not SendState.NOT_SENT or usage is not None
+
+
+def how_far(error: BaseException) -> tuple[SendState, Usage | None]:
+    """How far a request that raised error got, and what was reported for it.
+
+    An AIProviderError says; after any other error the request may have
+    gone out, and nothing is known of what it used.
+    """
+    if isinstance(error, AIProviderError):
+        return error.sent, error.usage
+
+    return SendState.HANDED, None
+
+
 @dataclass(frozen=True)
 class GenerationResult:
     text: str

@@ -11,6 +11,7 @@ import pytest
 from app.analysis_contracts import AnalysisStatus, task_fingerprint
 from app.experience_analysis import analyze_selected_experiences
 from app.job_analysis import live
+from app.job_analysis.service import local_provider
 from app.job_analysis.runner import run_task
 from app.job_analysis.scope import (
     BLOCKED,
@@ -166,6 +167,31 @@ def test_a_late_answer_stays_out_of_a_cancelled_task():
     after = store.get(task.id, "o1", "s1")
 
     assert (after.stage, after.result, after.requests_sent, after.cancel.is_set()) == (Stage.CANCELLED, None, 2, True)
+
+
+def test_a_stop_keeps_back_a_request_not_yet_handed_on_and_never_one_that_was():
+    store = TaskStore()
+    task = stored(store)
+    store.begin(task.id, "o1", "s1", task.fingerprint)
+
+    # Handed on: out until it comes back, and counted meanwhile, since it may have gone out.
+    assert store.hand_on(task.id) is True
+    out = store.get(task.id, "o1", "s1")
+    assert (out.requests_sent, out.requests_out, out.requests_handed) == (0, 1, 1)
+
+    # A stop now cannot call it back; it keeps the next one from being handed on.
+    store.cancel(task.id, "o1", "s1")
+    assert store.hand_on(task.id) is False
+    store.came_back(task.id, went_out=True)
+    after = store.get(task.id, "o1", "s1")
+    assert (after.stage, after.requests_sent, after.requests_out) == (Stage.CANCELLED, 1, 0)
+
+    # A request that came back unsent is not counted.
+    other = stored(store)
+    store.begin(other.id, "o1", "s1", other.fingerprint)
+    assert store.hand_on(other.id) is True
+    store.came_back(other.id, went_out=False)
+    assert store.get(other.id, "o1", "s1").requests_handed == 0
 
 
 def test_a_session_keeps_a_limited_number_of_tasks_and_never_drops_a_running_one():
@@ -324,7 +350,7 @@ def test_both_requests_of_a_real_task_are_capped_at_the_policy_output_limit(data
     service = client.return_value.responses.create
     service.side_effect = answered_by_the_rules
     # The way a real run goes: the runner, the analysis service, then this provider.
-    run_task(store, database, task.id, lambda _task: provider)
+    run_task(store, database, task.id, local_provider(lambda _task: provider))
     result = store.get(task.id, owner, "s1").result
     sent = [call.kwargs for call in service.call_args_list]
 

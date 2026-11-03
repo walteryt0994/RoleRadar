@@ -5,6 +5,7 @@ material, never "the user cannot"; nothing reads as a hiring probability.
 Internal ids, raw JSON and English codes stay out of what is read by default.
 """
 from app.analysis_contracts import (
+    SIMULATION_PROVIDER,
     AnalysisFailure,
     AnalysisStatus,
     ConditionConclusion,
@@ -13,7 +14,9 @@ from app.analysis_contracts import (
     RejectionReason,
     RequirementGroup,
 )
+from app.job_analysis.service import LIVE_NOTICE
 from app.job_analysis.tasks import Step
+from app.live_gate import Blocked
 from app.library.projection import NOT_CONFIRMED, PREFERENCES_CHANGED, UNAVAILABLE, VERSION_CHANGED
 from app.outbound_review import LABELS as FOUND_LABELS
 
@@ -87,6 +90,14 @@ REJECTED = {
     RejectionReason.OUTBOUND_BLOCKED: "发送前的检查发现了疑似敏感的内容，所以没有发送。请重新核对后再开始。",
     RejectionReason.RECIPIENT_MISMATCH: "接收服务和核对时说明的不一致，所以没有发送。",
     RejectionReason.RECIPIENT_UNVERIFIED: "无法确认接收服务，所以没有发送。",
+    RejectionReason.GATE_STOPPED: "真实服务已停用，这次请求没有发出。",
+    RejectionReason.GATE_PAUSED: "这批批准已暂停，这次请求没有发出；继续需要新的批准。",
+    RejectionReason.GATE_BUSY: "另一个真实分析正在进行，这次请求没有发出。请等它结束后重新分析。",
+    RejectionReason.GATE_REQUESTS: "这批批准的请求次数已经用完，这次请求没有发出。",
+    RejectionReason.GATE_COST: "这次请求按最坏情况预留会超出这批批准的费用上限，所以没有发出。",
+    RejectionReason.GATE_CLOSED: "服务正在停止，这次请求没有发出。",
+    RejectionReason.GATE_ENDED: "这次分析已经结束，之后的请求没有发出。",
+    RejectionReason.GATE_PURPOSE: "这批批准不包括岗位分析，这次请求没有发出。",
 }
 FAILED = {
     AnalysisFailure.TIMEOUT: "分析服务没有在限定时间内回答。",
@@ -101,7 +112,22 @@ FAILED = {
     AnalysisFailure.COVERAGE: "分析服务漏掉或重复了某些要求，整份回答没有采用。",
     AnalysisFailure.RECIPIENT_MISMATCH: "回答声称来自另一个服务或模型，没有采用。",
     AnalysisFailure.JOB_RECORD: "岗位解析的结果和这份岗位描述对不上，没有继续。",
+    AnalysisFailure.PROVIDER_UNAVAILABLE: "真实服务无法使用（无法建立，或和批准的接收方不符），没有发送任何请求。",
+    # Only this request: any sent before it are counted below the result.
+    AnalysisFailure.PROVIDER_CONFIG: "分析服务的本机设置有问题，这次请求在发出之前就停止了，没有发出。",
 }
+# Why the review offers no start while the real service's gate refuses.
+REFUSALS = {
+    Blocked.STOPPED: "真实服务已停用（库目录里有停用文件），现在不能开始分析。",
+    Blocked.PAUSED: "这批批准已暂停，不能再发送；继续需要新的批准。",
+    Blocked.REQUESTS: "这批批准的请求次数已经用完，不能再发送；继续需要新的批准。",
+}
+PAUSE_REASONS = {
+    "interrupted": "上次运行中断，有请求的费用按预留记账",
+    "unknown_usage": "有一次请求的费用无法确认，按预留记账",
+    "over_reservation": "有一次请求的实际费用超过了预留",
+}
+PROVIDER_NAMES = {"openai": "OpenAI"}
 DEGRADED = {
     "timeout": "解析岗位时服务超时",
     "connection": "解析岗位时连不上服务",
@@ -119,6 +145,52 @@ CANCELLED_BY = {
     "timeout": "这次分析超过了运行时限，已停止。",
     "shutdown": "服务停止时取消了这次分析。",
 }
+
+
+def service_view(jobs) -> dict:
+    """What the review page says about the service a task would go to."""
+    if jobs.live is None:
+        return {"live": False, "refusal": None}
+
+    recipient = jobs.live.recipient
+    status = jobs.live.gate.status()
+    refusal = jobs.refusal()
+
+    return {
+        "live": True,
+        "provider": PROVIDER_NAMES.get(recipient.provider, recipient.provider),
+        "model": recipient.model,
+        "endpoint": recipient.endpoint,
+        "notice": LIVE_NOTICE,
+        "approval": jobs.live.gate.terms.approval_id,
+        "requests_left": status.requests_left,
+        "usd_left": f"{status.micro_usd_left / 1_000_000:.2f}",
+        "paused": PAUSE_REASONS.get(status.paused_reason, status.paused_reason) if status.paused_reason else None,
+        "refusal": REFUSALS[refusal] if refusal is not None else None,
+    }
+
+
+def running_label(task) -> str:
+    recipient = task.request.recipient
+
+    if recipient.provider == SIMULATION_PROVIDER:
+        return "本机模拟服务：由固定规则生成结果，不是 AI。"
+
+    return f"真实服务：请求发给 {PROVIDER_NAMES.get(recipient.provider, recipient.provider)} 的 {recipient.model}。"
+
+
+def mode_label(result) -> str:
+    """Whose result this is: a rule result is never passed off as a real service's."""
+    if result.mode == "simulation":
+        return "本机模拟服务的结果：由固定规则生成，不是 AI 的判断。"
+
+    if result.status is AnalysisStatus.DEGRADED:
+        return "规则降级的结果：真实服务没能完成岗位解析，下面只是按规则找到的技能词，不是 AI 的判断。"
+
+    if result.status in (AnalysisStatus.COMPLETE, AnalysisStatus.STALE):
+        return "真实服务的结果：由外部 AI 模型生成，引文已和原文逐条核对。"
+
+    return "真实服务：这次没有得到可用的分析结果。"
 
 
 def score_text(value) -> str:

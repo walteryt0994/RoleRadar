@@ -17,7 +17,8 @@ for one approval (open_gate):
   one write transaction: no stop file, the approval not paused, no other
   request unsettled, and room under both the request and the cost limit for
   this request's worst case, which is reserved; then the task and the gate
-  are checked once more, and only then is the request handed on.
+  are checked once more, the caller's own task last of all (task(),
+  sending), and only then is the request handed on.
 - Closing the gate, or leaving a task, lets nothing more through and waits
   for the requests already let through to be settled; only then is the lock
   given up or the next task allowed. status() still answers afterwards.
@@ -45,18 +46,20 @@ from dataclasses import dataclass
 from decimal import ROUND_CEILING, Decimal
 from enum import StrEnum
 from pathlib import Path
+from typing import Protocol
 
 from sqlalchemy import select
 
 from app.ai_provider import (
     AIProvider,
-    AIProviderError,
     GenerationResult,
     JsonSchemaFormat,
     OpenAIProvider,
     SendState,
     Usage,
+    how_far,
     is_count,
+    went_out,
 )
 from app.library.clock import Clock
 from app.library.db import Database
@@ -208,6 +211,19 @@ class ApprovalTerms:
             "input_bound": self.input_bound,
             "rules_checked_on": self.rules_checked_on,
         }
+
+
+@dataclass(frozen=True)
+class LiveSetup:
+    """What an app needs for a real service (U2-C2): an approval, its input bound and how to build its provider.
+
+    web_main opens the gate for it. Tests pass synthetic ones, and the gate
+    never lets those reach a provider that is not synthetic itself.
+    """
+
+    terms: ApprovalTerms
+    bound: InputBound
+    make_provider: Callable[[], AIProvider]
 
 
 @dataclass(frozen=True)
@@ -421,13 +437,16 @@ class LiveGate:
         self._lock.release()
 
     @contextmanager
-    def task(self, purpose: str, owner_id: str, provider: AIProvider) -> Iterator["GatedProvider"]:
+    def task(
+        self, purpose: str, owner_id: str, provider: AIProvider, *, sending: "Sending | None" = None
+    ) -> Iterator["GatedProvider"]:
         """One real task: its provider behind the gate, letting requests through only inside this block.
 
         Another task meanwhile, or any once the gate is closed, is refused with
         nothing sent. Leaving the block, the provider lets nothing more
         through, and the next task may start once the requests it let through
-        are settled.
+        are settled. sending, if given, is where the task counts its requests
+        (see Sending): a request the gate stopped never reaches it.
         """
         self._check_provider(provider)
 
@@ -441,7 +460,7 @@ class LiveGate:
             if self._current is not None:
                 raise LiveBlocked(Blocked.BUSY)
 
-            gated = GatedProvider(self, purpose, owner_id, provider)
+            gated = GatedProvider(self, purpose, owner_id, provider, sending)
             self._current = gated
 
         try:
@@ -570,7 +589,7 @@ class LiveGate:
                 row.output_tokens = _kept(usage.output_tokens)
                 row.service_tier = usage.service_tier if isinstance(usage.service_tier, str) else None
 
-            if sent is SendState.NOT_SENT and usage is None:
+            if not went_out(sent, usage):
                 row.state = LiveRequestState.RELEASED
                 row.charged_micro_usd = 0
             else:
@@ -627,22 +646,47 @@ def _committed(db, approval_id: str) -> tuple[int, int]:
     return len(rows), committed
 
 
+class Sending(Protocol):
+    """Where a task counts its requests, told by its provider (GatedProvider; service._Announcing for one of this process).
+
+    hand_on() is told right before a request is handed to the provider,
+    after every other check: it has the last word, and by raising it keeps
+    the request back, unsent (behind the gate, its reservation is
+    released). came_back() is told once a request handed on has come back,
+    answered or failed, with whether it went out or may have
+    (ai_provider.went_out): the rule the ledger is settled by.
+    """
+
+    def hand_on(self) -> None: ...
+
+    def came_back(self, went_out: bool) -> None: ...
+
+
 class GatedProvider(AIProvider):
     """A provider behind the gate, for one task: each request reserved before it is handed on, settled after.
 
     It lets requests through only while its task runs and the gate is open,
-    checked before reserving and again right before handing on. attempts
-    counts the requests asked for; blocked those the gate stopped, which
-    never went out; handed those passed on to the provider, which may have
-    gone out whatever came back. Every request asks for the approval's
-    reasoning effort and at most its output limit, whatever the caller asks.
+    checked before reserving and again right before handing on, where the
+    task's sending has the last word. attempts counts the requests asked
+    for; blocked those the gate stopped, which never went out; handed those
+    that went out or may have (ai_provider.went_out), which the ledger never
+    releases. Every request asks for the approval's reasoning effort and at
+    most its output limit, whatever the caller asks.
     """
 
-    def __init__(self, gate: LiveGate, purpose: str, owner_id: str, provider: AIProvider):
+    def __init__(
+        self,
+        gate: LiveGate,
+        purpose: str,
+        owner_id: str,
+        provider: AIProvider,
+        sending: Sending | None = None,
+    ):
         self._gate = gate
         self._purpose = purpose
         self._owner_id = owner_id
         self._provider = provider
+        self._sending = sending
         self.attempts = 0
         self.blocked = 0
         self.handed = 0
@@ -694,6 +738,14 @@ class GatedProvider(AIProvider):
 
             raise LiveBlocked(refusal)
 
+        if self._sending is not None:
+            try:
+                # The task may have stopped while this was reserved: then it is not handed on.
+                self._sending.hand_on()
+            except BaseException:
+                gate.settle(request_id, sent=SendState.NOT_SENT, usage=None)
+                raise
+
         try:
             result = self._provider.generate_text(
                 prompt,
@@ -701,12 +753,9 @@ class GatedProvider(AIProvider):
                 reasoning_effort=gate.terms.reasoning_effort,
                 json_schema_format=json_schema_format,
             )
-        except AIProviderError as error:
-            self._settled(request_id, error.sent, error.usage)
-            raise
-        except BaseException:
-            # Whatever failed, the request may have gone out.
-            self._settled(request_id, SendState.HANDED, None)
+        except BaseException as error:
+            # Whatever failed, the request may have gone out, unless its provider says it did not.
+            self._settled(request_id, *how_far(error))
             raise
 
         self._settled(request_id, SendState.ANSWERED, result.usage, quiet=False)
@@ -714,7 +763,9 @@ class GatedProvider(AIProvider):
         return result
 
     def _settled(self, request_id: str, sent: SendState, usage: Usage | None, *, quiet: bool = True) -> None:
-        if sent is not SendState.NOT_SENT or usage is not None:
+        out = went_out(sent, usage)
+
+        if out:
             self.handed += 1
 
         try:
@@ -725,3 +776,7 @@ class GatedProvider(AIProvider):
 
             # Left reserved, it keeps the gate busy until a restart charges it as unknown.
             logger.error("a real request could not be settled (%s)", type(error).__name__)
+        finally:
+            # Counted by the rule the ledger is settled by: one it releases is never counted as sent.
+            if self._sending is not None:
+                self._sending.came_back(out)

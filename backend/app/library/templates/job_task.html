@@ -36,14 +36,14 @@
   {% if task.stage == "running" %}
   <header class="job-head">
     <h1>正在分析</h1>
-    <p class="job-mode">本机模拟服务：由固定规则生成结果，不是 AI。</p>
+    <p class="job-mode">{{ running_label }}</p>
   </header>
   <ol class="steps">
     {% for step, label in STEP_LABELS.items() %}
     <li{% if step == task.step %} aria-current="step"{% endif %}>{{ label }}</li>
     {% endfor %}
   </ol>
-  <p class="task-status" role="status" data-task-step>正在{{ STEP_LABELS[task.step] }}。已交给服务的请求：{{ task.requests_sent }} 次。</p>
+  <p class="task-status" role="status" data-task-step>正在{{ STEP_LABELS[task.step] }}。已交给服务的请求：{{ task.requests_handed }} 次。</p>
   <p class="hint">完成后这一页会自动更新；没有更新时可以<a href="/job-analysis/tasks/{{ task.id }}" data-skip-leave-guard>刷新状态</a>。</p>
   <form method="post" action="/job-analysis/tasks/{{ task.id }}/cancel" data-task-cancel>
     {{ m.csrf() }}
@@ -73,7 +73,7 @@
   <header class="job-head">
     <h1>分析已取消</h1>
   </header>
-  <p>{{ cancelled_by }}之后没有再发送。已交给服务的请求：{{ task.requests_sent }} 次，这些请求无法撤回。</p>
+  <p>{{ cancelled_by }}之后没有再发送。已交给服务的请求：{{ task.requests_handed }} 次，这些请求无法撤回。</p>
   <div class="actions">
     <form method="post" action="/job-analysis/tasks/{{ task.id }}/again" class="inline">
       {{ m.csrf() }}
@@ -85,7 +85,7 @@
   {% else %}
   <header class="job-head">
     <h1>岗位分析结果</h1>
-    <p class="job-mode">{% if result.mode == "simulation" %}本机模拟服务的结果：由固定规则生成，不是 AI 的判断。{% else %}真实服务的结果。{% endif %}</p>
+    <p class="job-mode">{{ mode_label }}</p>
   </header>
   {% if outcome %}
   <p class="{% if result.status in (Status.FAILED, Status.REJECTED) %}error{% else %}warning{% endif %}" role="alert">{{ outcome }}</p>
@@ -186,7 +186,7 @@
   </section>
   {% endif %}
 
-  <p class="hint result-foot">这是临时结果：保留 {{ TASK_TTL_MINUTES }} 分钟，服务重启后需要重做；不会保存，也不会投递。已交给服务的请求：{{ task.requests_sent }} 次。</p>
+  <p class="hint result-foot">这是临时结果：保留 {{ TASK_TTL_MINUTES }} 分钟，服务重启后需要重做；不会保存，也不会投递。已交给服务的请求：{{ task.requests_handed }} 次。</p>
   <div class="actions">
     <form method="post" action="/job-analysis/tasks/{{ task.id }}/again" class="inline">
       {{ m.csrf() }}

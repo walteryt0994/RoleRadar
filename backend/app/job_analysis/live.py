@@ -24,9 +24,10 @@ load_live_approval reads the terms of the approval a real run is under
 limits, and the price of every item a request may be billed for. Even
 complete terms are refused while no input bound has been checked for the
 model and the tier (app.live_gate.CERTIFIED_INPUT_BOUNDS, empty), so no
-real service can be used yet. check_analysis_mode refuses to start the app
-when a real service is asked for: the pages cannot use one yet, and one
-asked for is never silently replaced by the simulated service.
+real service can be used yet. analysis_setup turns what the environment asks
+for into the app's service (U2-C2): the simulated one, or a real one from
+approved terms; asked for and refused, it stops the app from starting rather
+than quietly simulating.
 """
 import os
 import re
@@ -38,7 +39,7 @@ from decimal import Decimal
 from app.ai_provider import OpenAIProvider, OpenAIProviderConfig
 from app.analysis_contracts import Recipient
 from app.library.errors import ConfigError
-from app.live_gate import CERTIFIED_INPUT_BOUNDS, ApprovalTerms, LiveRefused, PriceBasis, Purpose
+from app.live_gate import CERTIFIED_INPUT_BOUNDS, ApprovalTerms, LiveRefused, LiveSetup, PriceBasis, Purpose
 
 MODE_VARIABLE = "ROLERADAR_ANALYSIS_MODE"
 LIVE = "live"
@@ -256,28 +257,31 @@ def _price(raw: str, name: str, *, may_be_none: bool = False) -> Decimal | None:
     return Decimal(raw)
 
 
-def check_analysis_mode(environ: Mapping[str, str]) -> None:
-    """Refuse to start the app when a real service is asked for: the pages cannot use one yet (U2-C1).
+def analysis_setup(environ: Mapping[str, str]) -> LiveSetup | None:
+    """The real service the environment asks for, None for the simulated one, or ConfigError saying why not.
 
-    Raises ConfigError saying why; returns when only the simulated service
-    is asked for, which is also what an unset mode means.
+    An unset mode means the simulated service. A real one comes only from
+    complete approved terms whose model and tier have a checked input bound
+    (load_live_approval); none has one yet, so asking for a real service
+    stops the app from starting instead.
     """
     mode = environ.get(MODE_VARIABLE, "").strip()
 
     if mode in ("", SIMULATION):
-        return
+        return None
 
     if mode != LIVE:
         raise ConfigError(f"不认识的分析模式“{mode}”；不设置时只用模拟服务。")
 
     try:
-        load_live_approval(load_live_policy(environ), environ)
+        policy = load_live_policy(environ)
+        terms = load_live_approval(policy, environ)
     except LiveRefused as refused:
         raise ConfigError(f"要求使用真实服务，但不能启用：{refused}") from None
 
-    raise ConfigError(
-        "要求使用真实服务，但网页还没有接通真实服务，现在只能使用模拟服务；请去掉 ROLERADAR_ANALYSIS_MODE 后再启动。"
-    )
+    bound = CERTIFIED_INPUT_BOUNDS[(terms.provider, terms.model, terms.service_tier)]
+
+    return LiveSetup(terms, bound, lambda: make_live_provider(policy, environ, service_tier=terms.service_tier))
 
 
 def make_live_provider(policy: LivePolicy, environ=None, *, service_tier: str | None = None) -> OpenAIProvider:

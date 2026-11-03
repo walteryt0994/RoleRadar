@@ -392,7 +392,7 @@ def test_a_running_task_shows_its_real_step_and_can_be_cancelled_without_scripts
 
     assert '<li aria-current="step">解析岗位</li>' in page and "取消分析" in page and "刷新状态" in page
     assert '<script src="/static/job_analysis.js"></script>' in page and "%" not in text_of(main_of(page))
-    assert status == {"stage": "running", "step": "解析岗位", "requests_sent": 1}
+    assert status == {"stage": "running", "step": "解析岗位", "requests_handed": 1}
     assert cancelled.headers["location"] == task
 
 
