@@ -9,6 +9,7 @@ blocks the network.
 import json
 import threading
 from contextlib import ExitStack
+from dataclasses import replace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -29,6 +30,7 @@ from app.library.identity import token_hash
 from app.library.imports import IMPORT_WINDOW, STALE_STRUCTURING_AFTER, delete_draft, discard
 from app.live_structuring.service import (
     INSTRUCTIONS,
+    NOTICE_VERSION,
     SCHEMA_FORMAT,
     SEGMENTS_END,
     SEGMENTS_START,
@@ -38,16 +40,17 @@ from app.live_structuring.service import (
 )
 from app.library.models import CandidateState, LiveRequestState, ResumeImport
 from app.library.resume_rules import SIMULATION_NAME, SimulatedStructurer, structure
-from app.library.review import Asked, candidates_of, structure_import, structuring_of
+from app.library.review import Asked, candidates_of, sent_suffix, split_outcome, structure_import, structuring_of
+from app.library.sends import Sends, sends_text
 from app.library.web import SESSION_COOKIE
 from app.live_gate import LiveSetup, Purpose
 from app.web_main import create_app
-from job_helpers import InlineExecutor, text_of, wait_until
+from job_helpers import InlineExecutor, handed, text_of, wait_until
 from library_helpers import LOCAL_BASE_URL, Browser, form_for
-from structuring_cases import CASES
+from structuring_cases import C4_CASES, CASES, assess
 from test_library_adoption import adopt_new, adoptions
 from test_library_candidates import owner_id, paste, rt
-from test_live_gate import BOUND, requests_of, terms
+from test_live_gate import BOUND, COUNT_PRICE, COUNTED_BOUND, FEE, PRICES, requests_of, terms
 
 RECIPIENT = ("synthetic", "synthetic-model", "https://synthetic.invalid/v1")
 OUTPUT_LIMIT = 800
@@ -116,15 +119,18 @@ class Structuring(AIProvider):
 
     SYNTHETIC = True
 
-    def __init__(self, *script, usage=USED):
+    def __init__(self, *script, usage=USED, counts=()):
         self.script = list(script)
         self.calls = []
         self.usage = usage
+        # What each count does, behind a counted bound: an exception, a callable whose result is the count, or a count.
+        self.counts = list(counts)
+        self.counted = []
 
     def identity(self):
         return ProviderIdentity(*RECIPIENT)
 
-    def generate_text(self, prompt, max_output_tokens=None, reasoning_effort=None, json_schema_format=None):
+    def generate_text(self, prompt, max_output_tokens=None, reasoning_effort=None, json_schema_format=None, timeout_seconds=None):
         self.calls.append(
             {
                 "prompt": prompt,
@@ -163,15 +169,24 @@ class Structuring(AIProvider):
             service_tier=usage.service_tier,
         )
 
+    def count_input_tokens(self, prompt, reasoning_effort=None, json_schema_format=None, timeout_seconds=None):
+        self.counted.append(prompt)
+        step = self.counts.pop(0) if self.counts else 1000
+
+        if isinstance(step, BaseException):
+            raise step
+
+        return step() if callable(step) else step
+
 
 @pytest.fixture
 def live(make_config, clock):
     """build(provider, ...) -> an app with a real service on the test's library, and a signed-in browser."""
     stack = ExitStack()
 
-    def build(provider=None, *, approval_terms=None, inline=True):
+    def build(provider=None, *, approval_terms=None, bound=BOUND, inline=True):
         provider = provider or Structuring()
-        setup = LiveSetup(approval_terms or approval(), BOUND, lambda: provider)
+        setup = LiveSetup(approval_terms or approval(), bound, lambda: provider)
         application = create_app(make_config(), clock=clock, live=setup)
         # The client keeps the app's lifespan running; leaving it closes the gate.
         stack.enter_context(TestClient(application, base_url=LOCAL_BASE_URL, client=("127.0.0.1", 50000)))
@@ -453,11 +468,14 @@ def test_a_request_out_when_its_run_stops_is_settled_and_its_answer_dropped(live
     if how == "discard":
         assert record(app, held["import"]) is None
     else:
-        outcome = "cancelled_sent" if how == "cancel" else f"{how}_sent"
+        # No count before it here (a bound worked out locally); its generation was answered: sent.
+        outcome = "cancelled_-s" if how == "cancel" else f"{how}_-s"
         assert record(app, held["import"])[:2] == ("failed", outcome)
 
     if how == "cancel":
-        assert "这次请求已经交给外部服务，可能已经产生费用" in review_text(browser, held["import"])
+        assert f"已交给外部服务的请求：{sends_text(Sends(generation_sent=1))}。这些请求可能已经产生费用" in review_text(
+            browser, held["import"]
+        )
 
 
 def test_cancelling_or_ending_an_import_answers_at_once_while_its_request_is_out(live, clock):
@@ -476,11 +494,12 @@ def test_cancelling_or_ending_an_import_answers_at_once_while_its_request_is_out
 
     review = browser.get(f"/imports/{first}/review").text
 
-    assert "data-task-running" in review and "已交给服务的请求：1 次" in text_of(review)
+    # Still out: only maybe sent.
+    assert "data-task-running" in review and handed(maybe=1) in text_of(review)
     assert browser.get(f"/imports/{first}/structure/status").json() == {
         "stage": "running",
         "step": "由外部服务整理",
-        "requests_handed": 1,
+        "sends": sends_text(Sends(generation_maybe=1)),
     }
 
     # Nothing waits for the request: the cancel is taken while it is still out.
@@ -493,7 +512,7 @@ def test_cancelling_or_ending_an_import_answers_at_once_while_its_request_is_out
     wait_until(lambda: rt(app).runs.handed(attempt) is None)
 
     assert browser.get(f"/imports/{first}/structure/status").json() == {"stage": "done"}
-    assert kept(app, first) == [] and record(app, first)[:2] == ("failed", "cancelled_sent")
+    assert kept(app, first) == [] and record(app, first)[:2] == ("failed", "cancelled_-s")
 
     out.clear()
     release.clear()
@@ -521,7 +540,8 @@ def test_cancelling_or_ending_an_import_answers_at_once_while_its_request_is_out
         (None, LiveRequestState.UNKNOWN, True),
         (Usage(malformed=True), LiveRequestState.UNKNOWN, True),
         (Usage(1000, OUTPUT_LIMIT, 0, 0, 0, 1000 + OUTPUT_LIMIT, "flex"), LiveRequestState.UNKNOWN, True),
-        (Usage(1_000_000, OUTPUT_LIMIT, 0, 0, 0, 1_000_000 + OUTPUT_LIMIT, "default"), LiveRequestState.OVER, True),
+        # Far above the bound, though within what the prices were checked for (beyond that it is unknown).
+        (Usage(30_000, OUTPUT_LIMIT, 0, 0, 0, 30_000 + OUTPUT_LIMIT, "default"), LiveRequestState.OVER, True),
     ],
     ids=["usage", "no-usage", "malformed", "other-tier", "over-reservation"],
 )
@@ -532,24 +552,25 @@ def test_an_unfinished_answer_keeps_nothing_and_the_gate_alone_says_what_it_cost
 
     assert send(browser, import_id).status_code == 303
     assert kept(app, import_id) == []
-    assert record(app, import_id)[:2] == ("failed", "provider_failed_sent")
+    assert record(app, import_id)[:2] == ("failed", "provider_failed_-s")
     assert [row.state for row in requests_of(rt(app).database)] == [state]
     assert (paused(app) is not None) is pauses
 
     text = review_text(browser, import_id)
 
     # Never read as a cut-off answer: the same error comes of an error response, a refusal or no text.
-    assert "外部服务没有返回可用的整理结果。这次请求已经交给外部服务" in text and "输出上限" not in text
+    assert "外部服务没有返回可用的整理结果。已交给外部服务的请求：" in text and "输出上限" not in text
 
 
 @pytest.mark.parametrize(
     "error, outcome, state, says",
     [
-        (AIProviderTimeoutError("synthetic"), "provider_timeout_sent", LiveRequestState.UNKNOWN, "没有在时限内回答"),
-        (AIProviderConnectionError("synthetic"), "provider_failed_sent", LiveRequestState.UNKNOWN, "没有返回可用的整理结果"),
+        # No answer: maybe sent. An error answer: sent.
+        (AIProviderTimeoutError("synthetic"), "provider_timeout_-m", LiveRequestState.UNKNOWN, "没有在时限内回答"),
+        (AIProviderConnectionError("synthetic"), "provider_failed_-m", LiveRequestState.UNKNOWN, "没有返回可用的整理结果"),
         (
             AIProviderResponseError("The provider returned an error response (HTTP 500).", sent=SendState.ANSWERED),
-            "provider_failed_sent",
+            "provider_failed_-s",
             LiveRequestState.UNKNOWN,
             "没有返回可用的整理结果",
         ),
@@ -567,9 +588,12 @@ def test_a_failed_request_is_counted_by_whether_it_went_out(live, error, outcome
 
     text = review_text(browser, import_id)
 
+    sends = split_outcome(outcome)[1]
+
     assert says in text
-    assert ("这次请求已经交给外部服务" in text) is outcome.endswith("_sent")
-    assert ("没有发出请求" in text) is not outcome.endswith("_sent")
+    assert ("已交给外部服务的请求：" in text) is bool(sends.total)
+    assert ("没有发出请求" in text) is not sends.total
+    assert ("可能已发出" in text) is bool(sends.maybe)
 
 
 def test_while_the_gate_refuses_nothing_is_offered_and_a_confirmation_posted_anyway_sends_nothing(live):
@@ -627,13 +651,18 @@ def test_synthetic_resumes_go_through_masking_both_checks_and_review(live, case)
     state, outcome, _ = record(app, import_id)
 
     if case.failure:
-        assert (state, outcome) == ("failed", f"{case.failure}_sent") and kept(app, import_id) == []
+        assert (state, outcome) == ("failed", f"{case.failure}_-s") and kept(app, import_id) == []
+        judged = assess(case, sent_text(call["prompt"]), [], [], outcome)
+        assert (judged.safety, judged.review, judged.business) == ([], [], [])
         return
 
     with rt(app).database.transaction() as db:
         rows = candidates_of(db, owner_id(app), import_id)
         problems = structuring_of(db, import_id).problems or []
 
+    # By the criteria frozen for C4: no safety problem, nothing to review, and the business result met.
+    judged = assess(case, sent_text(call["prompt"]), rows, problems, outcome)
+    assert (judged.safety, judged.review, judged.business) == ([], [], [])
     assert state == "done"
     assert set(case.kinds) <= {row.kind for row in rows}
     assert set(case.cautions) <= {caution["code"] for row in rows for caution in row.cautions}
@@ -659,7 +688,7 @@ def test_a_confirmation_begins_one_run_and_another_run_takes_a_new_one(live, clo
     fields = confirmation(browser, import_id)
 
     assert browser.post(confirm_url(import_id), fields).status_code == 303
-    assert record(app, import_id)[:2] == ("failed", {"failed": "invalid_answer_sent", "cancelled": "cancelled_sent"}[how])
+    assert record(app, import_id)[:2] == ("failed", {"failed": "invalid_answer_-s", "cancelled": "cancelled_-s"}[how])
 
     # The same form again, by a second click or a retried request: the run it named is over, and so is it.
     replayed = browser.post(confirm_url(import_id), fields)
@@ -704,7 +733,7 @@ def test_a_confirmation_posted_again_while_its_run_goes_on_begins_nothing_more(l
     "error, outcome, state",
     [
         (AIProviderConfigError("synthetic: stopped before sending"), "cancelled", LiveRequestState.RELEASED),
-        (AIProviderTimeoutError("synthetic"), "cancelled_sent", LiveRequestState.UNKNOWN),
+        (AIProviderTimeoutError("synthetic"), "cancelled_-m", LiveRequestState.UNKNOWN),
     ],
     ids=["explicitly-not-sent", "perhaps-sent"],
 )
@@ -722,7 +751,8 @@ def test_a_run_cancelled_while_its_request_is_out_says_what_the_request_showed(l
     held["import"] = paste(browser)
 
     assert send(browser, held["import"]).status_code == 303
-    assert held["meanwhile"][:2] == ("failed", "cancelled_sent")
+    # Written while the request was out: maybe sent, until it came back.
+    assert held["meanwhile"][:2] == ("failed", "cancelled_-m")
     assert [row.state for row in requests_of(rt(app).database)] == [state]
     # Still cancelled: only whether it went out follows the evidence (explicitly not sent, nothing reported).
     assert record(app, held["import"])[:2] == ("failed", outcome)
@@ -732,7 +762,7 @@ def test_a_run_cancelled_while_its_request_is_out_says_what_the_request_showed(l
 
     assert "这次整理已取消。" in text
     assert ("没有发出请求" in text) is (outcome == "cancelled")
-    assert ("这次请求已经交给外部服务" in text) is (outcome == "cancelled_sent")
+    assert ("已交给外部服务的请求：" in text) is (outcome == "cancelled_-m")
 
 
 def test_a_cancelled_runs_late_request_never_touches_the_run_after_it(live, clock):
@@ -789,5 +819,276 @@ def test_sixty_candidates_and_the_local_profile_are_refused_whole(live):
 
     assert send(browser, import_id).status_code == 303
     assert kept(app, import_id) == []
-    assert record(app, import_id)[:2] == ("failed", "too_many_sent")
+    assert record(app, import_id)[:2] == ("failed", "too_many_-s")
     assert "连同本机规则整理的基本资料" in review_text(browser, import_id)
+
+
+def sent_text(prompt: str) -> str:
+    return "\n".join(item["text"] for item in sent_data(prompt))
+
+
+# --- the C4 criteria, frozen before any real answer (U2-C4 prerequisites) --------------------------------
+
+
+class Row:
+    """A kept candidate as assess reads it."""
+
+    def __init__(self, kind, extracted, cautions=()):
+        self.kind = kind
+        self.extracted = {name: [{"segment": 1, "quote": quote} for quote in quotes] for name, quotes in extracted.items()}
+        self.cautions = [{"code": code} for code in cautions]
+
+
+def case(case_id: str):
+    return next(item for item in CASES if item.id == case_id)
+
+
+def test_the_long_case_sends_close_to_the_structuring_limit_and_the_paid_cases_are_named():
+    long = case("long")
+    size = request_for([{"kind": "text", "number": 1, "text": long.text}]).outbound.size
+
+    assert 7_000 <= size <= 8_000 and len(long.coverage) == 3
+    assert set(C4_CASES) <= {item.id for item in CASES} and "wrong_quotes" not in C4_CASES
+
+
+def test_following_an_injected_instruction_leaking_or_a_profile_from_the_service_stop_c4():
+    injected = case("injected_instructions")
+    whole = injected.text.strip()
+    followed = [Row("project", {"name": [whole], "actions": [whole]})]
+
+    assert assess(injected, injected.text, followed, [], None).safety
+    # Its line copied into more than one field is following it too.
+    copied = [Row("project", {"name": [injected.injected], "actions": [injected.injected]})]
+    assert assess(injected, injected.text, copied, [], None).safety
+    # A kept quote over two of its lines shows nothing either way: reviewed, never passed or called proven.
+    partial = [Row("project", {"actions": ["\n".join(whole.splitlines()[2:4])]})]
+    judged = assess(injected, injected.text, partial, [], None)
+    assert judged.safety == [] and judged.review
+
+    chinese = case("chinese")
+    assert assess(chinese, "电话：138 0000 0000", [Row("education", {"school": ["合成大学"]})], [], None).safety
+    assert assess(chinese, "", [Row("skills", {"skills": ["Python、SQL"]})], [{"reason": "local_only"}], None).safety
+
+
+def test_the_business_criteria_are_recorded_and_never_taken_as_safety():
+    incomplete = case("incomplete")
+    # Too little to structure: nothing kept is what the case may come to; anything else kept nothing is not.
+    assert assess(incomplete, incomplete.text, [], [], "nothing_found_-s").business == []
+    assert assess(case("mixed"), "", [], [], "nothing_found_-s").business == ["没有留下可以采纳的候选"]
+
+    team = case("negation_plan_team")
+    planned = [Row("project", {"actions": ["计划下学期加入推荐功能"]})]
+    judged = assess(team, team.text, planned, [], None)
+    assert judged.safety == [] and judged.business == ["引用“计划下学期加入推荐功能”的候选没有标出提醒 plan"]
+    assert assess(team, team.text, [Row("project", {"actions": ["计划下学期加入推荐功能"]}, ["plan"])], [], None).business == []
+
+    long = case("long")
+    head_only = [Row(kind, {"x": ["面向校园服务的轻量级推荐方法"]}) for kind in long.kinds]
+    assert assess(long, long.text, head_only, [], None).business == ["没有候选引用“用 Redis 缓存热门书目列表”", "没有候选引用“英语六级”"]
+
+
+def test_an_outcome_says_what_its_run_handed_on_by_kind_and_how_sure():
+    for sends, suffix in [
+        (Sends(), ""),
+        (Sends(count_maybe=1), "_m-"),
+        (Sends(count_sent=1), "_s-"),
+        (Sends(count_sent=1, generation_maybe=1), "_sm"),
+        (Sends(count_sent=1, generation_sent=1), "_ss"),
+        (Sends(generation_sent=1), "_-s"),
+    ]:
+        assert sent_suffix(sends) == suffix and split_outcome("provider_timeout" + suffix) == ("provider_timeout", sends)
+
+    # Codes of their own are never taken for marks.
+    assert split_outcome("too_many") == ("too_many", Sends()) and split_outcome("nothing_found") == ("nothing_found", Sends())
+    # Written before counts existed: its generation went out or may have; no count is made up for it.
+    assert split_outcome("provider_timeout_sent") == ("provider_timeout", Sends(generation_maybe=1))
+    assert split_outcome("cancelled_sent") == ("cancelled", Sends(generation_maybe=1))
+
+
+# --- behind a counted bound: a count, then the generation (U2-C4 prerequisites) ----------------------------
+
+
+def counted(**changes):
+    values = {
+        "prices": replace(PRICES, count=COUNT_PRICE),
+        "input_bound": COUNTED_BOUND.name,
+        "request_unit": "count_then_generation",
+        "max_input_tokens": 1000,
+    }
+    values.update(changes)
+
+    return approval(**values)
+
+
+def test_a_counted_run_counts_first_then_generates_and_charges_both(live):
+    provider = Structuring(counts=[1000])
+    app, browser = live(provider, approval_terms=counted(), bound=COUNTED_BOUND)
+    import_id = paste(browser)
+
+    assert send(browser, import_id).status_code == 303
+    # The count is of the very prompt the generation then sends.
+    assert provider.counted == [provider.calls[0]["prompt"]] and record(app, import_id)[0] == "done"
+    assert states_of(app) == [(LiveRequestState.SETTLED, FEE + COST)]
+
+
+@pytest.mark.parametrize(
+    "count, outcome, says",
+    [
+        (AIProviderTimeoutError("synthetic"), "gate_count_m-", sends_text(Sends(count_maybe=1))),
+        (0, "gate_count_s-", sends_text(Sends(count_sent=1))),
+        (1001, "gate_input_s-", sends_text(Sends(count_sent=1))),
+    ],
+    ids=["count-timed-out", "count-unusable", "over-the-largest-input"],
+)
+def test_a_counted_run_whose_count_failed_says_the_count_went_out_and_no_generation(live, count, outcome, says):
+    provider = Structuring(counts=[count])
+    app, browser = live(provider, approval_terms=counted(), bound=COUNTED_BOUND)
+    import_id = paste(browser)
+
+    assert send(browser, import_id).status_code == 303
+    assert provider.calls == [] and record(app, import_id)[:2] == ("failed", outcome)
+
+    text = review_text(browser, import_id)
+
+    # Never "nothing was sent": the count went out, or may have.
+    assert f"已交给外部服务的请求：{says}。" in text and "没有发出请求" not in text
+    assert "所以没有发出生成请求" in text
+
+
+def test_a_counted_run_cancelled_after_its_count_sends_no_generation(live, clock):
+    held = {}
+
+    def count_then_cancel():
+        stop("cancel", held["app"], held["browser"], held["import"], clock)
+
+        return 1000
+
+    provider = Structuring(counts=[count_then_cancel])
+    app, browser = live(provider, approval_terms=counted(), bound=COUNTED_BOUND)
+    held.update(app=app, browser=browser)
+    held["import"] = paste(browser)
+
+    assert send(browser, held["import"]).status_code == 303
+    assert provider.calls == [] and record(app, held["import"])[:2] == ("failed", "cancelled_s-")
+    # Only the count is charged.
+    assert states_of(app) == [(LiveRequestState.SETTLED, FEE)]
+    assert f"已交给外部服务的请求：{sends_text(Sends(count_sent=1))}。" in review_text(browser, held["import"])
+
+
+def test_the_confirmation_page_says_the_count_goes_out_too_and_promises_no_keeping_back(live):
+    app, browser = live(approval_terms=counted(), bound=COUNTED_BOUND)
+    import_id = paste(browser)
+    page = text_of(browser.get(confirm_url(import_id)).text)
+
+    assert NOTICE_VERSION == "resume-live-2"
+    assert "这也是一次外发" in page and "不承诺不保存" in page and "法律要求或为防止伤害时可能更长" in page
+
+
+def test_a_counted_run_whose_count_used_up_the_time_hands_no_generation_on(live):
+    now = [100.0]
+
+    def slowest():
+        now[0] += 30.0
+
+        return 1000
+
+    provider = Structuring(counts=[slowest])
+    app, browser = live(provider, approval_terms=counted(), bound=COUNTED_BOUND)
+    app.state.structuring.live.gate.monotonic = lambda: now[0]
+    import_id = paste(browser)
+
+    assert send(browser, import_id).status_code == 303
+    # Its count only: never a generation maybe sent (C4 prerequisites acceptance F1).
+    assert provider.calls == [] and record(app, import_id)[:2] == ("failed", "gate_count_s-")
+    assert f"已交给外部服务的请求：{sends_text(Sends(count_sent=1))}。" in review_text(browser, import_id)
+    assert states_of(app) == [(LiveRequestState.SETTLED, FEE)]
+
+
+def field_of(name: str, quote: str) -> dict:
+    return {"field": name, "pieces": [{"segment": 1, "quote": quote}]}
+
+
+@pytest.mark.parametrize(
+    "shape, safety, review",
+    [
+        # The frozen instruction followed: the whole resume copied into the fields, and dropped by the checks.
+        ("whole", True, False),
+        # Over two of its lines: it may be the start of following it, or a mistake.
+        ("two-lines", False, True),
+        # Plain mistakes of format: never taken for the instruction followed.
+        ("made-up", False, False),
+        ("two-pieces", False, False),
+    ],
+)
+def test_an_injected_case_is_judged_by_what_the_checks_dropped_as_well_as_kept(live, shape, safety, review):
+    injected = case("injected_instructions")
+    whole = injected.text.strip()
+    lines = whole.splitlines()
+    second = {
+        "whole": [field_of("title", whole), field_of("actions", whole)],
+        "two-lines": [field_of("title", "\n".join(lines[1:3]))],
+        "made-up": [field_of("title", "一个并不存在的项目")],
+        "two-pieces": [{"field": "title", "pieces": [{"segment": 1, "quote": lines[1]}, {"segment": 1, "quote": lines[3]}]}],
+    }[shape]
+    answer = json.dumps(
+        {
+            "candidates": [
+                {"kind": "project", "fields": [field_of("title", "校园二手书交换小程序")], "notes": []},
+                {"kind": "project", "fields": second, "notes": []},
+            ]
+        },
+        ensure_ascii=False,
+    )
+    provider = Structuring(Answer(lambda prompt: answer))
+    app, browser = live(provider)
+    import_id = paste(browser, injected.text)
+
+    assert send(browser, import_id).status_code == 303
+
+    [call] = provider.calls
+
+    with rt(app).database.transaction() as db:
+        rows = candidates_of(db, owner_id(app), import_id)
+        problems = structuring_of(db, import_id).problems or []
+
+    # The checks held: one kept, the other dropped, and nothing of its words kept with the drop.
+    assert record(app, import_id)[0] == "done" and len(rows) == 1 and len(problems) == 1
+    assert set(problems[0]) <= {"position", "kind", "segments", "reason", "spans_lines", "copies_text"}
+
+    judged = assess(injected, sent_text(call["prompt"]), rows, problems, None)
+
+    assert (bool(judged.safety), bool(judged.review)) == (safety, review)
+
+
+@pytest.mark.parametrize(
+    "legacy, says",
+    [
+        ("provider_timeout_sent", "外部服务没有在时限内回答。"),
+        ("cancelled_sent", "这次整理已取消。"),
+        ("nothing_found_sent", "外部服务没有整理出任何条目"),
+    ],
+    ids=["timeout", "cancelled", "nothing-found"],
+)
+def test_an_outcome_written_before_counts_existed_still_explains_itself_and_offers_a_new_run(live, legacy, says):
+    unfinished = AIProviderResponseError("The provider returned an unfinished response.", sent=SendState.ANSWERED, usage=USED)
+    provider = Structuring(AIProviderConfigError("synthetic"), unfinished)
+    app, browser = live(provider)
+    import_id = paste(browser)
+
+    assert send(browser, import_id).status_code == 303
+
+    # As the version before wrote it, in the same structure version (C4 prerequisites acceptance F3).
+    with rt(app).database.transaction() as db:
+        structuring_of(db, import_id).outcome = legacy
+
+    text = review_text(browser, import_id)
+    page = browser.get(f"/imports/{import_id}/review").text
+
+    # Its one generation went out or may have: never "nothing was sent", and no count made up for it.
+    assert says in text and f"已交给外部服务的请求：{sends_text(Sends(generation_maybe=1))}。" in text
+    assert "没有发出请求" not in text and "计数 0 次" in text
+    assert f'href="/imports/{import_id}/structure/confirm"' in page
+
+    # Confirmed again, a new run writes the new marks.
+    assert send(browser, import_id).status_code == 303
+    assert record(app, import_id)[:2] == ("failed", "provider_failed_-s")

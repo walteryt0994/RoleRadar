@@ -19,7 +19,9 @@ from sqlalchemy import select
 from app import live_gate
 from app.ai_provider import (
     AIProvider,
+    AIProviderConfigError,
     AIProviderError,
+    AIProviderRateLimitError,
     AIProviderTimeoutError,
     GenerationResult,
     OpenAIProvider,
@@ -32,6 +34,7 @@ from app.job_analysis import live
 from app.library.db import Database, make_engine
 from app.library.errors import ConfigError
 from app.library.models import LiveApproval, LiveRequest, LiveRequestState, create_schema
+from app.library.sends import Call, Delivery
 from app.live_gate import (
     ApprovalTerms,
     Blocked,
@@ -54,6 +57,7 @@ PRICES = PriceBasis(
     cache_read=Decimal("0.5"),
     cache_write=Decimal("2.5"),
     output=Decimal("8"),
+    reserve_input=Decimal("2.5"),
     source="synthetic",
     checked_on="2026-11-02",
     synthetic=True,
@@ -77,9 +81,12 @@ USED = Usage(
     reasoning_tokens=12,
     total_tokens=150,
     service_tier="default",
+    cache_write_30m_tokens=10,
 )
 COST = 20 + 25 + 140 + 240
 APPROVAL = "synthetic-approval-1"
+# What a synthetic count says by default: within USED's 120 input tokens, so a settled count never pauses.
+COUNTED = 120
 
 
 def terms(**changes) -> ApprovalTerms:
@@ -100,10 +107,20 @@ def terms(**changes) -> ApprovalTerms:
         "prices": PRICES,
         "input_bound": BOUND.name,
         "rules_checked_on": "2026-11-02",
+        "request_unit": "generation",
+        # The code's ceiling: no synthetic prompt here comes near it.
+        "max_input_tokens": 32_000,
     }
     values.update(changes)
 
     return ApprovalTerms(**values)
+
+
+def synthetic_prices(plain, read, write, out, *, reserve=None, count=None) -> PriceBasis:
+    """Made-up prices; reservations take the dearest of the input ones unless told otherwise."""
+    reserve = max(price for price in (plain, read, write) if price is not None) if reserve is None else reserve
+
+    return PriceBasis(plain, read, write, out, reserve, "synthetic", "2026-11-02", True, count)
 
 
 def answer(usage: Usage) -> GenerationResult:
@@ -121,29 +138,51 @@ def answer(usage: Usage) -> GenerationResult:
         reasoning_tokens=usage.reasoning_tokens,
         service_tier=usage.service_tier,
         usage_malformed=usage.malformed,
+        cache_write_30m_tokens=usage.cache_write_30m_tokens,
+        cache_write_12h_tokens=usage.cache_write_12h_tokens,
     )
 
 
 class SyntheticProvider(AIProvider):
-    """Made up for these tests: answers from a script and sends nothing anywhere."""
+    """Made up for these tests: answers and counts from scripts and sends nothing anywhere.
+
+    counts holds what each count does, in order: an exception to raise, a
+    callable to run (its result is the count), or the count itself; by
+    default COUNTED. timeouts keeps the time each request was given, counts
+    and generations alike, in order.
+    """
 
     SYNTHETIC = True
 
-    def __init__(self, *script):
+    def __init__(self, *script, counts=()):
         self.script = list(script)
+        self.counts = list(counts)
         self.calls = []
+        self.counted = []
+        self.timeouts = []
 
     def identity(self):
         return ProviderIdentity("synthetic", "synthetic-model", "https://synthetic.invalid/v1")
 
-    def generate_text(self, prompt, max_output_tokens=None, reasoning_effort=None, json_schema_format=None):
+    def generate_text(self, prompt, max_output_tokens=None, reasoning_effort=None, json_schema_format=None, timeout_seconds=None):
         self.calls.append({"max_output_tokens": max_output_tokens, "reasoning_effort": reasoning_effort})
+        self.timeouts.append(timeout_seconds)
         step = self.script.pop(0) if self.script else USED
 
         if isinstance(step, BaseException):
             raise step
 
         return answer(step)
+
+    def count_input_tokens(self, prompt, reasoning_effort=None, json_schema_format=None, timeout_seconds=None):
+        self.counted.append({"prompt": prompt, "reasoning_effort": reasoning_effort, "format": json_schema_format})
+        self.timeouts.append(timeout_seconds)
+        step = self.counts.pop(0) if self.counts else COUNTED
+
+        if isinstance(step, BaseException):
+            raise step
+
+        return step() if callable(step) else step
 
 
 @pytest.fixture
@@ -192,19 +231,19 @@ def ask(gate, provider, prompt=PROMPT, **options):
 
 def test_a_worst_case_takes_every_input_token_at_the_dearest_input_item():
     assert reservation(150, 100, PRICES) == WORST == 1175
-    cheaper_writes = PriceBasis(Decimal("2"), Decimal("0.5"), None, Decimal("8"), "synthetic", "2026-11-02", True)
+    cheaper_writes = synthetic_prices(Decimal("2"), Decimal("0.5"), None, Decimal("8"))
     assert reservation(150, 100, cheaper_writes) == 150 * 2 + 100 * 8
 
 
 def test_a_charge_bills_each_item_once_and_reasoning_as_part_of_the_output():
     assert charge(USED, terms()) == COST == 425
     # A cache item that is not billed on its own is billed as plain input.
-    plain_writes = terms(prices=PriceBasis(Decimal("2"), Decimal("0.5"), None, Decimal("8"), "synthetic", "2026-11-02", True))
+    plain_writes = terms(prices=synthetic_prices(Decimal("2"), Decimal("0.5"), None, Decimal("8")))
     assert charge(USED, plain_writes) == 20 + 160 + 240
 
 
 def test_amounts_are_rounded_up_to_the_millionth_of_a_dollar():
-    tiny = PriceBasis(Decimal("0.001"), None, None, Decimal("0.001"), "synthetic", "2026-11-02", True)
+    tiny = synthetic_prices(Decimal("0.001"), None, None, Decimal("0.001"))
     assert reservation(1, 1, tiny) == 1
     assert charge(Usage(input_tokens=1, output_tokens=0, service_tier="default"), terms(prices=tiny)) == 1
 
@@ -319,10 +358,25 @@ def test_another_process_cannot_take_the_lock_while_an_app_holds_it(gates, ledge
         {"reasoning_effort": "high"},
         {"structuring_max_bytes": 7_000},
         {"structuring_max_output_tokens": 200},
-        {"prices": PriceBasis(Decimal("1"), Decimal("0.5"), Decimal("2.5"), Decimal("8"), "synthetic", "2026-11-02", True)},
-        {"prices": PriceBasis(Decimal("2"), None, Decimal("2.5"), Decimal("8"), "synthetic", "2026-11-02", True)},
+        {"prices": synthetic_prices(Decimal("1"), Decimal("0.5"), Decimal("2.5"), Decimal("8"))},
+        {"prices": synthetic_prices(Decimal("2"), None, Decimal("2.5"), Decimal("8"))},
+        {"prices": synthetic_prices(Decimal("2"), Decimal("0.5"), Decimal("2.5"), Decimal("8"), reserve=Decimal("3"))},
+        {"max_input_tokens": 2000},
     ],
-    ids=["cost", "requests", "output", "purposes", "tier", "effort", "bytes", "structuring-output", "price", "cache-item"],
+    ids=[
+        "cost",
+        "requests",
+        "output",
+        "purposes",
+        "tier",
+        "effort",
+        "bytes",
+        "structuring-output",
+        "price",
+        "cache-item",
+        "reserve-price",
+        "input-limit",
+    ],
 )
 def test_changed_terms_under_the_same_approval_are_refused_and_the_snapshot_kept(gates, ledger, changes):
     database, _ = ledger
@@ -339,7 +393,7 @@ def test_changed_terms_under_the_same_approval_are_refused_and_the_snapshot_kept
 
 def test_the_same_prices_written_differently_are_the_same_terms(gates):
     gates().close()
-    same = PriceBasis(Decimal("2.0"), Decimal("0.50"), Decimal("2.500"), Decimal("8.00"), "synthetic", "2026-11-02", True)
+    same = PriceBasis(Decimal("2.0"), Decimal("0.50"), Decimal("2.500"), Decimal("8.00"), Decimal("2.50"), "synthetic", "2026-11-02", True)
 
     gates(terms(prices=same))
 
@@ -454,13 +508,13 @@ def test_a_request_left_unsettled_keeps_the_next_one_out(gates):
 def test_a_cost_above_its_reservation_is_charged_in_full_and_pauses_the_approval(gates, ledger):
     database, _ = ledger
     gate = gates()
-    # Far more input than the bound said: the worst case was not one.
-    provider = SyntheticProvider(Usage(input_tokens=10_000, output_tokens=30, cache_read_tokens=0, cache_write_tokens=0, service_tier="default"))
+    # Far more input than the bound said, though within what the prices were checked for: the worst case was not one.
+    provider = SyntheticProvider(Usage(input_tokens=900, output_tokens=30, cache_read_tokens=0, cache_write_tokens=0, service_tier="default"))
     ask(gate, provider)
     (row,) = requests_of(database)
 
     assert row.state == LiveRequestState.OVER and row.reason == "over_reservation"
-    assert row.charged_micro_usd == 10_000 * 2 + 30 * 8 > row.reserved_micro_usd == WORST
+    assert row.charged_micro_usd == 900 * 2 + 30 * 8 > row.reserved_micro_usd == WORST
     assert approval_of(database).paused_reason == "over_reservation"
 
     with pytest.raises(LiveBlocked) as blocked:
@@ -470,19 +524,25 @@ def test_a_cost_above_its_reservation_is_charged_in_full_and_pauses_the_approval
 
 
 @pytest.mark.parametrize(
-    "step",
+    "step, reason",
     [
-        AIProviderTimeoutError("The provider request timed out."),
-        Usage(input_tokens=120, output_tokens=30, cache_read_tokens=40, cache_write_tokens=10, service_tier="priority"),
-        Usage(service_tier="default"),
-        RuntimeError("synthetic failure"),
-        replace(USED, total_tokens=9999),
-        replace(USED, input_tokens=-10_000),
-        replace(USED, malformed=True),
+        # No answer came: it may have gone out.
+        (AIProviderTimeoutError("The provider request timed out."), "no_answer"),
+        (
+            Usage(input_tokens=120, output_tokens=30, cache_read_tokens=40, cache_write_tokens=10, service_tier="priority"),
+            "unknown_usage",
+        ),
+        (Usage(service_tier="default"), "unknown_usage"),
+        (RuntimeError("synthetic failure"), "no_answer"),
+        (replace(USED, total_tokens=9999), "unknown_usage"),
+        (replace(USED, input_tokens=-10_000), "unknown_usage"),
+        (replace(USED, malformed=True), "unknown_usage"),
+        # Written to the cache for 12 hours: no price is approved for that.
+        (replace(USED, cache_write_30m_tokens=0, cache_write_12h_tokens=10), "unknown_usage"),
     ],
-    ids=["timeout", "other-tier", "no-counts", "not-a-provider-error", "total", "negative", "malformed"],
+    ids=["timeout", "other-tier", "no-counts", "not-a-provider-error", "total", "negative", "malformed", "kept-12h"],
 )
-def test_a_request_without_usable_usage_is_charged_at_its_reservation_and_pauses(gates, ledger, step):
+def test_a_request_without_usable_usage_is_charged_at_its_reservation_and_pauses(gates, ledger, step, reason):
     database, _ = ledger
     gate = gates()
     provider = SyntheticProvider(step)
@@ -495,7 +555,7 @@ def test_a_request_without_usable_usage_is_charged_at_its_reservation_and_pauses
 
     (row,) = requests_of(database)
 
-    assert (row.state, row.reason, row.charged_micro_usd) == (LiveRequestState.UNKNOWN, "unknown_usage", WORST)
+    assert (row.state, row.reason, row.charged_micro_usd) == (LiveRequestState.UNKNOWN, reason, WORST)
     assert approval_of(database).paused_reason == "unknown_usage" and gated.handed == 1
 
     with pytest.raises(LiveBlocked) as blocked:
@@ -649,13 +709,20 @@ def test_synthetic_prices_or_bounds_never_let_a_real_provider_through(gates):
 
 def test_real_prices_are_refused_without_an_input_bound_checked_for_the_model(gates, ledger):
     database, _ = ledger
-    real_prices = PriceBasis(Decimal("2"), None, None, Decimal("8"), "https://synthetic.invalid/pricing", "2026-11-02")
-    unchecked = InputBound("bytes-plus-margin", BOUND.tokens, "https://synthetic.invalid/docs", "2026-11-02")
+    real_prices = PriceBasis(
+        Decimal("2"), None, None, Decimal("8"), Decimal("2"), "https://synthetic.invalid/pricing", "2026-11-02", count=Decimal("0")
+    )
+    worked_out = InputBound("bytes-plus-margin", BOUND.tokens, "https://synthetic.invalid/docs", "2026-11-02")
+    counted = InputBound("counted-unchecked", None, "https://synthetic.invalid/docs", "2026-11-02", counted=True)
 
     assert live_gate.CERTIFIED_INPUT_BOUNDS == {}
 
+    # A bound worked out here never serves a real service, checked or not.
+    with pytest.raises(LiveRefused, match="只能用发送前由服务计数的输入上界"):
+        gates(terms(prices=real_prices, input_bound=worked_out.name), worked_out)
+
     with pytest.raises(LiveRefused, match="还没有核验过的输入上界"):
-        gates(terms(prices=real_prices, input_bound=unchecked.name), unchecked)
+        gates(terms(prices=real_prices, input_bound=counted.name, request_unit="count_then_generation"), counted)
 
     assert approval_of(database) is None
 
@@ -698,7 +765,12 @@ APPROVED = {
     "ROLERADAR_LIVE_PRICE_OUTPUT": "8",
     "ROLERADAR_LIVE_PRICE_SOURCE": "https://synthetic.invalid/pricing",
     "ROLERADAR_LIVE_PRICE_CHECKED_ON": "2026-11-02",
+    "ROLERADAR_LIVE_PRICE_RESERVE_INPUT": "2",
+    "ROLERADAR_LIVE_PRICE_COUNT": "0",
+    "ROLERADAR_LIVE_MAX_INPUT_TOKENS": "16000",
 }
+# A counted bound, as only a counted one may serve a real service; registered only by tests.
+CHECKED = InputBound("checked-for-test", None, "https://synthetic.invalid/docs", "2026-11-02", counted=True)
 
 
 def test_complete_terms_are_still_refused_while_no_input_bound_has_been_checked():
@@ -727,6 +799,13 @@ def test_complete_terms_are_still_refused_while_no_input_bound_has_been_checked(
         ({"ROLERADAR_LIVE_STRUCTURING_MAX_BYTES": "8001"}, "字节上限"),
         ({"ROLERADAR_LIVE_STRUCTURING_MAX_OUTPUT_TOKENS": "8001"}, "简历整理输出上限"),
         ({"ROLERADAR_LIVE_STRUCTURING_MAX_OUTPUT_TOKENS": None}, "ROLERADAR_LIVE_STRUCTURING_MAX_OUTPUT_TOKENS"),
+        # A count's price is never taken to be 0: it is written out, or the terms are refused.
+        ({"ROLERADAR_LIVE_PRICE_COUNT": None}, "ROLERADAR_LIVE_PRICE_COUNT"),
+        ({"ROLERADAR_LIVE_PRICE_COUNT": "none"}, "计数单价"),
+        ({"ROLERADAR_LIVE_PRICE_RESERVE_INPUT": None}, "ROLERADAR_LIVE_PRICE_RESERVE_INPUT"),
+        ({"ROLERADAR_LIVE_PRICE_RESERVE_INPUT": "1.5"}, "预留输入单价不能低于"),
+        ({"ROLERADAR_LIVE_MAX_INPUT_TOKENS": None}, "ROLERADAR_LIVE_MAX_INPUT_TOKENS"),
+        ({"ROLERADAR_LIVE_MAX_INPUT_TOKENS": "32001"}, "单次输入上限"),
     ],
 )
 def test_terms_that_are_missing_or_doubtful_are_refused(change, says):
@@ -744,17 +823,26 @@ def test_a_synthetic_bound_is_never_taken_as_a_checked_one(monkeypatch):
 
 
 def test_terms_read_from_the_environment_are_exact_and_never_synthetic(monkeypatch):
-    checked = InputBound("checked-for-test", BOUND.tokens, "https://synthetic.invalid/docs", "2026-11-02")
-    monkeypatch.setitem(live_gate.CERTIFIED_INPUT_BOUNDS, ("openai", "synthetic-model", "default"), checked)
+    monkeypatch.setitem(live_gate.CERTIFIED_INPUT_BOUNDS, ("openai", "synthetic-model", "default"), CHECKED)
     approval = live.load_live_approval(live.load_live_policy(APPROVED), APPROVED)
 
     assert approval.purposes == {"analysis", "structuring"} and approval.reasoning_effort is None
     assert (approval.max_cost_micro_usd, approval.max_requests, approval.max_output_tokens) == (500_000, 6, 1500)
     assert (approval.structuring_max_bytes, approval.structuring_max_output_tokens) == (8000, 8000)
     assert approval.prices == PriceBasis(
-        Decimal("2"), Decimal("0.5"), None, Decimal("8"), "https://synthetic.invalid/pricing", "2026-11-02"
+        Decimal("2"),
+        Decimal("0.5"),
+        None,
+        Decimal("8"),
+        Decimal("2"),
+        "https://synthetic.invalid/pricing",
+        "2026-11-02",
+        count=Decimal("0"),
     )
     assert approval.prices.synthetic is False and approval.input_bound == "checked-for-test"
+    # One request is a count and at most one generation, and the snapshot says so.
+    assert (approval.request_unit, approval.max_input_tokens) == ("count_then_generation", 16000)
+    assert approval.snapshot()["request_unit"] == "count_then_generation"
 
 
 def test_an_approved_service_tier_is_asked_for_by_the_real_provider():
@@ -777,8 +865,7 @@ def test_an_approved_service_tier_is_asked_for_by_the_real_provider():
 
 @pytest.mark.parametrize("purposes, cap", [("analysis, structuring", 8000), ("analysis", 1500)])
 def test_the_real_provider_is_capped_at_the_largest_output_limit_its_approval_covers(monkeypatch, purposes, cap):
-    checked = InputBound("checked-for-test", BOUND.tokens, "https://synthetic.invalid/docs", "2026-11-02")
-    monkeypatch.setitem(live_gate.CERTIFIED_INPUT_BOUNDS, ("openai", "synthetic-model", "default"), checked)
+    monkeypatch.setitem(live_gate.CERTIFIED_INPUT_BOUNDS, ("openai", "synthetic-model", "default"), CHECKED)
     environ = {**APPROVED, "ROLERADAR_ANALYSIS_MODE": "live", "ROLERADAR_LIVE_PURPOSES": purposes}
 
     with patch("app.ai_provider.OpenAI"), patch("app.ai_provider.DefaultHttpxClient"):
@@ -829,11 +916,11 @@ class Waiting(SyntheticProvider):
         self.entered = threading.Event()
         self.release = threading.Event()
 
-    def generate_text(self, prompt, max_output_tokens=None, reasoning_effort=None, json_schema_format=None):
+    def generate_text(self, prompt, max_output_tokens=None, reasoning_effort=None, json_schema_format=None, timeout_seconds=None):
         self.entered.set()
         assert self.release.wait(10)
 
-        return super().generate_text(prompt, max_output_tokens, reasoning_effort, json_schema_format)
+        return super().generate_text(prompt, max_output_tokens, reasoning_effort, json_schema_format, timeout_seconds)
 
 
 def wait_until(condition, timeout: float = 10.0) -> None:
@@ -987,3 +1074,400 @@ def test_a_request_reserved_as_the_gate_closes_is_released_and_never_sent(gates,
     assert [(row.state, row.charged_micro_usd) for row in requests_of(database)] == [(LiveRequestState.RELEASED, 0)]
     assert not closers[0].is_alive()
 
+
+
+# --- prices and usage, U2-C4 prerequisites ------------------------------------------------------------
+
+
+def test_reservations_take_the_reservation_price_and_settlements_the_price_of_each_item():
+    prices = synthetic_prices(Decimal("4"), Decimal("0.4"), Decimal("5"), Decimal("20"), reserve=Decimal("10"), count=Decimal("0.001"))
+    approval = terms(prices=prices, max_input_tokens=2000)
+    used = Usage(
+        input_tokens=1000,
+        output_tokens=100,
+        cache_read_tokens=0,
+        cache_write_tokens=600,
+        cache_write_30m_tokens=600,
+        cache_write_12h_tokens=0,
+        service_tier="default",
+    )
+
+    assert reservation(1000, 100, prices) == 1000 * 10 + 100 * 20
+    # A counted one adds its count: a thousandth of a dollar.
+    assert reservation(1000, 100, prices, counted=True) == 1000 * 10 + 100 * 20 + 1000
+    # 600 written at 5, the other 400 at 4 and 100 output at 20: never the reservation price.
+    assert charge(used, approval) == 600 * 5 + 400 * 4 + 100 * 20
+
+
+def test_a_reservation_price_below_a_price_an_input_token_may_be_billed_at_is_refused():
+    with pytest.raises(ValueError, match="reservation"):
+        synthetic_prices(Decimal("4"), Decimal("0.4"), Decimal("5"), Decimal("20"), reserve=Decimal("4.5"))
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        replace(USED, cache_write_30m_tokens=0, cache_write_12h_tokens=10),
+        replace(USED, cache_write_30m_tokens=None),
+        replace(USED, cache_write_30m_tokens=4),
+        replace(USED, cache_write_30m_tokens=True),
+        replace(USED, input_tokens=True),
+        replace(USED, output_tokens=-1),
+        replace(USED, input_tokens=1001, total_tokens=1031),
+    ],
+    ids=["kept-12h", "writes-unsplit", "writes-disagree", "split-not-a-count", "bool", "negative", "beyond-checked-prices"],
+)
+def test_usage_is_checked_whole_before_it_is_priced(usage):
+    assert charge(usage, terms(max_input_tokens=1000)) is None
+
+
+def test_usage_beyond_the_checked_prices_is_kept_at_a_conservative_amount_and_pauses(gates, ledger):
+    database, _ = ledger
+    gate = gates(terms(max_input_tokens=1000))
+    ask(gate, SyntheticProvider(Usage(input_tokens=5000, output_tokens=30, cache_read_tokens=0, cache_write_tokens=0, service_tier="default")))
+    (row,) = requests_of(database)
+
+    # An estimate, never a settlement: the reported counts at the reservation price, as that is more than the reservation.
+    assert (row.state, row.reason, row.charged_micro_usd) == (LiveRequestState.UNKNOWN, "unknown_usage", 5000 * 25 // 10 + 30 * 8)
+    assert approval_of(database).paused_reason == "unknown_usage"
+
+
+def test_a_request_whose_bound_is_over_the_largest_input_is_not_reserved_or_sent(gates, ledger):
+    database, _ = ledger
+    # The synthetic bound gives 150 for PROMPT.
+    gate = gates(terms(max_input_tokens=100))
+    provider = SyntheticProvider()
+
+    with pytest.raises(LiveBlocked) as blocked:
+        ask(gate, provider)
+
+    assert blocked.value.reason is Blocked.INPUT and provider.calls == [] and requests_of(database) == []
+
+
+# --- counted requests: a count, then the generation (U2-C4 prerequisites) -------------------------------
+
+
+COUNTED_BOUND = InputBound("synthetic-counted", None, "synthetic", "2026-11-03", synthetic=True, counted=True)
+# Made up: a fifth of a thousandth of a dollar per count, so that a count shows in every amount.
+COUNT_PRICE = Decimal("0.0002")
+FEE = 200
+# Before anything goes out: the approval's largest input (1000) at the reservation price, the output limit, and the count.
+BEFORE_COUNT = FEE + 1000 * 25 // 10 + 100 * 8
+# Narrowed by a count of COUNTED (120).
+AFTER_COUNT = FEE + COUNTED * 25 // 10 + 100 * 8
+
+
+def counted_terms(**changes) -> ApprovalTerms:
+    values = {
+        "prices": replace(PRICES, count=COUNT_PRICE),
+        "input_bound": COUNTED_BOUND.name,
+        "request_unit": "count_then_generation",
+        "max_input_tokens": 1000,
+    }
+    values.update(changes)
+
+    return terms(**values)
+
+
+class Recording:
+    """A task's sending (live_gate.Sending) that keeps what it is told, and may stop one kind of request."""
+
+    def __init__(self, refuse: Call | None = None):
+        self.told = []
+        self.refuse = refuse
+
+    def hand_on(self, call):
+        self.told.append(("hand_on", call))
+
+        if call == self.refuse:
+            raise RuntimeError("the task stopped")
+
+    def came_back(self, call, delivered):
+        self.told.append(("came_back", call, delivered))
+
+
+def test_a_counted_request_is_reserved_at_its_worst_then_narrowed_by_its_count_and_settled_with_it(gates, ledger):
+    database, _ = ledger
+    gate = gates(counted_terms(), COUNTED_BOUND)
+    seen = []
+
+    def count():
+        (row,) = requests_of(database)
+        seen.append((row.state, row.reason, row.reserved_micro_usd))
+
+        return COUNTED
+
+    provider = SyntheticProvider(counts=[count])
+    sending = Recording()
+
+    with gate.task("analysis", "owner-a", provider, sending=sending) as gated:
+        gated.generate_text(PROMPT)
+
+    (row,) = requests_of(database)
+
+    # Reserved at the worst case before the count went out; narrowed by it before the generation.
+    assert seen == [(LiveRequestState.RESERVED, "counting", BEFORE_COUNT)]
+    assert (row.state, row.reason, row.reserved_micro_usd, row.charged_micro_usd) == (
+        LiveRequestState.SETTLED,
+        None,
+        AFTER_COUNT,
+        FEE + COST,
+    )
+    # The count is of the very request the generation then sends, with the approved effort.
+    assert provider.counted == [{"prompt": PROMPT, "reasoning_effort": "low", "format": None}] and len(provider.calls) == 1
+    assert gated.handed == 2 and gate.status().requests_used == 1
+    assert sending.told == [
+        ("hand_on", Call.COUNT),
+        ("came_back", Call.COUNT, Delivery.SENT),
+        ("hand_on", Call.GENERATION),
+        ("came_back", Call.GENERATION, Delivery.SENT),
+    ]
+
+
+def test_a_count_and_its_generation_share_the_approval_timeout(gates):
+    gate = gates(counted_terms(), COUNTED_BOUND)
+    now = [100.0]
+    gate.monotonic = lambda: now[0]
+
+    def slow():
+        now[0] += 12.0
+
+        return COUNTED
+
+    provider = SyntheticProvider(counts=[slow])
+    ask(gate, provider)
+
+    # Together never more than the approval's 30 seconds: the generation gets what the count left.
+    assert provider.timeouts == [30.0, 18.0]
+
+
+@pytest.mark.parametrize("took", [30.0, 31.0], ids=["all-of-it", "more-than-all"])
+def test_a_count_that_used_up_the_time_sends_no_generation_and_never_hands_it_on(gates, ledger, took):
+    database, _ = ledger
+    gate = gates(counted_terms(), COUNTED_BOUND)
+    now = [100.0]
+    gate.monotonic = lambda: now[0]
+
+    def slowest():
+        now[0] += took
+
+        return COUNTED
+
+    provider = SyntheticProvider(counts=[slowest])
+    sending = Recording()
+
+    with gate.task("analysis", "owner-a", provider, sending=sending) as gated:
+        with pytest.raises(LiveBlocked) as blocked:
+            gated.generate_text(PROMPT)
+
+    (row,) = requests_of(database)
+
+    assert blocked.value.reason is Blocked.COUNT and provider.calls == []
+    assert (row.state, row.reason, row.charged_micro_usd) == (LiveRequestState.SETTLED, "count_sent", FEE)
+    # The task never hears of a generation: nothing of it is out (C4 prerequisites acceptance F1).
+    assert sending.told == [("hand_on", Call.COUNT), ("came_back", Call.COUNT, Delivery.SENT)]
+    assert gated.handed == 1
+
+
+def test_a_generation_out_of_time_once_handed_on_is_told_back_as_not_sent(gates, ledger):
+    database, _ = ledger
+    gate = gates(counted_terms(), COUNTED_BOUND)
+    now = [100.0]
+    gate.monotonic = lambda: now[0]
+
+    class Slow(Recording):
+        # The time runs out while the task takes the generation in.
+        def hand_on(self, call):
+            super().hand_on(call)
+
+            if call == Call.GENERATION:
+                now[0] += 30.0
+
+    provider = SyntheticProvider()
+    sending = Slow()
+
+    with gate.task("analysis", "owner-a", provider, sending=sending) as gated:
+        with pytest.raises(LiveBlocked) as blocked:
+            gated.generate_text(PROMPT)
+
+    (row,) = requests_of(database)
+
+    assert blocked.value.reason is Blocked.COUNT and provider.calls == []
+    assert (row.state, row.reason, row.charged_micro_usd) == (LiveRequestState.SETTLED, "count_sent", FEE)
+    # Every hand_on is paired with a came_back: this one as not sent.
+    assert sending.told[2:] == [("hand_on", Call.GENERATION), ("came_back", Call.GENERATION, Delivery.NOT_SENT)]
+    assert gated.handed == 1
+
+
+@pytest.mark.parametrize(
+    "error, price, delivered, state, reason, charged, paused",
+    [
+        # No answer: the count may have gone out, and whether it was billed is not known.
+        (AIProviderTimeoutError("The provider request timed out."), COUNT_PRICE, Delivery.MAYBE, "unknown", "count_maybe", FEE, "count_maybe"),
+        # Free counts cost nothing whether or not it went out.
+        (AIProviderTimeoutError("The provider request timed out."), Decimal("0"), Delivery.MAYBE, "settled", "count_maybe", 0, None),
+        (
+            AIProviderRateLimitError("The provider rate limit or quota was exceeded.", sent=SendState.ANSWERED),
+            COUNT_PRICE,
+            Delivery.SENT,
+            "settled",
+            "count_sent",
+            FEE,
+            None,
+        ),
+        # Stopped before it was handed to the SDK: nothing went out, and the group is released.
+        (AIProviderConfigError("The provider cannot count input tokens."), COUNT_PRICE, Delivery.NOT_SENT, "released", None, 0, None),
+    ],
+    ids=["timeout", "timeout-free", "answered-error", "never-sent"],
+)
+def test_a_count_that_failed_sends_no_generation_and_keeps_what_it_may_have_cost(
+    gates, ledger, error, price, delivered, state, reason, charged, paused
+):
+    database, _ = ledger
+    gate = gates(counted_terms(prices=replace(PRICES, count=price)), COUNTED_BOUND)
+    provider = SyntheticProvider(counts=[error])
+    sending = Recording()
+
+    with gate.task("analysis", "owner-a", provider, sending=sending) as gated:
+        with pytest.raises(LiveBlocked) as blocked:
+            gated.generate_text(PROMPT)
+
+    (row,) = requests_of(database)
+
+    # Neither retried nor followed by a generation.
+    assert blocked.value.reason is Blocked.COUNT and len(provider.counted) == 1 and provider.calls == []
+    assert (row.state, row.reason, row.charged_micro_usd) == (state, reason, charged)
+    assert approval_of(database).paused_reason == paused
+    assert sending.told == [("hand_on", Call.COUNT), ("came_back", Call.COUNT, delivered)]
+    assert gate.status().requests_used == (0 if delivered is Delivery.NOT_SENT else 1)
+
+
+@pytest.mark.parametrize(
+    "count, why",
+    [(True, Blocked.COUNT), (-1, Blocked.COUNT), (0, Blocked.COUNT), (1.5, Blocked.COUNT), ("7", Blocked.COUNT), (1001, Blocked.INPUT)],
+    ids=["bool", "negative", "zero", "fraction", "text", "over-the-largest-input"],
+)
+def test_a_count_that_is_no_whole_number_or_over_the_largest_input_sends_no_generation(gates, ledger, count, why):
+    database, _ = ledger
+    gate = gates(counted_terms(), COUNTED_BOUND)
+    provider = SyntheticProvider(counts=[count])
+
+    with pytest.raises(LiveBlocked) as blocked:
+        ask(gate, provider)
+
+    (row,) = requests_of(database)
+
+    assert blocked.value.reason is why and provider.calls == []
+    # The count went out: it is charged, never released.
+    assert (row.state, row.reason, row.charged_micro_usd) == (LiveRequestState.SETTLED, "count_sent", FEE)
+    assert approval_of(database).paused_reason is None
+
+
+@pytest.mark.parametrize("stop", ["stop-file", "paused", "task"])
+def test_a_stop_after_the_count_keeps_the_count_and_sends_no_generation(gates, ledger, clock, stop):
+    database, _ = ledger
+    gate = gates(counted_terms(), COUNTED_BOUND)
+
+    def count():
+        if stop == "stop-file":
+            gate.stop_file.touch()
+        elif stop == "paused":
+            with database.transaction() as db:
+                approval = db.get(LiveApproval, APPROVAL)
+                approval.paused_at, approval.paused_reason = clock.now(), "synthetic"
+
+        return COUNTED
+
+    provider = SyntheticProvider(counts=[count])
+    sending = Recording(refuse=Call.GENERATION if stop == "task" else None)
+
+    with gate.task("analysis", "owner-a", provider, sending=sending) as gated:
+        with pytest.raises((LiveBlocked, RuntimeError)) as raised:
+            gated.generate_text(PROMPT)
+
+    (row,) = requests_of(database)
+
+    assert provider.calls == []
+    # Narrowed, then stopped: only the count is charged.
+    assert (row.state, row.reason, row.reserved_micro_usd, row.charged_micro_usd) == (
+        LiveRequestState.SETTLED,
+        "count_sent",
+        AFTER_COUNT,
+        FEE,
+    )
+    assert sending.told[:2] == [("hand_on", Call.COUNT), ("came_back", Call.COUNT, Delivery.SENT)]
+
+    if stop != "task":
+        assert raised.value.reason is {"stop-file": Blocked.STOPPED, "paused": Blocked.PAUSED}[stop]
+
+
+def test_a_generation_its_provider_never_sent_after_a_count_keeps_the_count(gates, ledger):
+    database, _ = ledger
+    gate = gates(counted_terms(), COUNTED_BOUND)
+    provider = SyntheticProvider(AIProviderConfigError("synthetic setup"))
+    sending = Recording()
+
+    with gate.task("analysis", "owner-a", provider, sending=sending) as gated:
+        with pytest.raises(AIProviderConfigError):
+            gated.generate_text(PROMPT)
+
+    (row,) = requests_of(database)
+
+    assert (row.state, row.reason, row.charged_micro_usd) == (LiveRequestState.SETTLED, "count_sent", FEE)
+    assert gated.handed == 1 and sending.told[-1] == ("came_back", Call.GENERATION, Delivery.NOT_SENT)
+    assert approval_of(database).paused_reason is None
+
+
+def test_more_input_than_counted_is_charged_in_full_and_pauses(gates, ledger):
+    database, _ = ledger
+    gate = gates(counted_terms(), COUNTED_BOUND)
+    ask(gate, SyntheticProvider(counts=[100]))
+    (row,) = requests_of(database)
+
+    # USED has 120 input tokens: within the narrowed reservation, but the count was wrong.
+    assert (row.state, row.reason, row.charged_micro_usd) == (LiveRequestState.SETTLED, "above_count", FEE + COST)
+    assert approval_of(database).paused_reason == "above_count"
+
+
+@pytest.mark.parametrize("narrowed", [False, True], ids=["before-narrowing", "after-narrowing"])
+def test_a_restart_tells_a_group_left_before_its_narrowing_from_one_left_after(gates, ledger, narrowed):
+    database, _ = ledger
+    first = gates(counted_terms(), COUNTED_BOUND)
+    request_id = first._reserve("analysis", "owner-a", BEFORE_COUNT)
+
+    if narrowed:
+        first._narrow(request_id, AFTER_COUNT)
+
+    # The app stops here.
+    first.close()
+    gates(counted_terms(), COUNTED_BOUND)
+    (row,) = requests_of(database)
+
+    # Before its narrowing only the count may have gone out; after it, the generation may have too.
+    expected = ("interrupted", AFTER_COUNT) if narrowed else ("interrupted_counting", BEFORE_COUNT)
+
+    assert (row.state, row.reason, row.charged_micro_usd) == (LiveRequestState.UNKNOWN, *expected)
+    assert approval_of(database).paused_reason == "interrupted"
+
+
+def test_the_terms_say_what_one_request_is_and_an_approval_snapshotted_without_it_is_refused(gates, ledger, clock):
+    database, _ = ledger
+    old = terms().snapshot()
+    del old["request_unit"], old["max_input_tokens"]
+
+    with database.transaction() as db:
+        db.add(LiveApproval(approval_id=APPROVAL, terms=old, created_at=clock.now(), paused_at=None, paused_reason=None))
+
+    with pytest.raises(LiveRefused, match="条款和第一次使用时不同"):
+        gates()
+
+    assert counted_terms().snapshot()["request_unit"] == "count_then_generation"
+    assert counted_terms().snapshot()["prices"]["count"] == "0.0002"
+
+
+def test_a_counted_bound_needs_its_unit_and_its_count_price_written_out(gates):
+    with pytest.raises(LiveRefused, match="计量单位"):
+        gates(counted_terms(request_unit="generation"), COUNTED_BOUND)
+
+    with pytest.raises(LiveRefused, match="计数的单价"):
+        gates(counted_terms(prices=PRICES), COUNTED_BOUND)

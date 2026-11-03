@@ -11,24 +11,29 @@ never started under another.
 A task's provider tells the task's sending (app.live_gate.Sending) of each
 request right before it is handed on and again when it comes back: for the
 simulation at once, for a real service only after the gate's last check, so
-a request the gate stopped never reaches it. Either way the sending has the
-last word before a request is handed on, and a request counts as sent only
-if it went out or may have (ai_provider.went_out).
+a request the gate stopped never reaches it. A real service's request is a
+count of its input and then the generation (U2-C4 prerequisites); the
+simulation only generates. Either way the sending has the last word before
+a request is handed on, and a request counts as sent when it was answered,
+as maybe sent when no answer came (app.live_gate.delivery).
 """
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
-from app.ai_provider import AIProvider, how_far, went_out
+from app.ai_provider import AIProvider, SendState, how_far
 from app.analysis_contracts import Recipient
-from app.live_gate import Blocked, LiveGate, Purpose, Sending
+from app.library.sends import Call
+from app.live_gate import Blocked, LiveGate, Purpose, Sending, delivery
 
 # What the review page says about a real service. Changing a word changes the version,
 # and with it every fingerprint: a confirmation of the old text does not carry over.
-LIVE_NOTICE_VERSION = "live-1"
+LIVE_NOTICE_VERSION = "live-2"
 LIVE_NOTICE = (
     "确认后，上面勾选的内容会发给这个外部 AI 服务，只用于生成这一次分析。按服务商的政策，API 数据默认不用于训练模型。",
-    "请求设置为不保存回答，但这不等于不留存：按服务商的默认政策，滥用监控日志最多保留 30 天；"
-    "为了提速，服务商还可能以加密形式缓存提示内容，最长 24 小时。",
+    "每次生成之前，同样的内容会先发给服务商计数一次：只数 token、不生成回答，但这也是一次外发。"
+    "计数请求没有“不保存”的设置，服务商是否保留它的处理状态还没有核实，所以不承诺不保存。",
+    "生成请求设置为不保存回答，但这不等于不留存：按服务商的默认政策，滥用监控日志最多保留 30 天，"
+    "法律要求或为防止伤害时可能更长；为了提速，服务商还可能缓存由提示内容算出的加密中间数据（不是原文），最长 24 小时。",
     "每次发送前按最坏情况预留费用。已经发出的请求无法撤回，取消只能停止之后的发送。",
 )
 
@@ -48,7 +53,7 @@ class _Announcing(AIProvider):
         return self._provider.identity()
 
     def generate_text(self, prompt, max_output_tokens=None, reasoning_effort=None, json_schema_format=None):
-        self._sending.hand_on()
+        self._sending.hand_on(Call.GENERATION)
 
         try:
             result = self._provider.generate_text(
@@ -58,11 +63,11 @@ class _Announcing(AIProvider):
                 json_schema_format=json_schema_format,
             )
         except BaseException as error:
-            self._sending.came_back(went_out(*how_far(error)))
+            self._sending.came_back(Call.GENERATION, delivery(*how_far(error)))
             raise
 
         # Answered: it went out.
-        self._sending.came_back(True)
+        self._sending.came_back(Call.GENERATION, delivery(SendState.ANSWERED, result.usage))
 
         return result
 

@@ -34,14 +34,15 @@ from app.library.outbound_resume import MASK_LABELS, WITHHELD_LABELS
 from app.library.review import (
     INTERRUPTED,
     LIVE_FAILURE_TEXTS,
-    SENT,
     STRUCTURABLE,
     Asked,
     can_ask_again,
     is_live,
     running_here,
+    split_outcome,
     structuring_of,
 )
+from app.library.sends import sends_text
 from app.library.structuring_runs import Stop, Stopping
 from app.library.web import checked_form, current_user, message_page, render, runtime, see_other
 
@@ -233,7 +234,7 @@ def _cancelled(rt, import_id: str, attempt: str, stopping: Stopping) -> str:
     if current.outcome == INTERRUPTED:
         return "structuring_interrupted"
 
-    if current.outcome is not None and current.outcome.removesuffix(SENT) == Stop.CANCELLED:
+    if current.outcome is not None and split_outcome(current.outcome)[0] == Stop.CANCELLED:
         return "structuring_cancelled"
 
     # It ended on its own before the cancel took effect.
@@ -258,6 +259,6 @@ def structuring_status(import_id: str, request: Request, user: CurrentUser = Dep
     if handed is None:
         return JSONResponse({"stage": "done"})
 
-    # What the page calls 已交给服务: those sent, and any still out.
-    return JSONResponse({"stage": "running", "step": STEP, "requests_handed": handed})
+    # What the page says after 已交给服务的请求：counts and generations, one still out as maybe.
+    return JSONResponse({"stage": "running", "step": STEP, "sends": sends_text(handed)})
 

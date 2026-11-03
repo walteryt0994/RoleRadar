@@ -90,14 +90,18 @@ REJECTED = {
     RejectionReason.OUTBOUND_BLOCKED: "发送前的检查发现了疑似敏感的内容，所以没有发送。请重新核对后再开始。",
     RejectionReason.RECIPIENT_MISMATCH: "接收服务和核对时说明的不一致，所以没有发送。",
     RejectionReason.RECIPIENT_UNVERIFIED: "无法确认接收服务，所以没有发送。",
-    RejectionReason.GATE_STOPPED: "真实服务已停用，这次请求没有发出。",
-    RejectionReason.GATE_PAUSED: "这批批准已暂停，这次请求没有发出；继续需要新的批准。",
+    # These two and GATE_CLOSED may also stop a generation after its count: what went out is counted below.
+    RejectionReason.GATE_STOPPED: "真实服务已停用，之后的生成请求没有发出。",
+    RejectionReason.GATE_PAUSED: "这批批准已暂停，之后的生成请求没有发出；继续需要新的批准。",
     RejectionReason.GATE_BUSY: "另一个真实分析正在进行，这次请求没有发出。请等它结束后重新分析。",
     RejectionReason.GATE_REQUESTS: "这批批准的请求次数已经用完，这次请求没有发出。",
     RejectionReason.GATE_COST: "这次请求按最坏情况预留会超出这批批准的费用上限，所以没有发出。",
-    RejectionReason.GATE_CLOSED: "服务正在停止，这次请求没有发出。",
+    RejectionReason.GATE_CLOSED: "服务正在停止，之后的生成请求没有发出。",
     RejectionReason.GATE_ENDED: "这次分析已经结束，之后的请求没有发出。",
     RejectionReason.GATE_PURPOSE: "这批批准不包括岗位分析，这次请求没有发出。",
+    RejectionReason.GATE_COUNT: "发送前的计数没有完成，或者结果不能用、用完了这次请求的时限，所以没有发出生成请求。"
+    "计数请求有没有发出，以下面的次数为准。",
+    RejectionReason.GATE_INPUT: "计数显示这次请求的输入超过了这批批准的单次输入上限，所以没有发出生成请求；计数请求已经发出。",
 }
 FAILED = {
     AnalysisFailure.TIMEOUT: "分析服务没有在限定时间内回答。",
@@ -124,8 +128,10 @@ REFUSALS = {
 }
 PAUSE_REASONS = {
     "interrupted": "上次运行中断，有请求的费用按预留记账",
-    "unknown_usage": "有一次请求的费用无法确认，按预留记账",
+    "unknown_usage": "有一次请求的费用无法确认，按保守估算记账",
     "over_reservation": "有一次请求的实际费用超过了预留",
+    "above_count": "有一次请求的实际输入超过了发送前的计数",
+    "count_maybe": "有一次计数请求可能已发出，费用无法确认，按计数单价记账",
 }
 PROVIDER_NAMES = {"openai": "OpenAI"}
 DEGRADED = {

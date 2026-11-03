@@ -55,6 +55,7 @@ from app.library.errors import NotFound
 from app.library.identity import CurrentUser
 from app.library.projection import current_preferences, project_confirmed_library, read_selected_confirmations
 from app.library.service import list_experiences
+from app.library.sends import sends_text
 from app.library.web import NOTICES as LIBRARY_NOTICES
 from app.library.web import CsrfRejected, check_same_origin, current_user, message_page, render, runtime, safe_next, see_other
 
@@ -527,8 +528,8 @@ def task_status(task_id: str, request: Request, user: CurrentUser = Depends(curr
         {
             "stage": task.stage.value,
             "step": presentation.STEP_LABELS[task.step] if task.step else None,
-            # What the page calls 已交给服务: those sent, and any still out.
-            "requests_handed": task.requests_handed,
+            # What the page says after 已交给服务的请求：counts and generations, those still out as maybe.
+            "sends": sends_text(task.handed),
         }
     )
 

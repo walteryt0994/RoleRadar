@@ -208,7 +208,8 @@ class Found:
 @dataclass
 class Checked:
     candidates: list[Found]
-    # The dropped candidates, without content: position, kind, segments, reason.
+    # The dropped candidates, without content: position, kind, segments, reason, and the signs of
+    # their pieces where they hold (_signs).
     problems: list[dict]
     # Why nothing could be kept, or None.
     failure: str | None
@@ -268,6 +269,7 @@ def _checked(answer: str, segments: list[dict], sent: list[dict] | None = None) 
                     "kind": kind if kind in CANDIDATE_KINDS else None,
                     "segments": _cited(item, len(texts)),
                     "reason": dropped.reason,
+                    **_signs(item, sent_texts if sent_texts is not None else texts),
                 }
             )
 
@@ -368,6 +370,38 @@ def _piece(piece) -> tuple[int, str]:
         raise _Dropped(FORMAT)
 
     return number, quote.strip()
+
+
+def _signs(item, texts: list["_Text | None"]) -> dict:
+    """What a dropped candidate's pieces showed, never their words (U2-C4 prerequisites).
+
+    spans_lines: a piece ran over a line break. copies_text: a piece held a
+    whole segment of several lines, as an answer that copied the text would.
+    Read from the answer before anything of it is dropped, and kept only
+    where it holds.
+    """
+    fields = item.get("fields") if isinstance(item, dict) else None
+    quotes = [
+        piece["quote"]
+        for pieces in (fields.values() if isinstance(fields, dict) else ())
+        if isinstance(pieces, list)
+        for piece in pieces
+        if isinstance(piece, dict) and isinstance(piece.get("quote"), str)
+    ]
+    wholes = [_flat(text.text) for text in texts if text is not None and "\n" in text.text.strip()]
+    signs = {}
+
+    if any("\n" in quote.strip() for quote in quotes):
+        signs["spans_lines"] = True
+
+    if any(whole in _flat(quote) for quote in quotes for whole in wholes):
+        signs["copies_text"] = True
+
+    return signs
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
 
 
 def _cited(item, count: int) -> list[int]:

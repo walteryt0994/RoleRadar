@@ -163,6 +163,7 @@ from app.library.presentation import (
     version_label,
 )
 from app.library.projection import list_references
+from app.library.sends import sends_text
 from app.library.service import (
     active_item,
     check_revision,
@@ -435,6 +436,7 @@ def build_templates(config: LibraryConfig) -> Jinja2Templates:
         format_size=format_size,
         TYPE_LABELS=TYPE_LABELS,
         MAX_ATTACHMENTS=MAX_ATTACHMENTS,
+        sends_text=sends_text,
     )
 
     return Jinja2Templates(env=env)

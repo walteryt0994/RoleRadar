@@ -432,13 +432,15 @@ class ImportDraft(LibraryBase):
 class LiveRequestState(StrEnum):
     # Let through and handed on; what it cost is not settled yet.
     RESERVED = "reserved"
-    # Settled from the usage the service reported, within its reservation.
+    # Settled from the usage the service reported, within its reservation; or a counted group whose
+    # count alone went out, charged its count.
     SETTLED = "settled"
     # The reported usage cost more than the reservation: charged in full, the approval paused.
     OVER = "over"
-    # No usable usage, or the app stopped before settling: charged at the reservation, the approval paused.
+    # No usable usage, the app stopped before settling, or a priced count that only may have gone out:
+    # kept at a conservative amount (an estimate, no settlement), the approval paused.
     UNKNOWN = "unknown"
-    # Its provider said it never left: nothing charged, and it does not count.
+    # Its provider said it never left, nor its count: nothing charged, and it does not count.
     RELEASED = "released"
 
 
@@ -485,7 +487,9 @@ class LiveRequest(LibraryBase):
     cache_write_tokens: Mapped[int | None] = mapped_column(Integer)
     output_tokens: Mapped[int | None] = mapped_column(Integer)
     service_tier: Mapped[str | None] = mapped_column(String(20))
-    # Why it ended as it did, beyond its state (interrupted, unknown_usage, …); None when settled plainly.
+    # Why it ended as it did, beyond its state (interrupted, unknown_usage, count_sent, …); None when
+    # settled plainly. While a counted group is reserved, how far it got (counting, then counted), so
+    # that a restart can tell whether its generation may have gone out (app.live_gate).
     reason: Mapped[str | None] = mapped_column(String(30))
     reserved_at: Mapped[datetime] = mapped_column(UTCDateTime)
     settled_at: Mapped[datetime | None] = mapped_column(UTCDateTime)

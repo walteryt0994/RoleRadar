@@ -126,7 +126,7 @@
 {% if running and not can_ask_again and live_structured %}
 <div class="notice" role="status">
   {% if handed is not none %}
-  <p data-task-step>正在由外部服务整理。已交给服务的请求：{{ handed }} 次。</p>
+  <p data-task-step>正在由外部服务整理。已交给服务的请求：{{ sends_text(handed) }}。</p>
   <p class="hint">完成后这一页会自动更新；没有更新时可以<a href="/imports/{{ row.id }}/review">刷新状态</a>。</p>
   {% else %}
   <p>正在由外部服务整理，但这次整理不是在当前运行的应用里开始的（应用可能重启过），进度无法确认。</p>

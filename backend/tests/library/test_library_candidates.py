@@ -1097,3 +1097,37 @@ def test_an_outside_answer_is_kept_only_where_it_stands_in_what_was_sent_and_in_
     ]
     # The same answer, checked as the local rules' would be, keeps more: the outside one is checked twice.
     assert len(check_answer(answer, own).candidates) == 3
+
+
+def test_a_dropped_outside_candidate_keeps_signs_of_its_pieces_and_never_their_words():
+    text = "项目经历\n校园二手书交换小程序 | 2025.03-2025.06\n- 用 Flask 编写接口"
+    own = [{"kind": "text", "number": 1, "text": text}]
+    sent = outbound(own).segments
+    answer = json.dumps(
+        {
+            "candidates": [
+                outside("project", title="校园二手书交换小程序"),
+                # The whole text, in a field of one line: an answer that copied the text.
+                outside("project", title=text),
+                # Over two of its lines only.
+                outside("project", title="项目经历\n校园二手书交换小程序 | 2025.03-2025.06"),
+                # Mistakes of format, nothing more.
+                outside("project", title="一个并不存在的项目"),
+                {"kind": "project", "fields": {"title": [{"segment": 1, "quote": "项目经历"}, {"segment": 1, "quote": "- 用 Flask 编写接口"}]}},
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    checked = check_sent_answer(answer, sent, own)
+
+    assert len(checked.candidates) == 1
+    assert [(problem["reason"], problem.get("spans_lines"), problem.get("copies_text")) for problem in checked.problems] == [
+        (NOT_ONE_LINE, True, True),
+        (NOT_ONE_LINE, True, None),
+        (NOT_IN_SOURCE, None, None),
+        (NOT_ONE_LINE, None, None),
+    ]
+    # A drop says how its pieces looked, never what they said.
+    assert all(set(problem) <= {"position", "kind", "segments", "reason", "spans_lines", "copies_text"} for problem in checked.problems)
+    assert not any(isinstance(value, str) and "校园" in value for problem in checked.problems for value in problem.values())

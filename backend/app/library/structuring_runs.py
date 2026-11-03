@@ -10,12 +10,15 @@ cancelling, logging out, ending the import (in that operation's own
 transaction, before it commits), a newer run of the same import, shutting
 down.
 
-hand_on is the boundary of the run's one request. Right before it is handed
-to the provider, after the gate has reserved its cost and made its own
-checks, the run is checked under this lock: not stopped, and within both its
-import's time and its own. Only then is the request counted as out. A stop
-that comes first keeps it back, and the gate releases its reservation; once
-it is out, no stop can call it back, and it is settled when it comes back.
+hand_on is the boundary of each request of the run: the count of its input
+and the generation after it, a real service's one request of an approval
+(app.live_gate). Right before either is handed to the provider, after the
+gate has reserved its cost and made its own checks, the run is checked
+under this lock: not stopped, and within both its import's time and its
+own. Only then is that request counted as out. A stop that comes first
+keeps it back: before the count, the gate releases its reservation; after
+it, only the count is charged. Once a request is out, no stop can call it
+back; it is counted when it comes back, as sent or maybe sent, and settled.
 Its answer is then claimed under the same lock, checked the same way: a run
 stopped or out of time meanwhile drops it. A stop after the claim is too
 late. The lock is only held to read and change these records and the clock:
@@ -26,6 +29,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+
+from app.library.sends import Call, Delivery, Sends
 
 
 class Stop(StrEnum):
@@ -52,7 +57,8 @@ class Stopping(StrEnum):
     TOO_LATE = "too_late"
     # Nothing was handed on, and nothing will be.
     BEFORE = "before"
-    # Its request was handed on: it is settled when it comes back, and its answer dropped.
+    # A request of it was handed on (its count, perhaps its generation too): settled when it comes back,
+    # and its answer dropped.
     AFTER = "after"
 
 
@@ -75,9 +81,10 @@ class Run:
     valid_until: datetime | None
     deadline: datetime
     stopped: Stop | None = None
-    # Its request while handed on and not back yet; once back, whether it went out or may have.
-    out: int = 0
-    sent: int = 0
+    # Its requests handed on and not back yet, each counted as maybe sent; and those back, by kind
+    # and by how sure (app.library.sends).
+    out: Sends = Sends()
+    sends: Sends = Sends()
     claimed: bool = False
 
 
@@ -102,8 +109,8 @@ class StructuringRuns:
         with self._lock:
             self._runs.pop(attempt, None)
 
-    def hand_on(self, attempt: str) -> Stop | None:
-        """Count the run's request as out, or say why it may not go (see the module docstring)."""
+    def hand_on(self, attempt: str, call: Call) -> Stop | None:
+        """Count a request of the run as out, or say why it may not go (see the module docstring)."""
         with self._lock:
             run = self._runs.get(attempt)
 
@@ -113,20 +120,18 @@ class StructuringRuns:
             why = self._why_not(run)
 
             if why is None:
-                run.out += 1
+                run.out = run.out.plus(call, Delivery.MAYBE)
 
             return why
 
-    def came_back(self, attempt: str, went_out: bool) -> None:
-        """A request handed on came back; whether it went out or may have (ai_provider.went_out)."""
+    def came_back(self, attempt: str, call: Call, delivered: Delivery) -> None:
+        """A request handed on came back: sent, maybe sent or not sent (app.live_gate.delivery)."""
         with self._lock:
             run = self._runs.get(attempt)
 
             if run is not None:
-                run.out -= 1
-
-                if went_out:
-                    run.sent += 1
+                run.out = run.out - Sends().plus(call, Delivery.MAYBE)
+                run.sends = run.sends.plus(call, delivered)
 
     def claim(self, attempt: str) -> Stop | None:
         """Take the run's answer, or say why it is dropped; no stop takes effect after this."""
@@ -156,7 +161,7 @@ class StructuringRuns:
 
             run.stopped = run.stopped or why
 
-            return Stopping.AFTER if run.out or run.sent else Stopping.BEFORE
+            return Stopping.AFTER if (run.out + run.sends).total else Stopping.BEFORE
 
     def stop_import(self, import_id: str) -> None:
         """Stop the runs of an import that is being ended: called in that transaction, before it commits."""
@@ -176,12 +181,12 @@ class StructuringRuns:
 
             return None if run is None else run.stopped
 
-    def handed(self, attempt: str) -> int | None:
-        """What the pages call 已交给服务 for a run of this process (sent, or still out); None if none."""
+    def handed(self, attempt: str) -> Sends | None:
+        """What the pages call 已交给服务 for a run of this process (back, or still out as maybe); None if none."""
         with self._lock:
             run = self._runs.get(attempt)
 
-            return None if run is None else run.out + run.sent
+            return None if run is None else run.sends + run.out
 
     def _stop_where(self, chosen: Callable[[Run], bool], why: Stop) -> None:
         with self._lock:

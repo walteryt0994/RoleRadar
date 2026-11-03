@@ -17,6 +17,7 @@ from sqlalchemy import select
 from app.ai_provider import AIProviderTimeoutError
 from app.job_analysis.tasks import MAX_RUN_SECONDS, TASK_TTL_SECONDS, Stage, TaskStore
 from app.library.db import LibraryBase
+from app.library.sends import Sends, sends_text
 from app.web_main import create_app
 from job_helpers import (
     POSTING,
@@ -27,6 +28,7 @@ from job_helpers import (
     RecordingProvider,
     confirm_form,
     confirmed,
+    handed,
     offered,
     review,
     start,
@@ -392,7 +394,8 @@ def test_a_running_task_shows_its_real_step_and_can_be_cancelled_without_scripts
 
     assert '<li aria-current="step">解析岗位</li>' in page and "取消分析" in page and "刷新状态" in page
     assert '<script src="/static/job_analysis.js"></script>' in page and "%" not in text_of(main_of(page))
-    assert status == {"stage": "running", "step": "解析岗位", "requests_handed": 1}
+    # Still out: only maybe sent.
+    assert status == {"stage": "running", "step": "解析岗位", "sends": sends_text(Sends(generation_maybe=1))}
     assert cancelled.headers["location"] == task
 
 
@@ -412,7 +415,7 @@ def test_cancelling_while_a_request_is_out_drops_its_late_answer(app, browser_a,
     finish(app)
     page = browser_a.get(task).text
 
-    assert "分析已取消" in page and f"已交给服务的请求：{at} 次" in page and "岗位分析结果" not in page
+    assert "分析已取消" in page and handed(at) in page and "岗位分析结果" not in page
     assert len(gate.prompts) == at
     assert browser_a.get(f"{task}/status").json()["stage"] == "cancelled"
 
@@ -496,7 +499,7 @@ def test_a_task_out_of_time_goes_no_further_and_takes_no_late_answer_without_any
     stored = app.state.job_analysis.store._tasks[task.rsplit("/", 1)[1]]
 
     assert (stored.stage, stored.cancelled_by, stored.result) == (Stage.CANCELLED, "timeout", None)
-    assert len(provider.prompts) == at and stored.requests_sent == at
+    assert len(provider.prompts) == at and stored.sends == Sends(generation_sent=at)
     assert "超过了运行时限" in browser_a.get(task).text
 
 
@@ -553,7 +556,7 @@ def test_material_changed_after_the_review_is_not_sent(inline, browser_a, record
     page = browser_a.get(task).text
 
     assert "所选的资料已经不能按核对时的版本使用" in page and "修改后还没有重新确认" in page
-    assert "已交给服务的请求：0 次" in page and recorder.prompts == []
+    assert handed() in page and recorder.prompts == []
 
 
 def test_material_changed_while_the_analysis_runs_stops_it_after_the_parse(app, browser_a):
@@ -567,7 +570,7 @@ def test_material_changed_while_the_analysis_runs_stops_it_after_the_parse(app, 
     finish(app)
     page = browser_a.get(task).text
 
-    assert "开始之后，所选的资料有了变化" in page and "已交给服务的请求：1 次" in page
+    assert "开始之后，所选的资料有了变化" in page and handed(1) in page
     assert len(gate.prompts) == 1
 
 
@@ -656,7 +659,7 @@ def test_preferences_changed_after_the_review_are_not_sent(inline, browser_a, re
     assert start(browser_a, task).status_code == 303
     page = text_of(browser_a.get(task).text)
 
-    assert "求职偏好：选用的求职偏好已修改" in page and "已交给服务的请求：0 次" in page
+    assert "求职偏好：选用的求职偏好已修改" in page and handed() in page
     assert recorder.prompts == []
 
 

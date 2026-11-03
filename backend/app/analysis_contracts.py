@@ -163,6 +163,10 @@ class RejectionReason(StrEnum):
     GATE_CLOSED = "gate_closed"
     GATE_ENDED = "gate_ended"
     GATE_PURPOSE = "gate_purpose"
+    # The count before a generation failed or gave no usable number; it may have gone out.
+    GATE_COUNT = "gate_count"
+    # The counted input is above the approval's largest; the count went out.
+    GATE_INPUT = "gate_input"
 
 
 class AnalysisFailure(StrEnum):
@@ -364,7 +368,9 @@ class AnalysisResult:
     # "simulation" for the simulated service, "live" otherwise.
     mode: str
     # Requests handed to the recipient, counted also when one failed: it may
-    # have gone out, and none can be called back.
+    # have gone out, and none can be called back. Behind a real service's gate
+    # (the runner) its counts of the input too; the task keeps them apart, by
+    # kind and by whether they only may have gone out (app.library.sends).
     requests_sent: int
     sources: tuple[SourceBasis, ...] = ()
     job: JobBasis | None = None

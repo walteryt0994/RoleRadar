@@ -75,6 +75,7 @@ from app.library.models import (
     StructuringState,
 )
 from app.library.resume_rules import SIMULATION_NAME
+from app.library.sends import Call, Delivery, Sends, sends_text
 from app.library.service import current_document, list_experiences, new_id, record_event
 from app.library.structuring_runs import Stop
 
@@ -84,9 +85,8 @@ STRUCTURABLE = (ImportState.READ, ImportState.PARTIAL)
 STRUCTURER_LABELS = {SIMULATION_NAME: "本机模拟整理规则（不是 AI）"}
 # A real service's structurer is named live:<provider>/<model>/<prompt version> (app.live_structuring, U2-C3).
 LIVE_PREFIX = "live:"
-# What came of a real run that gave no candidates. Its outcome ends in SENT when its request went
-# out, or may have (ai_provider.went_out), so each text says whether anything was sent.
-SENT = "_sent"
+# What came of a real run that gave no candidates. Its outcome ends in what the run handed on
+# (sent_suffix), so each text says whether anything was sent, which kind, and how sure that is.
 PROVIDER_UNAVAILABLE = "provider_unavailable"
 PROVIDER_CONFIG = "provider_config"
 PROVIDER_TIMEOUT = "provider_timeout"
@@ -110,6 +110,8 @@ LIVE_FAILURE_TEXTS = {
     "gate_cost": "这次请求按最坏情况预留会超出这批批准的费用上限。",
     "gate_closed": "服务正在停止。",
     "gate_ended": "这次整理已经结束。",
+    "gate_count": "发送前的计数没有完成，或者结果不能用、用完了这次请求的时限，所以没有发出生成请求。",
+    "gate_input": "计数显示这次请求的输入超过了这批批准的单次输入上限，所以没有发出生成请求。",
     PROVIDER_UNAVAILABLE: "外部服务无法使用（无法建立，或和批准的接收方不符）。",
     PROVIDER_CONFIG: "外部服务的本机设置有问题，请求在发出之前就停止了。",
     PROVIDER_TIMEOUT: "外部服务没有在时限内回答。",
@@ -119,12 +121,18 @@ LIVE_FAILURE_TEXTS = {
     INVALID_ANSWER: "外部服务返回的整理结果不是约定的格式。",
     # The service's candidates and the local profile together: more than the contract allows is refused whole.
     TOO_MANY: f"整理出的条目（连同本机规则整理的基本资料）超过了 {MAX_CANDIDATES} 条的上限。可以只粘贴简历里需要的部分，重新导入后再整理。",
-    NOTHING_FOUND: "外部服务没有整理出任何条目。",
+    # A text with too little in it may end so (an expected outcome, no failure of the service): ask for more.
+    NOTHING_FOUND: "外部服务没有整理出任何条目：这份文字里可能没有足够的经历信息，可以补充更完整的内容后重新导入。",
     NONE_VALID: "外部服务整理出的条目都没有通过原文核对。",
 }
-SENT_TEXT = "这次请求已经交给外部服务，可能已经产生费用；什么都没有保存。"
+SENT_TEXT = "已交给外部服务的请求：{}。这些请求可能已经产生费用；什么都没有保存。"
 NOT_SENT_TEXT = "没有发出请求，什么都没有保存。"
-INTERRUPTED_TEXT = "这次整理已经中断（应用可能重启过），结果不会保存；中断之前请求可能已经发出。"
+INTERRUPTED_TEXT = "这次整理已经中断（应用可能重启过），结果不会保存；中断之前，计数请求和生成请求都可能已经发出。"
+# The marks of sent_suffix: sent, maybe sent, not sent.
+SENT_MARKS = {"s": Delivery.SENT, "m": Delivery.MAYBE, "-": Delivery.NOT_SENT}
+# What an outcome ended in before counts existed (U2-C3, structure version 8 all along): its one
+# request, a generation, went out or may have. It is read, never written.
+LEGACY_SENT = "_sent"
 # The outcomes of a stopped run (structuring_runs.Stop): a cancel writes its own at once, before
 # its request has come back, so only these may still be set right by what the request showed.
 STOPPED = frozenset(stop.value for stop in Stop)
@@ -414,14 +422,14 @@ def end_attempt(
         return True
 
 
-def reconcile_sent(database: Database, owner_id: str, import_id: str, attempt_id: str, sent: bool) -> bool:
-    """Make a stopped run's outcome say what its request showed once it came back (U2-C3); True if it changed.
+def reconcile_sent(database: Database, owner_id: str, import_id: str, attempt_id: str, sends: Sends) -> bool:
+    """Make a stopped run's outcome say what its requests showed once they came back (U2-C3); True if it changed.
 
-    A cancel is written at once, while the run's request may still be out,
-    and says sent if it was handed on: it may have gone out. When the request
-    comes back, its provider's evidence decides (ai_provider.went_out): only
-    one explicitly not sent, with nothing reported, takes the mark off; a
-    timeout or anything unknown keeps it. The stop stays the outcome. Only
+    A cancel is written at once, while a request of the run may still be
+    out, and counts that one as maybe sent. When it comes back, its
+    provider's evidence decides (app.live_gate.delivery): an answer makes it
+    sent; only one explicitly not sent, with nothing reported, takes it off;
+    a timeout or anything unknown keeps it as maybe. The stop stays the outcome. Only
     that run's own record is changed, while a stop still ends it: never a
     newer run's, and a record that is gone stays gone.
     """
@@ -434,11 +442,11 @@ def reconcile_sent(database: Database, owner_id: str, import_id: str, attempt_id
             or current.attempt != attempt_id
             or current.state != StructuringState.FAILED
             or current.outcome is None
-            or current.outcome.removesuffix(SENT) not in STOPPED
+            or split_outcome(current.outcome)[0] not in STOPPED
         ):
             return False
 
-        outcome = current.outcome.removesuffix(SENT) + (SENT if sent else "")
+        outcome = split_outcome(current.outcome)[0] + sent_suffix(sends)
 
         if outcome == current.outcome:
             return False
@@ -452,7 +460,7 @@ def is_live(structurer: str) -> bool:
     return structurer.startswith(LIVE_PREFIX)
 
 
-def running_here(runs, structuring: ImportStructuring | None, now: datetime) -> int | None:
+def running_here(runs, structuring: ImportStructuring | None, now: datetime) -> Sends | None:
     """For a real run of this process still going on: its requests handed on so far (runs.handed); else None."""
     if structuring is None or structuring.state != StructuringState.RUNNING or not is_live(structuring.structurer):
         return None
@@ -488,12 +496,45 @@ def failure_text(structurer: str, outcome: str | None) -> str | None:
     if outcome == INTERRUPTED:
         return INTERRUPTED_TEXT
 
-    text = LIVE_FAILURE_TEXTS.get(outcome.removesuffix(SENT))
+    base, sends = split_outcome(outcome)
+    text = LIVE_FAILURE_TEXTS.get(base)
 
     if text is None:
         return None
 
-    return text + (SENT_TEXT if outcome.endswith(SENT) else NOT_SENT_TEXT)
+    return text + (SENT_TEXT.format(sends_text(sends)) if sends.total else NOT_SENT_TEXT)
+
+
+def sent_suffix(sends: Sends) -> str:
+    """What a real run handed on, written after its outcome: "_", a mark for its count, then one for
+    its generation, each "s" sent, "m" maybe sent or "-" not sent (SENT_MARKS); nothing when nothing went
+    out. A run hands on one of each at most."""
+    if not sends.total:
+        return ""
+
+    return "_" + _mark(sends.count_sent, sends.count_maybe) + _mark(sends.generation_sent, sends.generation_maybe)
+
+
+def split_outcome(outcome: str) -> tuple[str, Sends]:
+    """An outcome's own code, and what its run handed on (sent_suffix).
+
+    One written before counts existed (LEGACY_SENT) says only that its
+    generation went out or may have: it is read as maybe sent, and as no
+    count, which runs of then never made.
+    """
+    if outcome.endswith(LEGACY_SENT):
+        return outcome.removesuffix(LEGACY_SENT), Sends(generation_maybe=1)
+
+    base, underscore, marks = outcome.rpartition("_")
+
+    if not underscore or len(marks) != 2 or marks == "--" or not all(mark in SENT_MARKS for mark in marks):
+        return outcome, Sends()
+
+    return base, Sends().plus(Call.COUNT, SENT_MARKS[marks[0]]).plus(Call.GENERATION, SENT_MARKS[marks[1]])
+
+
+def _mark(sent: int, maybe: int) -> str:
+    return "s" if sent else "m" if maybe else "-"
 
 
 def can_ask_again(structuring: ImportStructuring | None, now: datetime) -> bool:

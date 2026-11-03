@@ -31,6 +31,7 @@ from enum import StrEnum
 
 from app.analysis_contracts import AnalysisRequest, AnalysisResult
 from app.job_analysis.scope import ScopePlan, TaskInputs
+from app.library.sends import Call, Delivery, Sends
 
 TASK_TTL_SECONDS = 30 * 60
 MAX_RUN_SECONDS = 5 * 60
@@ -83,10 +84,11 @@ class Task:
     stage: Stage = Stage.REVIEW
     step: Step | None = None
     cancel: threading.Event = field(default_factory=threading.Event)
-    # Requests that came back having gone out, or perhaps gone out (ai_provider.went_out); also for a cancelled task.
-    requests_sent: int = 0
-    # Requests handed on that have not come back yet: each may have gone out.
-    requests_out: int = 0
+    # Requests that came back having gone out, or perhaps gone out, by kind (app.library.sends); also
+    # for a cancelled task.
+    sends: Sends = Sends()
+    # Requests handed on that have not come back yet, each counted as maybe sent.
+    out: Sends = Sends()
     result: AnalysisResult | None = None
     # "user", "logout", "timeout" or "shutdown".
     cancelled_by: str | None = None
@@ -94,9 +96,9 @@ class Task:
     started: float | None = None
 
     @property
-    def requests_handed(self) -> int:
-        """What the pages call 已交给服务: the requests sent, and those still out, which may have gone out."""
-        return self.requests_sent + self.requests_out
+    def handed(self) -> Sends:
+        """What the pages call 已交给服务: the requests that came back, and those still out, which may have gone out."""
+        return self.sends + self.out
 
 
 class TaskStore:
@@ -186,8 +188,8 @@ class TaskStore:
             if task is not None and task.stage is Stage.RUNNING:
                 task.step, task.touched = step, self._clock()
 
-    def hand_on(self, task_id: str) -> bool:
-        """Whether a request of the task may be handed to its provider now; if so, it is out from here.
+    def hand_on(self, task_id: str, call: Call = Call.GENERATION) -> bool:
+        """Whether a request of the task (a count or a generation) may be handed on now; if so, it is out from here.
 
         The boundary between stopping a task and handing on its request:
         every stop (cancelling, logging out, the time limit, shutting down)
@@ -202,20 +204,18 @@ class TaskStore:
             if task is None or not self._in_time(task):
                 return False
 
-            task.requests_out += 1
+            task.out = task.out.plus(call, Delivery.MAYBE)
 
             return True
 
-    def came_back(self, task_id: str, went_out: bool) -> None:
-        """A request handed on came back: counted as sent if it went out or may have, even for a cancelled task."""
+    def came_back(self, task_id: str, call: Call, delivered: Delivery) -> None:
+        """A request handed on came back: counted as sent or as maybe sent, as delivered says, even for a cancelled task."""
         with self._lock:
             task = self._tasks.get(task_id)
 
             if task is not None:
-                task.requests_out -= 1
-
-                if went_out:
-                    task.requests_sent += 1
+                task.out = task.out - Sends().plus(call, Delivery.MAYBE)
+                task.sends = task.sends.plus(call, delivered)
 
     def finish(self, task_id: str, result: AnalysisResult) -> None:
         """The analysis returned. A task cancelled meanwhile stays cancelled: its late answer is dropped."""
@@ -225,7 +225,12 @@ class TaskStore:
             if task is None:
                 return
 
-            task.requests_sent = max(task.requests_sent, result.requests_sent)
+            # The analysis may know of more requests than came back here (never with this app's providers):
+            # those count as maybe sent, never as sent.
+            unseen = result.requests_sent - task.handed.total
+
+            if unseen > 0:
+                task.sends = task.sends + Sends(generation_maybe=unseen)
 
             # An answer that comes back after the time limit is not taken either.
             if self._in_time(task):

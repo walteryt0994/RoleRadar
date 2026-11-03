@@ -34,7 +34,7 @@
           return;
         }
 
-        status.textContent = "正在" + task.step + "。已交给服务的请求：" + task.requests_handed + " 次。";
+        status.textContent = "正在" + task.step + "。已交给服务的请求：" + task.sends + "。";
         window.setTimeout(poll, POLL_MS);
       })
       .catch(function () {

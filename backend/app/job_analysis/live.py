@@ -22,11 +22,14 @@ never shown, logged or written anywhere.
 load_live_approval reads the terms of the approval a real run is under
 (U2-C1): its id, the purposes, the service tier, the reasoning effort, the
 limits (a structuring request has an output limit of its own and a limit on
-the bytes of resume text it may send, U2-C3), and the price of every item a
-request may be billed for. Even
-complete terms are refused while no input bound has been checked for the
-model and the tier (app.live_gate.CERTIFIED_INPUT_BOUNDS, empty), so no
-real service can be used yet. analysis_setup turns what the environment asks
+the bytes of resume text it may send, U2-C3), the price of every item a
+request may be billed for, and, since the U2-C4 prerequisites, the price a
+reservation takes every input token at, the price of one count of a
+request's input and the most input tokens a request may have. Every one is
+written out: a count's price is never taken to be 0. Even complete terms
+are refused while no counted input bound has been checked for the model
+and the tier (app.live_gate.CERTIFIED_INPUT_BOUNDS, empty), so no real
+service can be used yet. analysis_setup turns what the environment asks
 for into the app's service (U2-C2): the simulated one, or a real one from
 approved terms; asked for and refused, it stops the app from starting rather
 than quietly simulating.
@@ -41,7 +44,15 @@ from decimal import Decimal
 from app.ai_provider import OpenAIProvider, OpenAIProviderConfig
 from app.analysis_contracts import Recipient
 from app.library.errors import ConfigError
-from app.live_gate import CERTIFIED_INPUT_BOUNDS, ApprovalTerms, LiveRefused, LiveSetup, PriceBasis, Purpose
+from app.live_gate import (
+    CERTIFIED_INPUT_BOUNDS,
+    ApprovalTerms,
+    LiveRefused,
+    LiveSetup,
+    PriceBasis,
+    Purpose,
+    RequestUnit,
+)
 
 MODE_VARIABLE = "ROLERADAR_ANALYSIS_MODE"
 LIVE = "live"
@@ -83,11 +94,16 @@ APPROVAL_SETTINGS = {
     "reasoning_effort": "ROLERADAR_LIVE_REASONING_EFFORT",
     "structuring_max_bytes": "ROLERADAR_LIVE_STRUCTURING_MAX_BYTES",
     "structuring_max_output_tokens": "ROLERADAR_LIVE_STRUCTURING_MAX_OUTPUT_TOKENS",
+    "max_input_tokens": "ROLERADAR_LIVE_MAX_INPUT_TOKENS",
     "max_cost_usd": "ROLERADAR_LIVE_MAX_COST_USD",
     "price_input": "ROLERADAR_LIVE_PRICE_INPUT",
     "price_cache_read": "ROLERADAR_LIVE_PRICE_CACHE_READ",
     "price_cache_write": "ROLERADAR_LIVE_PRICE_CACHE_WRITE",
     "price_output": "ROLERADAR_LIVE_PRICE_OUTPUT",
+    # Reservations only: the dearest price any input token may be billed at.
+    "price_reserve_input": "ROLERADAR_LIVE_PRICE_RESERVE_INPUT",
+    # Dollars per count of a request's input.
+    "price_count": "ROLERADAR_LIVE_PRICE_COUNT",
     "price_source": "ROLERADAR_LIVE_PRICE_SOURCE",
     "price_checked_on": "ROLERADAR_LIVE_PRICE_CHECKED_ON",
 }
@@ -104,6 +120,10 @@ MAX_COST_USD = Decimal("5")
 # offline wiring, not shown to be enough and not an approval of any cost.
 MAX_STRUCTURING_BYTES = 8_000
 MAX_STRUCTURING_OUTPUT_TOKENS = 8_000
+# The most input tokens an approval may let one request have (U2-C4 prerequisites): far below
+# the short-context band of the model in view (272,000 input tokens for gpt-5.6-sol, pricing page
+# checked 2026-11-03), so that an approval's short-context prices hold for any request it lets out.
+MAX_INPUT_TOKENS = 32_000
 
 
 @dataclass(frozen=True)
@@ -212,14 +232,21 @@ def load_live_approval(policy: LivePolicy, environ=None) -> ApprovalTerms:
     if not DATE.fullmatch(values["price_checked_on"]):
         raise LiveRefused("价格的核对日期要写成 YYYY-MM-DD。")
 
-    prices = PriceBasis(
-        input=_price(values["price_input"], "普通输入单价"),
-        cache_read=_price(values["price_cache_read"], "缓存读取单价", may_be_none=True),
-        cache_write=_price(values["price_cache_write"], "缓存写入单价", may_be_none=True),
-        output=_price(values["price_output"], "输出单价"),
-        source=values["price_source"],
-        checked_on=values["price_checked_on"],
-    )
+    try:
+        prices = PriceBasis(
+            input=_price(values["price_input"], "普通输入单价"),
+            cache_read=_price(values["price_cache_read"], "缓存读取单价", may_be_none=True),
+            cache_write=_price(values["price_cache_write"], "缓存写入单价", may_be_none=True),
+            output=_price(values["price_output"], "输出单价"),
+            reserve_input=_price(values["price_reserve_input"], "预留输入单价"),
+            source=values["price_source"],
+            checked_on=values["price_checked_on"],
+            # Written out like the others, 0 included: an unknown price is never taken to be 0.
+            count=_price(values["price_count"], "计数单价"),
+        )
+    except ValueError:
+        raise LiveRefused("预留输入单价不能低于普通输入、缓存读取或缓存写入的单价。") from None
+
     max_cost = _price(values["max_cost_usd"], "费用上限")
 
     if not 0 < max_cost <= MAX_COST_USD:
@@ -229,9 +256,10 @@ def load_live_approval(policy: LivePolicy, environ=None) -> ApprovalTerms:
     structuring_max_output_tokens = _whole(
         values["structuring_max_output_tokens"], 1, MAX_STRUCTURING_OUTPUT_TOKENS, "简历整理输出上限"
     )
+    max_input_tokens = _whole(values["max_input_tokens"], 1, MAX_INPUT_TOKENS, "单次输入上限")
     bound = CERTIFIED_INPUT_BOUNDS.get((policy.provider, policy.model, values["service_tier"]))
 
-    if bound is None or bound.synthetic:
+    if bound is None or bound.synthetic or not bound.counted:
         raise LiveRefused(
             f"还没有为模型 {policy.model}（服务档 {values['service_tier']}）核验过输入上界，真实服务不能启用。"
         )
@@ -253,6 +281,9 @@ def load_live_approval(policy: LivePolicy, environ=None) -> ApprovalTerms:
         prices=prices,
         input_bound=bound.name,
         rules_checked_on=policy.rules_checked_on,
+        # A request of a counted bound is a count and at most one generation.
+        request_unit=RequestUnit.COUNTED_GENERATION,
+        max_input_tokens=max_input_tokens,
     )
 
 

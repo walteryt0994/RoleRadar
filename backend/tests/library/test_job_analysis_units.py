@@ -25,6 +25,7 @@ from app.job_analysis.scope import (
 )
 from app.job_analysis.simulation import RECIPIENT, SimulatedProvider, parse_posting
 from app.job_analysis.tasks import MAX_TASKS_PER_SESSION, Stage, Start, TaskStore
+from app.library.sends import Call, Delivery, Sends, sends_text
 from app.outbound_review import kinds, masked_posting, review
 from analysis_helpers import approved, confirmed, saved_preferences
 from job_helpers import POSTING
@@ -166,7 +167,13 @@ def test_a_late_answer_stays_out_of_a_cancelled_task():
     store.finish(task.id, Late())
     after = store.get(task.id, "o1", "s1")
 
-    assert (after.stage, after.result, after.requests_sent, after.cancel.is_set()) == (Stage.CANCELLED, None, 2, True)
+    # Never seen to come back here: counted, but only as maybe sent.
+    assert (after.stage, after.result, after.sends, after.cancel.is_set()) == (
+        Stage.CANCELLED,
+        None,
+        Sends(generation_maybe=2),
+        True,
+    )
 
 
 def test_a_stop_keeps_back_a_request_not_yet_handed_on_and_never_one_that_was():
@@ -175,23 +182,26 @@ def test_a_stop_keeps_back_a_request_not_yet_handed_on_and_never_one_that_was():
     store.begin(task.id, "o1", "s1", task.fingerprint)
 
     # Handed on: out until it comes back, and counted meanwhile, since it may have gone out.
-    assert store.hand_on(task.id) is True
+    assert store.hand_on(task.id, Call.COUNT) is True
     out = store.get(task.id, "o1", "s1")
-    assert (out.requests_sent, out.requests_out, out.requests_handed) == (0, 1, 1)
+    assert (out.sends, out.out, out.handed) == (Sends(), Sends(count_maybe=1), Sends(count_maybe=1))
 
     # A stop now cannot call it back; it keeps the next one from being handed on.
     store.cancel(task.id, "o1", "s1")
-    assert store.hand_on(task.id) is False
-    store.came_back(task.id, went_out=True)
+    assert store.hand_on(task.id, Call.GENERATION) is False
+    store.came_back(task.id, Call.COUNT, Delivery.SENT)
     after = store.get(task.id, "o1", "s1")
-    assert (after.stage, after.requests_sent, after.requests_out) == (Stage.CANCELLED, 1, 0)
+    assert (after.stage, after.sends, after.out) == (Stage.CANCELLED, Sends(count_sent=1), Sends())
 
-    # A request that came back unsent is not counted.
+    # A request that came back unsent is not counted; one that may have gone out, only as maybe.
     other = stored(store)
     store.begin(other.id, "o1", "s1", other.fingerprint)
     assert store.hand_on(other.id) is True
-    store.came_back(other.id, went_out=False)
-    assert store.get(other.id, "o1", "s1").requests_handed == 0
+    store.came_back(other.id, Call.GENERATION, Delivery.NOT_SENT)
+    assert store.get(other.id, "o1", "s1").handed == Sends()
+    assert store.hand_on(other.id) is True
+    store.came_back(other.id, Call.GENERATION, Delivery.MAYBE)
+    assert store.get(other.id, "o1", "s1").handed == Sends(generation_maybe=1)
 
 
 def test_a_session_keeps_a_limited_number_of_tasks_and_never_drops_a_running_one():
@@ -367,3 +377,13 @@ def test_a_request_budget_is_taken_before_sending_and_never_overdrawn():
     assert budget.take(2) is True
     assert budget.take(2) is False and budget.used == 2
     assert budget.take(1) is True and budget.take(1) is False
+
+
+def test_the_pages_say_each_kind_and_the_total_and_never_count_a_maybe_as_sent():
+    assert sends_text(Sends()) == "计数 0 次、生成 0 次，合计 0 次"
+    assert sends_text(Sends(generation_sent=2)) == "计数 0 次、生成 2 次，合计 2 次"
+    assert sends_text(Sends(count_maybe=1)) == "计数 1 次（可能已发出）、生成 0 次，合计 1 次，其中 1 次只是可能已发出"
+    assert (
+        sends_text(Sends(count_sent=2, generation_sent=1, generation_maybe=1))
+        == "计数 2 次、生成 2 次（其中 1 次可能已发出），合计 4 次，其中 1 次只是可能已发出"
+    )

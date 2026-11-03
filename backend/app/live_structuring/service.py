@@ -17,13 +17,16 @@ after that run failed or was cancelled, it no longer holds, and the user
 confirms again for another. Text over the approval's limit
 (structuring_max_bytes), or no text at all, begins nothing either.
 
-A run has one request. In the background it is checked once more against
-its record (review.still_current), then goes through the gate like any
-real request (app.live_gate): reserved, checked by the gate, and handed on
-only if the run's registry lets it (structuring_runs.StructuringRuns.hand_on:
-not stopped, its import in use and the run in time, under the lock every
-stop takes). The ledger settles it by what the provider reports, and the run
-counts it by the same rule (ai_provider.went_out). An answer that comes back
+A run has one request of the approval: behind a counted bound, a count of
+its input and then the generation (U2-C4 prerequisites). In the background
+it is checked once more against its record (review.still_current), then goes
+through the gate like any real request (app.live_gate): reserved, checked
+by the gate, and each part handed on only if the run's registry lets it
+(structuring_runs.StructuringRuns.hand_on: not stopped, its import in use
+and the run in time, under the lock every stop takes). The ledger settles it
+by what the provider reports, and the run counts each part by the same rule,
+as sent or maybe sent (app.live_gate.delivery); its outcome says which
+(review.sent_suffix). An answer that comes back
 is claimed in the registry, so a run stopped meanwhile drops it; a claimed
 answer is checked against what was sent and the import's own text
 (candidates.check_sent_answer), the basic profile is taken from the local
@@ -68,15 +71,16 @@ from app.library.review import (
     PROVIDER_FAILED,
     PROVIDER_TIMEOUT,
     PROVIDER_UNAVAILABLE,
-    SENT,
     Asked,
     Attempt,
     end_attempt,
     finish_structuring,
     reconcile_sent,
+    sent_suffix,
     start_structuring,
     still_current,
 )
+from app.library.sends import Call, Delivery, Sends
 from app.library.structuring_runs import Run, RunStopped, Stop, Stopping, StructuringRuns
 from app.live_gate import LiveBlocked, LiveRefused, Purpose
 
@@ -86,11 +90,13 @@ logger = logging.getLogger("roleradar.library")
 PROMPT_VERSION = "1"
 # What the confirmation page says about the service. A changed word changes the version: a
 # confirmation of the old text does not carry over. Like the analysis notice (live-1), a draft.
-NOTICE_VERSION = "resume-live-1"
+NOTICE_VERSION = "resume-live-2"
 NOTICE = (
     "确认后，下面列出的文字会发给这个外部 AI 服务，只用于这一次简历整理。按服务商的政策，API 数据默认不用于训练模型。",
-    "请求设置为不保存回答，但这不等于不留存：按服务商的默认政策，滥用监控日志最多保留 30 天；"
-    "为了提速，服务商还可能以加密形式缓存提示内容，最长 24 小时。",
+    "生成之前，同样的文字会先发给服务商计数一次：只数 token、不生成回答，但这也是一次外发。"
+    "计数请求没有“不保存”的设置，服务商是否保留它的处理状态还没有核实，所以不承诺不保存。",
+    "生成请求设置为不保存回答，但这不等于不留存：按服务商的默认政策，滥用监控日志最多保留 30 天，"
+    "法律要求或为防止伤害时可能更长；为了提速，服务商还可能缓存由提示内容算出的加密中间数据（不是原文），最长 24 小时。",
     "发送前按最坏情况预留费用。已经发出的请求无法撤回，取消只能停止还没有发出的请求。",
 )
 SCHEMA_NAME = "resume_candidates"
@@ -373,11 +379,11 @@ def run(database, structuring: StructuringRuntime, owner_id: str, import_id: str
         if outcome is not None:
             # Stopped by the user, a session or the import's end meanwhile: that is what came of it.
             stopped = structuring.runs.stopped(attempt.id)
-            outcome = (stopped.value if stopped is not None else outcome) + (SENT if sending.sent else "")
+            outcome = (stopped.value if stopped is not None else outcome) + sent_suffix(sending.sends)
 
             if not end_attempt(database, owner_id, import_id, attempt.id, outcome, clock):
-                # Ended already, by a cancel written while the request was out: what it showed decides.
-                reconcile_sent(database, owner_id, import_id, attempt.id, bool(sending.sent))
+                # Ended already, by a cancel written while a request was out: what they showed decides.
+                reconcile_sent(database, owner_id, import_id, attempt.id, sending.sends)
     except Exception as error:  # the record stays running until it is stale; asking again is allowed then
         logger.error("a real structuring could not record what came of it (%s)", type(error).__name__)
     finally:
@@ -389,12 +395,13 @@ def cancel(database, structuring: StructuringRuntime, owner_id: str, import_id: 
     stopping = structuring.runs.stop(attempt_id, Stop.CANCELLED)
 
     if stopping != Stopping.TOO_LATE:
-        outcome = {
-            Stopping.BEFORE: Stop.CANCELLED.value,
-            Stopping.AFTER: Stop.CANCELLED.value + SENT,
-            # Not a run of this process: it began before a restart, and may have sent its request then.
-            Stopping.UNKNOWN: INTERRUPTED,
-        }[stopping]
+        if stopping == Stopping.UNKNOWN:
+            # Not a run of this process: it began before a restart, and may have sent its requests then.
+            outcome = INTERRUPTED
+        else:
+            # What was handed on so far, one still out as maybe; set right once it comes back (run).
+            outcome = Stop.CANCELLED.value + sent_suffix(structuring.runs.handed(attempt_id) or Sends())
+
         end_attempt(database, owner_id, import_id, attempt_id, outcome, clock)
 
     return stopping
@@ -406,19 +413,17 @@ class _Sending:
     def __init__(self, runs: StructuringRuns, attempt: str):
         self._runs = runs
         self._attempt = attempt
-        self.sent = 0
+        self.sends = Sends()
 
-    def hand_on(self) -> None:
-        why = self._runs.hand_on(self._attempt)
+    def hand_on(self, call: Call) -> None:
+        why = self._runs.hand_on(self._attempt, call)
 
         if why is not None:
             raise RunStopped(why)
 
-    def came_back(self, went_out: bool) -> None:
-        self._runs.came_back(self._attempt, went_out)
-
-        if went_out:
-            self.sent += 1
+    def came_back(self, call: Call, delivered: Delivery) -> None:
+        self._runs.came_back(self._attempt, call, delivered)
+        self.sends = self.sends.plus(call, delivered)
 
 
 def _send(database, structuring, owner_id, import_id, attempt, request, sending, clock) -> str | None:
@@ -435,7 +440,7 @@ def _send(database, structuring, owner_id, import_id, attempt, request, sending,
         with structuring.live.provider_of(owner_id, sending, Purpose.STRUCTURING) as provider:
             result = provider.generate_text(request.prompt, json_schema_format=SCHEMA_FORMAT)
     except RunStopped as stopped:
-        # Kept back at the boundary: the gate released its reservation.
+        # Kept back at the boundary: the gate released its reservation, or charged only a count sent before.
         return stopped.why.value
     except LiveBlocked as blocked:
         return f"gate_{blocked.reason.value}"
@@ -466,7 +471,7 @@ def _send(database, structuring, owner_id, import_id, attempt, request, sending,
         checked = checked_answer(result.text, request, attempt.segments)
 
         if not checked.candidates:
-            checked = replace(checked, failure=checked.failure + SENT)
+            checked = replace(checked, failure=checked.failure + sent_suffix(sending.sends))
 
         finish_structuring(database, owner_id, import_id, attempt, checked, clock)
     except Exception as error:

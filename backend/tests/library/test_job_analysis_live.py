@@ -7,6 +7,7 @@ name. Nothing leaves the process, and the launcher blocks the network.
 """
 import threading
 from contextlib import ExitStack
+from dataclasses import replace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,11 +23,12 @@ from app.ai_provider import (
 from app.job_analysis.simulation import SimulatedProvider
 from app.job_analysis.tasks import MAX_RUN_SECONDS, TaskStore
 from app.library.models import LiveRequestState
+from app.library.sends import Sends, sends_text
 from app.live_gate import LOCK_SUFFIX, InputBound, LiveSetup
 from app.web_main import create_app
-from job_helpers import InlineExecutor, confirmed, review, start, task_of, text_of, wait_until
+from job_helpers import InlineExecutor, confirmed, handed, review, start, task_of, text_of, wait_until
 from library_helpers import LOCAL_BASE_URL, Browser
-from test_live_gate import BOUND, requests_of, terms
+from test_live_gate import BOUND, COUNT_PRICE, COUNTED_BOUND, FEE, PRICES, requests_of, terms
 
 RECIPIENT = ("synthetic", "synthetic-model", "https://synthetic.invalid/v1")
 # 1000 input tokens at 2 and 200 output tokens at 8 (test_live_gate.PRICES), in millionths of a dollar.
@@ -57,15 +59,18 @@ class LiveAnswering(AIProvider):
 
     SYNTHETIC = True
 
-    def __init__(self, *script, identity=RECIPIENT):
+    def __init__(self, *script, identity=RECIPIENT, counts=()):
         self.script = list(script)
         self.calls = []
         self._identity = identity
+        # What each count does, behind a counted bound: an exception to raise, or the count.
+        self.counts = list(counts)
+        self.counted = []
 
     def identity(self):
         return ProviderIdentity(*self._identity)
 
-    def generate_text(self, prompt, max_output_tokens=None, reasoning_effort=None, json_schema_format=None):
+    def generate_text(self, prompt, max_output_tokens=None, reasoning_effort=None, json_schema_format=None, timeout_seconds=None):
         self.calls.append({"max_output_tokens": max_output_tokens, "reasoning_effort": reasoning_effort})
         step = self.script.pop(0) if self.script else None
 
@@ -91,6 +96,15 @@ class LiveAnswering(AIProvider):
             reasoning_tokens=0,
             service_tier="default",
         )
+
+    def count_input_tokens(self, prompt, reasoning_effort=None, json_schema_format=None, timeout_seconds=None):
+        self.counted.append(prompt)
+        step = self.counts.pop(0) if self.counts else 1000
+
+        if isinstance(step, BaseException):
+            raise step
+
+        return step() if callable(step) else step
 
 
 class Ticks:
@@ -155,7 +169,7 @@ def test_a_live_review_names_its_recipient_notice_and_what_is_left(live):
     assert "还剩 6 次请求" in text and "确认并开始分析" in text and "本机模拟服务" not in text
     # The fingerprint binds the recipient and the notice the page showed.
     assert (stored.request.recipient.provider, stored.request.recipient.model) == ("synthetic", "synthetic-model")
-    assert stored.request.notice_version == "live-1"
+    assert stored.request.notice_version == "live-2"
 
 
 def test_a_live_task_goes_through_the_gate_and_says_whose_result_it_is(live):
@@ -163,7 +177,7 @@ def test_a_live_task_goes_through_the_gate_and_says_whose_result_it_is(live):
     app, browser = live(provider)
     text = page_text(browser, run(browser))
 
-    assert "真实服务的结果：由外部 AI 模型生成" in text and "已交给服务的请求：2 次" in text
+    assert "真实服务的结果：由外部 AI 模型生成" in text and handed(2) in text
     assert [(row.state, row.charged_micro_usd) for row in ledger(app)] == [(LiveRequestState.SETTLED, COST)] * 2
     # Both requests ask for the approval's output limit and reasoning effort.
     assert provider.calls == [{"max_output_tokens": 400, "reasoning_effort": "low"}] * 2
@@ -185,7 +199,7 @@ def test_a_confirmation_does_not_carry_over_to_another_service_or_notice(live):
     assert fresh != simulated and "真实的外部 AI 服务" in page_text(browser, fresh)
 
     # A notice that changed after the review is no different.
-    service.notice_version = "live-2"
+    service.notice_version = "live-3"
     again = start(browser, fresh)
 
     assert again.status_code == 303 and "notice=service_changed" in again.headers["location"]
@@ -195,7 +209,7 @@ def test_a_confirmation_does_not_carry_over_to_another_service_or_notice(live):
 # --- what the gate stops ------------------------------------------------------------------------------------
 
 STOPPED_AFTER_ONE = {
-    "stopped": "真实服务已停用，这次请求没有发出",
+    "stopped": "真实服务已停用，之后的生成请求没有发出",
     "requests": "这批批准的请求次数已经用完，这次请求没有发出",
     "cost": "超出这批批准的费用上限，所以没有发出",
 }
@@ -211,7 +225,7 @@ def test_a_request_the_gate_stops_is_not_counted_and_the_one_before_it_still_is(
     gates.append(app.state.job_analysis.live.gate)
     text = page_text(browser, run(browser))
 
-    assert STOPPED_AFTER_ONE[case] in text and "已交给服务的请求：1 次" in text
+    assert STOPPED_AFTER_ONE[case] in text and handed(1) in text
     assert len(provider.calls) == 1
     assert [(row.state, row.charged_micro_usd) for row in ledger(app)] == [(LiveRequestState.SETTLED, COST)]
     # The cost case: room for one worst case, not for a second one beside the first's charge.
@@ -243,7 +257,7 @@ def test_another_live_task_running_keeps_this_one_from_sending(live):
 
     text = page_text(browser, task)
 
-    assert "另一个真实分析正在进行" in text and "已交给服务的请求：0 次" in text
+    assert "另一个真实分析正在进行" in text and handed() in text
     assert provider.calls == [] and ledger(app) == []
 
 
@@ -264,7 +278,7 @@ def test_a_provider_that_cannot_be_used_ends_the_task_at_once_with_nothing_sent(
     task = run(browser)
     text = page_text(browser, task)
 
-    assert "真实服务无法使用" in text and "已交给服务的请求：0 次" in text
+    assert "真实服务无法使用" in text and handed() in text
     assert browser.get(f"{task}/status").json()["stage"] == "done" and ledger(app) == []
     assert "provider" not in setup or setup["provider"].calls == []
 
@@ -275,9 +289,10 @@ def test_a_parse_that_times_out_falls_back_to_rules_is_never_called_ai_and_pause
     text = page_text(browser, run(browser))
 
     assert "规则降级的结果" in text and "不是 AI 的判断" in text and "按规则找到的技能词" in text
-    assert "真实服务的结果：" not in text and "已交给服务的请求：1 次" in text
+    # No answer came: it may have gone out, and the page says only that.
+    assert "真实服务的结果：" not in text and handed(maybe=1) in text
     (row,) = ledger(app)
-    assert (row.state, row.reason) == (LiveRequestState.UNKNOWN, "unknown_usage")
+    assert (row.state, row.reason) == (LiveRequestState.UNKNOWN, "no_answer")
 
     # Its cost could not be known, so the batch is paused: the next review offers no start.
     page = browser.get(task_of(review(browser, [project(browser)]))).text
@@ -306,13 +321,13 @@ def test_a_request_out_when_the_task_stops_is_settled_and_its_answer_dropped(liv
         ticks.now += MAX_RUN_SECONDS + 1
 
     # While its request is out the task already says it was handed on: it may have gone out.
-    assert browser.get(f"{task}/status").json()["requests_handed"] == 1
+    assert browser.get(f"{task}/status").json()["sends"] == sends_text(Sends(generation_maybe=1))
     release.set()
     wait_until(lambda: [row.state for row in ledger(app)] == [LiveRequestState.SETTLED])
     app.state.job_analysis.executor.shutdown(wait=True)
     page = browser.get(task).text
 
-    assert "分析已取消" in page and "已交给服务的请求：1 次" in page and "岗位分析结果" not in page
+    assert "分析已取消" in page and handed(1) in page and "岗位分析结果" not in page
     assert len(provider.calls) == 1
 
 
@@ -365,7 +380,7 @@ def test_a_task_that_stops_while_its_request_is_reserved_hands_nothing_on(live, 
         assert len(store) == 0
     else:
         text = page_text(browser, task)
-        assert "分析已取消" in text and f"已交给服务的请求：{at - 1} 次" in text
+        assert "分析已取消" in text and handed(at - 1) in text
 
 
 @pytest.mark.parametrize("at", [1, 2])
@@ -376,8 +391,8 @@ def test_a_request_its_provider_stopped_before_sending_is_not_counted_and_one_be
     stored = app.state.job_analysis.store._tasks[task.rsplit("/", 1)[1]]
     text = page_text(browser, task)
 
-    assert (stored.requests_sent, stored.result.requests_sent, stored.requests_out) == (at - 1, at - 1, 0)
-    assert f"已交给服务的请求：{at - 1} 次" in text and "这次请求在发出之前就停止了" in text
+    assert (stored.sends, stored.result.requests_sent, stored.out) == (Sends(generation_sent=at - 1), at - 1, Sends())
+    assert handed(at - 1) in text and "这次请求在发出之前就停止了" in text
     # It speaks of this request only: never of nothing sent, nor of a failure of the program.
     assert "没有发送任何请求" not in text and "程序出错" not in text
     assert states_of(app) == sorted([(LiveRequestState.SETTLED, COST)] * (at - 1) + [(LiveRequestState.RELEASED, 0)])
@@ -391,7 +406,8 @@ def test_a_request_that_may_have_gone_out_stays_counted_whatever_failed(live, er
     app, browser = live(LiveAnswering(None, error))
     text = page_text(browser, run(browser))
 
-    assert "已交给服务的请求：2 次" in text
+    # One answered, one that may have gone out: never counted as sure.
+    assert handed(1, 1) in text
     assert [state for state, _ in states_of(app)] == sorted([LiveRequestState.SETTLED, LiveRequestState.UNKNOWN])
 
 
@@ -401,3 +417,107 @@ def test_without_a_live_setup_the_simulation_answers_and_no_gate_is_opened(app, 
     assert app.state.job_analysis.live is None
     assert not path.with_name(path.name + LOCK_SUFFIX).exists()
     assert "本机模拟服务" in page_text(browser_a, task_of(review(browser_a, [project(browser_a)])))
+
+
+# --- behind a counted bound: a count, then each generation (U2-C4 prerequisites) ---------------------------
+
+
+def counted(**changes):
+    values = {
+        "prices": replace(PRICES, count=COUNT_PRICE),
+        "input_bound": COUNTED_BOUND.name,
+        "request_unit": "count_then_generation",
+        "max_input_tokens": 1000,
+    }
+    values.update(changes)
+
+    return approval(**values)
+
+
+def test_a_counted_analysis_counts_before_each_generation_and_says_both(live):
+    provider = LiveAnswering()
+    app, browser = live(provider, approval_terms=counted(), bound=COUNTED_BOUND)
+    text = page_text(browser, run(browser))
+
+    assert len(provider.counted) == len(provider.calls) == 2
+    assert "真实服务的结果：由外部 AI 模型生成" in text and handed(2, counted=2) in text
+    assert states_of(app) == [(LiveRequestState.SETTLED, FEE + COST)] * 2
+
+
+@pytest.mark.parametrize(
+    "error, says",
+    [
+        (AIProviderTimeoutError("synthetic"), handed(counted_maybe=1)),
+        (AIProviderConfigError("synthetic: cannot count"), handed()),
+    ],
+    ids=["count-timed-out", "count-never-sent"],
+)
+def test_a_count_that_failed_before_the_parse_rejects_the_task_and_never_falls_back_to_rules(live, error, says):
+    provider = LiveAnswering(counts=[error])
+    app, browser = live(provider, approval_terms=counted(), bound=COUNTED_BOUND)
+    text = page_text(browser, run(browser))
+
+    assert provider.calls == [] and "发送前的计数没有完成" in text and says in text
+    assert "规则降级的结果" not in text and "真实服务的结果：" not in text
+
+
+def test_a_count_over_the_largest_input_stops_the_analysis_after_the_parse(live):
+    provider = LiveAnswering(counts=[1000, 1001])
+    app, browser = live(provider, approval_terms=counted(), bound=COUNTED_BOUND)
+    text = page_text(browser, run(browser))
+
+    # The parse went out; of the analysis only its count.
+    assert len(provider.calls) == 1 and handed(1, counted=2) in text
+    assert "超过了这批批准的单次输入上限，所以没有发出生成请求" in text
+    assert states_of(app) == sorted([(LiveRequestState.SETTLED, FEE + COST), (LiveRequestState.SETTLED, FEE)])
+
+
+def test_the_review_says_the_count_goes_out_too_and_promises_no_keeping_back(live):
+    app, browser = live(approval_terms=counted(), bound=COUNTED_BOUND)
+    page = text_of(browser.get(task_of(review(browser, [project(browser)]))).text)
+
+    assert "这也是一次外发" in page and "不承诺不保存" in page and "法律要求或为防止伤害时可能更长" in page
+
+
+@pytest.mark.parametrize("took", [30.0, 31.0], ids=["all-of-it", "more-than-all"])
+def test_a_count_that_used_up_the_time_leaves_no_generation_out_on_the_task_or_its_page(live, took):
+    now = [100.0]
+
+    def slowest():
+        now[0] += took
+
+        return 1000
+
+    provider = LiveAnswering(counts=[slowest])
+    app, browser = live(provider, approval_terms=counted(), bound=COUNTED_BOUND)
+    app.state.job_analysis.live.gate.monotonic = lambda: now[0]
+    task = run(browser)
+    stored = app.state.job_analysis.store._tasks[task.rsplit("/", 1)[1]]
+    text = page_text(browser, task)
+
+    # Count 1, generation 0, nothing out: the task, its page and the ledger agree (C4 prerequisites acceptance F1).
+    assert provider.calls == [] and (stored.sends, stored.out) == (Sends(count_sent=1), Sends())
+    assert handed(counted=1) in text and "发送前的计数没有完成" in text
+    assert states_of(app) == [(LiveRequestState.SETTLED, FEE)]
+
+
+def test_a_task_cancelled_while_its_count_is_out_counts_the_count_and_no_generation(live):
+    held = {}
+
+    def count_then_cancel():
+        stop("cancel", held["store"], None, held["task"])
+
+        return 1000
+
+    provider = LiveAnswering(counts=[count_then_cancel])
+    app, browser = live(provider, approval_terms=counted(), bound=COUNTED_BOUND)
+    held["store"] = app.state.job_analysis.store
+    task = task_of(review(browser, [project(browser)]))
+    held["task"] = task.rsplit("/", 1)[1]
+    assert start(browser, task).status_code == 303
+    stored = held["store"]._tasks[held["task"]]
+    text = page_text(browser, task)
+
+    assert provider.calls == [] and (stored.sends, stored.out) == (Sends(count_sent=1), Sends())
+    assert "分析已取消" in text and handed(counted=1) in text
+    assert states_of(app) == [(LiveRequestState.SETTLED, FEE)]

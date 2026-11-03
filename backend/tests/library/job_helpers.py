@@ -11,6 +11,7 @@ import time
 
 from app.ai_provider import AIProvider, GenerationResult
 from app.job_analysis.simulation import SIMULATION_MODEL, SimulatedProvider
+from app.library.sends import Sends, sends_text
 from library_helpers import forms_in
 
 POSTING = """数据分析实习生（合成岗位）
@@ -32,6 +33,11 @@ class InlineExecutor:
 
     def shutdown(self, wait=True, cancel_futures=False):
         pass
+
+
+def handed(generated: int = 0, maybe: int = 0, *, counted: int = 0, counted_maybe: int = 0) -> str:
+    """What the pages say of the requests handed on: generations sent and maybe sent, and counts likewise."""
+    return "已交给服务的请求：" + sends_text(Sends(counted, counted_maybe, generated, maybe))
 
 
 class RecordingProvider(AIProvider):

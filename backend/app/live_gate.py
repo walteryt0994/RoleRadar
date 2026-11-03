@@ -24,21 +24,41 @@ for one approval (open_gate):
   given up or the next task allowed. status() still answers afterwards.
 - After it, the reservation is settled once: the reported usage priced item
   by item; above the reservation it is charged in full and the approval
-  paused; without usable usage it is charged at the reservation and the
+  paused; without usable usage it is kept at a conservative amount and the
   approval paused; a request its provider says never left is released.
   Settling it again changes nothing.
 
+A request behind a counted input bound (the only kind a real service may
+use, U2-C4 prerequisites) is a group of two, one ledger row and one request
+of the approval: first the service counts the request's input, then at
+most one generation. Its worst case is reserved before anything goes out,
+with the approval's largest input (max_input_tokens); the count is handed on
+like a generation, through the same last checks; a count that is a whole
+number within that largest input narrows the reservation in a write
+transaction; then stop file, pause, gate, task and the task's sending are
+checked once more, and only then is the generation handed on. Both share
+the approval's timeout, the generation getting what the count left, and
+neither is retried. A group whose count went out, or may have, is never
+released, whatever became of its generation; the row's reason says how far
+it got (COUNTING, COUNTED while reserved, so a restart can tell).
+
 Amounts are in millionths of a US dollar, rounded up. Prices come from the
-approval's terms only, never from this code. A worst case is only as good as
-its input bound: real use needs a bound checked against the provider's
-documents for the model and the service tier, added to CERTIFIED_INPUT_BOUNDS
-as a reviewed change of this code, never by a setting. It is empty, so no
-real request can pass. Synthetic prices and bounds exist for tests: a gate
-with either refuses any provider that is not synthetic itself (a provider
-made up for tests says so with SYNTHETIC = True; OpenAIProvider never does).
+approval's terms only, never from this code: a reservation takes every input
+token at the reservation price, the dearest on the price list, never used to
+settle; a counted group adds the count's price, which a counted bound needs
+written out. Usage is checked whole before it is priced, and priced only
+within what the approval's prices were checked for. A worst case is only as
+good as its input bound: real use needs a counted bound checked against the
+provider's documents for the model and the service tier, added to
+CERTIFIED_INPUT_BOUNDS as a reviewed change of this code, never by a setting.
+It is empty, so no real request can pass. Synthetic prices and bounds exist
+for tests: a gate with either refuses any provider that is not synthetic
+itself (a provider made up for tests says so with SYNTHETIC = True;
+OpenAIProvider never does).
 """
 import logging
 import threading
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -64,6 +84,7 @@ from app.ai_provider import (
 from app.library.clock import Clock
 from app.library.db import Database
 from app.library.models import LiveApproval, LiveRequest, LiveRequestState
+from app.library.sends import Call, Delivery
 
 try:
     import fcntl
@@ -75,6 +96,31 @@ logger = logging.getLogger("roleradar.live")
 # Next to the library database: its presence stops every request after the one in flight.
 STOP_FILE = "LIVE_STOP"
 LOCK_SUFFIX = ".live.lock"
+# Dollars per request, as millionths of a dollar, the unit amounts are kept in.
+PER_REQUEST = Decimal(1_000_000)
+# What a ledger row says beyond its state (LiveRequest.reason). While a counted group is reserved:
+COUNTING = "counting"  # its count may be out; its generation is not
+COUNTED = "counted"  # counted and narrowed; its generation may be out
+# Once settled, of a group whose generation never went out:
+COUNT_SENT = "count_sent"  # its count went out
+COUNT_MAYBE = "count_maybe"  # its count may have gone out
+# Of a request whose usage tells nothing usable, or that a restart found reserved:
+UNKNOWN_USAGE = "unknown_usage"  # it was answered
+NO_ANSWER = "no_answer"  # no answer came: it may have gone out
+INTERRUPTED = "interrupted"  # a generation may have gone out (a counted group: after its count)
+INTERRUPTED_COUNTING = "interrupted_counting"  # only its count may have gone out
+# Of a request whose usage could be priced:
+OVER_RESERVATION = "over_reservation"
+ABOVE_COUNT = "above_count"  # its input came out above its count
+
+
+class RequestUnit(StrEnum):
+    """What one request of an approval is: its terms say, so that no approval is read in another unit."""
+
+    # One generation, its input bound worked out here (synthetic bounds only).
+    GENERATION = "generation"
+    # A count of the input by the service, then at most one generation (a counted bound).
+    COUNTED_GENERATION = "count_then_generation"
 
 
 class LiveRefused(Exception):
@@ -103,10 +149,19 @@ class Blocked(StrEnum):
     CLOSED = "closed"
     # The task this provider belonged to has ended.
     ENDED = "ended"
+    # The count failed, was no whole number, or left no time for the generation.
+    COUNT = "count"
+    # The request's input is above the approval's largest (counted, or worked out here).
+    INPUT = "input"
 
 
 class LiveBlocked(Exception):
-    """The gate did not let a request through: nothing was sent, reserved or charged."""
+    """The gate did not let a generation through: nothing of it was sent or charged.
+
+    A counted group's count may have gone out before (the task's sending
+    says), and the ledger keeps what that cost; otherwise nothing was sent
+    and the reservation, if any, was released.
+    """
 
     def __init__(self, reason: Blocked):
         super().__init__(reason.value)
@@ -118,24 +173,40 @@ class PriceBasis:
     """US dollars per million tokens for each item a request may be billed for, on the approval's tier.
 
     cache_read and cache_write are None where the service does not bill them
-    as items of their own: such tokens are then billed as ordinary input.
-    output covers reasoning tokens. Each input token is taken to be billed
-    as one item only. source and checked_on say where and when the prices
-    were read; synthetic prices are made up for tests.
+    as items of their own: such tokens are then billed as ordinary input;
+    cache_write is the price of the writes kept the default time (30
+    minutes), the only ones a request here asks for. output covers reasoning
+    tokens. Each input token is taken to be billed as one item only. These
+    four settle what a request cost.
+
+    reserve_input is for reservations only, never to settle: the dearest
+    price any input token may be billed at on the price list, items not
+    asked for included, so never below the three input prices above. count
+    is the price of one count of a request's input, in dollars per count;
+    None where it is not known, which a counted bound refuses. source and
+    checked_on say where and when the prices were read; synthetic prices are
+    made up for tests.
     """
 
     input: Decimal
     cache_read: Decimal | None
     cache_write: Decimal | None
     output: Decimal
+    reserve_input: Decimal
     source: str
     checked_on: str
     synthetic: bool = False
+    count: Decimal | None = None
 
     def __post_init__(self) -> None:
-        for price in (self.input, self.cache_read, self.cache_write, self.output):
+        for price in (self.input, self.cache_read, self.cache_write, self.output, self.reserve_input, self.count):
             if price is not None and (not isinstance(price, Decimal) or not price.is_finite() or price < 0):
                 raise ValueError("a price is a finite Decimal of 0 or more")
+
+        if any(
+            price is not None and price > self.reserve_input for price in (self.input, self.cache_read, self.cache_write)
+        ):
+            raise ValueError("the reservation's input price is below a price an input token may be billed at")
 
     def snapshot(self) -> dict:
         return {
@@ -143,6 +214,8 @@ class PriceBasis:
             "cache_read": _amount(self.cache_read),
             "cache_write": _amount(self.cache_write),
             "output": _amount(self.output),
+            "reserve_input": _amount(self.reserve_input),
+            "count": _amount(self.count),
             "source": self.source,
             "checked_on": self.checked_on,
             "synthetic": self.synthetic,
@@ -153,21 +226,29 @@ class PriceBasis:
 class InputBound:
     """A way to tell, before a request goes out, at least as many input tokens as the service will count.
 
-    tokens(prompt, output_format) is that number. source and checked_on say
-    which documents showed it to be a bound; synthetic ones are made up for
-    tests.
+    A bound worked out here gives tokens(prompt, output_format); a counted
+    one has none, and asks the service itself for each request, which is a
+    request too (the gate's counted groups). Only a counted one may serve a
+    real service. source and checked_on say which documents showed it to be
+    a bound; synthetic ones are made up for tests.
     """
 
     name: str
-    tokens: Callable[[str, JsonSchemaFormat | None], int]
+    tokens: Callable[[str, JsonSchemaFormat | None], int] | None
     source: str
     checked_on: str
     synthetic: bool = False
+    counted: bool = False
+
+    def __post_init__(self) -> None:
+        if self.counted == (self.tokens is not None):
+            raise ValueError("a bound is counted by the service, or worked out here by tokens, not both")
 
 
 # Input bounds checked against the provider's documents, by (provider, model,
-# service tier). A real service is refused for anything not listed here.
-# Empty: no bound has been checked yet (U2-C1).
+# service tier); only counted bounds belong here. A real service is refused
+# for anything not listed. Empty: no bound has been registered yet (U2-C1;
+# the counting it needs exists since the U2-C4 prerequisites, unregistered).
 CERTIFIED_INPUT_BOUNDS: dict[tuple[str, str, str], InputBound] = {}
 
 
@@ -189,12 +270,18 @@ class ApprovalTerms:
     timeout_seconds: float
     # The most a structuring request may send of a resume: UTF-8 bytes of its masked text (U2-C3).
     structuring_max_bytes: int
+    # How many requests, each one of request_unit.
     max_requests: int
     max_cost_micro_usd: int
     prices: PriceBasis
     # The name of the input bound the worst cases are worked out with.
     input_bound: str
     rules_checked_on: str
+    # What one of max_requests is (RequestUnit): its bound decides.
+    request_unit: str
+    # The most input tokens one request may have, counted before it goes out; the
+    # prices were checked for no larger input, and a larger one is not priced.
+    max_input_tokens: int
 
     def snapshot(self) -> dict:
         return {
@@ -214,6 +301,8 @@ class ApprovalTerms:
             "prices": self.prices.snapshot(),
             "input_bound": self.input_bound,
             "rules_checked_on": self.rules_checked_on,
+            "request_unit": self.request_unit,
+            "max_input_tokens": self.max_input_tokens,
         }
 
     def output_limit(self, purpose: str) -> int:
@@ -246,25 +335,51 @@ class GateStatus:
     micro_usd_left: int
 
 
-def reservation(input_tokens: int, output_tokens: int, prices: PriceBasis) -> int:
-    """The most a request of these sizes may cost: every input token at the dearest input item."""
-    dearest = max(price for price in (prices.input, prices.cache_read, prices.cache_write) if price is not None)
+def reservation(input_tokens: int, output_tokens: int, prices: PriceBasis, *, counted: bool = False) -> int:
+    """The most a request of these sizes may cost: every input token at the reservation price; a counted one adds its count."""
+    amount = input_tokens * prices.reserve_input + output_tokens * prices.output
 
-    return _micro(input_tokens * dearest + output_tokens * prices.output)
+    if counted:
+        amount += prices.count * PER_REQUEST
+
+    return _micro(amount)
+
+
+def count_price(prices: PriceBasis) -> int:
+    """What one count of a request's input is charged at."""
+    return _micro(prices.count * PER_REQUEST)
+
+
+def delivery(sent: SendState, usage: Usage | None) -> Delivery:
+    """How sure it is that a request handed on reached its service (app.library.sends), by the rule of went_out.
+
+    Sent when it was answered or something was reported for it; maybe when
+    no answer came; not sent when its provider stopped it first and nothing
+    was reported.
+    """
+    if usage is not None or sent is SendState.ANSWERED:
+        return Delivery.SENT
+
+    return Delivery.MAYBE if sent is SendState.HANDED else Delivery.NOT_SENT
 
 
 def charge(usage: Usage | None, terms: ApprovalTerms) -> int | None:
-    """What a request cost by the approval's prices, rounded up; None when its usage cannot tell.
+    """What a generation cost by the approval's prices, rounded up; None when its usage cannot tell.
 
-    Every count given must be a whole number of 0 or more, and the counts
-    must agree, whether or not their items are billed on their own: the two
-    cache items are parts of the input and together no more than it,
-    reasoning is part of the output, and a total, when given, is input plus
-    output. Input, output and the approved service tier must be given, and
-    so must the count of a cache item billed on its own; the other counts may
-    be left out. A cache item billed on its own is taken out of the input and
-    billed once at its own price; reasoning is billed as output, never again.
-    Anything else, or usage its provider found malformed, is unknown.
+    The usage is checked whole before anything is priced. Every count given
+    must be a whole number of 0 or more, and the counts must agree, whether
+    or not their items are billed on their own: the two cache items are
+    parts of the input and together no more than it, the writes by how long
+    they are kept add up to the writes, reasoning is part of the output, and
+    a total, when given, is input plus output. Input, output and the
+    approved service tier must be given, the input no larger than the
+    approval's prices were checked for, and so must the count of a cache
+    item billed on its own; the other counts may be left out. Where writes
+    are billed on their own, they must say how long they are kept, and none
+    may be kept longer than the default: no price is approved for that. A
+    cache item billed on its own is taken out of the input and billed once
+    at its own price; reasoning is billed as output, never again. Anything
+    else, or usage its provider found malformed, is unknown.
     """
     if usage is None or usage.malformed:
         return None
@@ -276,6 +391,8 @@ def charge(usage: Usage | None, terms: ApprovalTerms) -> int | None:
         usage.cache_write_tokens,
         usage.reasoning_tokens,
         usage.total_tokens,
+        usage.cache_write_30m_tokens,
+        usage.cache_write_12h_tokens,
     )
 
     if not all(count is None or is_count(count) for count in counts):
@@ -284,8 +401,21 @@ def charge(usage: Usage | None, terms: ApprovalTerms) -> int | None:
     if usage.input_tokens is None or usage.output_tokens is None or usage.service_tier != terms.service_tier:
         return None
 
+    if usage.input_tokens > terms.max_input_tokens:
+        # Beyond what the approval's prices were checked for.
+        return None
+
     if (usage.cache_read_tokens or 0) + (usage.cache_write_tokens or 0) > usage.input_tokens:
         return None
+
+    kept = (usage.cache_write_30m_tokens, usage.cache_write_12h_tokens)
+
+    if any(count is not None for count in kept) and sum(count or 0 for count in kept) != (usage.cache_write_tokens or 0):
+        return None
+
+    if terms.prices.cache_write is not None and usage.cache_write_tokens:
+        if all(count is None for count in kept) or usage.cache_write_12h_tokens:
+            return None
 
     if usage.reasoning_tokens is not None and usage.reasoning_tokens > usage.output_tokens:
         return None
@@ -354,7 +484,16 @@ def open_gate(database: Database, db_path: Path, terms: ApprovalTerms, bound: In
     if terms.input_bound != bound.name:
         raise LiveRefused("批准写明的输入上界和这里用来预留的不是同一个。")
 
+    if terms.request_unit != (RequestUnit.COUNTED_GENERATION if bound.counted else RequestUnit.GENERATION):
+        raise LiveRefused("批准写明的请求计量单位和这里的输入上界不符。")
+
+    if bound.counted and terms.prices.count is None:
+        raise LiveRefused("每个请求都要先计数，但批准没有写明计数的单价；单价未知时不能当作 0。")
+
     synthetic = terms.prices.synthetic or bound.synthetic
+
+    if not synthetic and not bound.counted:
+        raise LiveRefused("真实服务只能用发送前由服务计数的输入上界。")
 
     if not synthetic and CERTIFIED_INPUT_BOUNDS.get((terms.provider, terms.model, terms.service_tier)) is not bound:
         raise LiveRefused("这个模型和服务档还没有核验过的输入上界，不能启用真实服务。")
@@ -379,12 +518,13 @@ def _recover(database: Database, clock: Clock) -> int:
         now = clock.now()
 
         for row in left:
-            # It may have gone out, and nothing says what it used.
+            # It may have gone out, and nothing says what it used. A counted group not narrowed yet
+            # never handed its generation on, but may have sent its count.
             row.state = LiveRequestState.UNKNOWN
             row.charged_micro_usd = row.reserved_micro_usd
-            row.reason = "interrupted"
+            row.reason = INTERRUPTED_COUNTING if row.reason == COUNTING else INTERRUPTED
             row.settled_at = now
-            _pause(db, row.approval_id, "interrupted", now)
+            _pause(db, row.approval_id, INTERRUPTED, now)
 
     return len(left)
 
@@ -425,6 +565,8 @@ class LiveGate:
         self._clock = clock
         self._lock = lock
         self.stop_file = stop_file
+        # Seconds, for the time a group may take; a test may give its own.
+        self.monotonic = time.monotonic
         # Guards whether the gate is closed, the task running, and how many requests are out.
         self._guard = threading.Condition()
         self._closed = False
@@ -526,7 +668,21 @@ class LiveGate:
             raise LiveRefused("这个服务商不是批准里写明的接收方。")
 
     def worst_case(self, prompt: str, output_format: JsonSchemaFormat | None, output_limit: int) -> int:
-        return reservation(self.bound.tokens(prompt, output_format), output_limit, self.terms.prices)
+        """What a request is reserved at before anything goes out; LiveBlocked(INPUT) when its bound is too large.
+
+        A counted request is taken at the approval's largest input, and its count's price added.
+        """
+        terms = self.terms
+
+        if self.bound.counted:
+            return reservation(terms.max_input_tokens, output_limit, terms.prices, counted=True)
+
+        tokens = self.bound.tokens(prompt, output_format)
+
+        if tokens > terms.max_input_tokens:
+            raise LiveBlocked(Blocked.INPUT)
+
+        return reservation(tokens, output_limit, terms.prices)
 
     def _reserve(self, purpose: str, owner_id: str, micro_usd: int) -> str:
         """Reserve one request's worst case; its id, or LiveBlocked with nothing written."""
@@ -571,7 +727,7 @@ class LiveGate:
                     cache_write_tokens=None,
                     output_tokens=None,
                     service_tier=None,
-                    reason=None,
+                    reason=COUNTING if self.bound.counted else None,
                     reserved_at=self._clock.now(),
                     settled_at=None,
                 )
@@ -579,8 +735,50 @@ class LiveGate:
 
         return request_id
 
-    def settle(self, request_id: str, *, sent: SendState, usage: Usage | None) -> str | None:
-        """Settle a reservation once; one settled already is left as it is. Its state, or None if there is none."""
+    def _narrow(self, request_id: str, micro_usd: int) -> None:
+        """Narrow a counted group's reservation to what its count showed, then check it may still go on.
+
+        In one write transaction: the reservation becomes the smaller of the
+        two and the row says it was counted; a paused approval then is
+        LiveBlocked(PAUSED), and so, after it, is a stop file (STOPPED). Either
+        way the row stays counted and reserved, for the caller to settle.
+        """
+        with self._database.transaction() as db:
+            row = db.get(LiveRequest, request_id)
+            row.reserved_micro_usd = min(row.reserved_micro_usd, micro_usd)
+            row.reason = COUNTED
+            approval = db.get(LiveApproval, row.approval_id)
+            paused = approval is None or approval.paused_at is not None
+
+        if paused:
+            raise LiveBlocked(Blocked.PAUSED)
+
+        if self.stop_file.exists():
+            raise LiveBlocked(Blocked.STOPPED)
+
+    def settle(
+        self,
+        request_id: str,
+        *,
+        sent: SendState,
+        usage: Usage | None,
+        count: Delivery | None = None,
+        input_count: int | None = None,
+    ) -> str | None:
+        """Settle a reservation once; one settled already is left as it is. Its state, or None if there is none.
+
+        sent and usage are its generation's; count, for a counted group, how
+        far its count got, and input_count what the count said. A group whose
+        generation never went out is released only if its count never did
+        either; otherwise it is charged its count, as unknown (and paused)
+        when that count only may have gone out and has a price. A generation
+        that went out is priced from its usage (charge) with its count's price
+        added: within the group's reservation it is settled, above it, or with
+        more input than counted, charged in full and paused. Usage that
+        cannot be priced keeps a conservative amount, an estimate and no
+        settlement: the reservation, or the reported counts at the
+        reservation price if more.
+        """
         with self._database.transaction() as db:
             row = db.get(LiveRequest, request_id)
 
@@ -597,30 +795,55 @@ class LiveGate:
                 row.output_tokens = _kept(usage.output_tokens)
                 row.service_tier = usage.service_tier if isinstance(usage.service_tier, str) else None
 
+            fee = 0 if count is None else count_price(self.terms.prices)
+
             if not went_out(sent, usage):
-                row.state = LiveRequestState.RELEASED
-                row.charged_micro_usd = 0
+                if count is None or count is Delivery.NOT_SENT:
+                    row.state = LiveRequestState.RELEASED
+                    row.charged_micro_usd = 0
+                    row.reason = None
+                else:
+                    sure = count is Delivery.SENT
+                    # A count that only may have gone out and has a price: whether it was billed is not known.
+                    row.state = LiveRequestState.SETTLED if sure or not fee else LiveRequestState.UNKNOWN
+                    row.charged_micro_usd = fee
+                    row.reason = COUNT_SENT if sure else COUNT_MAYBE
+
+                    if row.state == LiveRequestState.UNKNOWN:
+                        _pause(db, row.approval_id, COUNT_MAYBE, now)
             else:
                 cost = charge(usage, self.terms)
 
                 if cost is None:
                     row.state = LiveRequestState.UNKNOWN
-                    row.charged_micro_usd = row.reserved_micro_usd
-                    row.reason = "unknown_usage"
-                    _pause(db, row.approval_id, "unknown_usage", now)
-                elif cost > row.reserved_micro_usd:
-                    # The worst case was not one: charge what is known, all of it, and stop.
-                    row.state = LiveRequestState.OVER
-                    row.charged_micro_usd = cost
-                    row.reason = "over_reservation"
-                    _pause(db, row.approval_id, "over_reservation", now)
+                    row.charged_micro_usd = self._conservative(row.reserved_micro_usd, fee, usage)
+                    row.reason = UNKNOWN_USAGE if delivery(sent, usage) is Delivery.SENT else NO_ANSWER
+                    _pause(db, row.approval_id, UNKNOWN_USAGE, now)
                 else:
-                    row.state = LiveRequestState.SETTLED
-                    row.charged_micro_usd = cost
+                    total = fee + cost
+                    above = input_count is not None and usage.input_tokens > input_count
+
+                    if above or total > row.reserved_micro_usd:
+                        # The worst case was not one, or the count was wrong: charge what is known, all of it, and stop.
+                        row.state = LiveRequestState.OVER if total > row.reserved_micro_usd else LiveRequestState.SETTLED
+                        row.charged_micro_usd = total
+                        row.reason = ABOVE_COUNT if above else OVER_RESERVATION
+                        _pause(db, row.approval_id, row.reason, now)
+                    else:
+                        row.state = LiveRequestState.SETTLED
+                        row.charged_micro_usd = total
+                        row.reason = None
 
             row.settled_at = now
 
             return row.state
+
+    def _conservative(self, reserved: int, fee: int, usage: Usage | None) -> int:
+        """What a request whose usage cannot be priced is kept at: an estimate, never a settlement."""
+        if usage is None or usage.malformed or not is_count(usage.input_tokens) or not is_count(usage.output_tokens):
+            return reserved
+
+        return max(reserved, fee + reservation(usage.input_tokens, usage.output_tokens, self.terms.prices))
 
     def status(self) -> GateStatus:
         terms = self.terms
@@ -657,17 +880,31 @@ def _committed(db, approval_id: str) -> tuple[int, int]:
 class Sending(Protocol):
     """Where a task counts its requests, told by its provider (GatedProvider; service._Announcing for one of this process).
 
-    hand_on() is told right before a request is handed to the provider,
-    after every other check: it has the last word, and by raising it keeps
-    the request back, unsent (behind the gate, its reservation is
-    released). came_back() is told once a request handed on has come back,
-    answered or failed, with whether it went out or may have
-    (ai_provider.went_out): the rule the ledger is settled by.
+    hand_on(call) is told right before a request is handed to the provider,
+    a count or a generation (app.library.sends.Call), after every other
+    check: it has the last word, and by raising it keeps the request back,
+    unsent (behind the gate, a group that sent nothing is released; one whose
+    count went out keeps what that cost). came_back(call, delivered) is told
+    once a request handed on has come back, answered or failed, with how
+    sure it is that it reached the service (delivery): the rule the ledger is
+    settled by. Every hand_on that did not raise is paired with one
+    came_back, NOT_SENT for a request the gate kept back after all.
     """
 
-    def hand_on(self) -> None: ...
+    def hand_on(self, call: Call) -> None: ...
 
-    def came_back(self, went_out: bool) -> None: ...
+    def came_back(self, call: Call, delivered: Delivery) -> None: ...
+
+
+@dataclass
+class _Group:
+    """One request of an approval on its way through the gate: its ledger row and how far its count got."""
+
+    request_id: str
+    counted: bool
+    count: Delivery = Delivery.NOT_SENT
+    # What the count said, once it said a usable number.
+    input_count: int | None = None
 
 
 class GatedProvider(AIProvider):
@@ -675,11 +912,15 @@ class GatedProvider(AIProvider):
 
     It lets requests through only while its task runs and the gate is open,
     checked before reserving and again right before handing on, where the
-    task's sending has the last word. attempts counts the requests asked
-    for; blocked those the gate stopped, which never went out; handed those
-    that went out or may have (ai_provider.went_out), which the ledger never
-    releases. Every request asks for the approval's reasoning effort and at
-    most its output limit for the task's purpose, whatever the caller asks.
+    task's sending has the last word; behind a counted bound the same goes
+    for the count, and for the generation once the count has narrowed the
+    reservation (see the module docstring). attempts counts the requests
+    asked for; blocked those whose generation the gate stopped, which never
+    went out; handed every count and generation that went out or may have
+    (ai_provider.went_out), which the ledger never releases. Every request
+    asks for the approval's reasoning effort and at most its output limit
+    for the task's purpose, whatever the caller asks; a count and its
+    generation share the approval's timeout.
     """
 
     def __init__(
@@ -730,54 +971,137 @@ class GatedProvider(AIProvider):
 
     def _send(self, prompt: str, limit: int, json_schema_format: JsonSchemaFormat | None) -> GenerationResult:
         gate = self._gate
+        terms = gate.terms
+        # The time the group may take, count and generation together.
+        deadline = gate.monotonic() + terms.timeout_seconds
 
         try:
-            request_id = gate._reserve(self._purpose, self._owner_id, gate.worst_case(prompt, json_schema_format, limit))
+            group = _Group(
+                gate._reserve(self._purpose, self._owner_id, gate.worst_case(prompt, json_schema_format, limit)),
+                gate.bound.counted,
+            )
         except LiveBlocked:
             self.blocked += 1
             raise
 
-        refusal = gate._still_open(self)
+        if group.counted:
+            self._count(group, prompt, limit, json_schema_format, deadline)
 
-        if refusal is not None:
-            # The gate closed or the task ended while it was reserved: it does not go out.
-            gate.settle(request_id, sent=SendState.NOT_SENT, usage=None)
-            self.blocked += 1
+        if deadline - gate.monotonic() <= 0:
+            # The count used up the time the two had: the generation is never handed on.
+            self._stop(group, Blocked.COUNT)
 
-            raise LiveBlocked(refusal)
+        self._hand_on(group, Call.GENERATION)
+        left = deadline - gate.monotonic()
 
-        if self._sending is not None:
-            try:
-                # The task may have stopped while this was reserved: then it is not handed on.
-                self._sending.hand_on()
-            except BaseException:
-                gate.settle(request_id, sent=SendState.NOT_SENT, usage=None)
-                raise
+        if left <= 0:
+            # Out of time while it was being handed on: nothing went out, and the task is told so.
+            self._came_back(Call.GENERATION, Delivery.NOT_SENT)
+            self._stop(group, Blocked.COUNT)
 
         try:
             result = self._provider.generate_text(
                 prompt,
                 max_output_tokens=limit,
-                reasoning_effort=gate.terms.reasoning_effort,
+                reasoning_effort=terms.reasoning_effort,
                 json_schema_format=json_schema_format,
+                timeout_seconds=left,
             )
         except BaseException as error:
             # Whatever failed, the request may have gone out, unless its provider says it did not.
-            self._settled(request_id, *how_far(error))
+            self._settled(group, *how_far(error))
             raise
 
-        self._settled(request_id, SendState.ANSWERED, result.usage, quiet=False)
+        self._settled(group, SendState.ANSWERED, result.usage, quiet=False)
 
         return result
 
-    def _settled(self, request_id: str, sent: SendState, usage: Usage | None, *, quiet: bool = True) -> None:
-        out = went_out(sent, usage)
-
-        if out:
-            self.handed += 1
+    def _count(self, group: _Group, prompt: str, limit: int, json_schema_format, deadline: float) -> None:
+        """Have the service count the group's input and narrow its reservation, or settle the group and stop it."""
+        gate = self._gate
+        terms = gate.terms
+        self._hand_on(group, Call.COUNT)
 
         try:
-            self._gate.settle(request_id, sent=sent, usage=usage)
+            count = self._provider.count_input_tokens(
+                prompt,
+                reasoning_effort=terms.reasoning_effort,
+                json_schema_format=json_schema_format,
+                timeout_seconds=deadline - gate.monotonic(),
+            )
+        except BaseException as error:
+            # Whatever failed, the count may have gone out, unless its provider says it did not.
+            group.count = delivery(how_far(error)[0], None)
+            self._came_back(Call.COUNT, group.count)
+
+            if not isinstance(error, Exception):
+                self._unsent(group)
+                raise
+
+            self._stop(group, Blocked.COUNT)
+
+        group.count = Delivery.SENT
+        self._came_back(Call.COUNT, Delivery.SENT)
+
+        if not is_count(count) or count < 1:
+            self._stop(group, Blocked.COUNT)
+
+        if count > terms.max_input_tokens:
+            self._stop(group, Blocked.INPUT)
+
+        group.input_count = count
+
+        try:
+            gate._narrow(group.request_id, reservation(count, limit, terms.prices, counted=True))
+        except LiveBlocked:
+            self._unsent(group)
+            self.blocked += 1
+            raise
+
+    def _hand_on(self, group: _Group, call: Call) -> None:
+        """The last checks before a request is handed on; failing them, the group is settled and nothing more goes."""
+        refusal = self._gate._still_open(self)
+
+        if refusal is not None:
+            # The gate closed or the task ended meanwhile: nothing more goes out.
+            self._stop(group, refusal)
+
+        if self._sending is not None:
+            try:
+                # The task may have stopped meanwhile: then nothing more is handed on.
+                self._sending.hand_on(call)
+            except BaseException:
+                self._unsent(group)
+                raise
+
+    def _stop(self, group: _Group, why: Blocked):
+        """Settle a group whose generation does not go out, and say why."""
+        self._unsent(group)
+        self.blocked += 1
+
+        raise LiveBlocked(why) from None
+
+    def _unsent(self, group: _Group) -> None:
+        # Released if nothing went out; a count that went out, or may have, keeps its price.
+        self._gate.settle(
+            group.request_id,
+            sent=SendState.NOT_SENT,
+            usage=None,
+            count=group.count if group.counted else None,
+            input_count=group.input_count,
+        )
+
+    def _settled(self, group: _Group, sent: SendState, usage: Usage | None, *, quiet: bool = True) -> None:
+        delivered = delivery(sent, usage)
+
+        try:
+            self._gate.settle(
+                group.request_id,
+                sent=sent,
+                usage=usage,
+                count=group.count if group.counted else None,
+                input_count=group.input_count,
+            )
         except Exception as error:
             if not quiet:
                 raise
@@ -786,5 +1110,11 @@ class GatedProvider(AIProvider):
             logger.error("a real request could not be settled (%s)", type(error).__name__)
         finally:
             # Counted by the rule the ledger is settled by: one it releases is never counted as sent.
-            if self._sending is not None:
-                self._sending.came_back(out)
+            self._came_back(Call.GENERATION, delivered)
+
+    def _came_back(self, call: Call, delivered: Delivery) -> None:
+        if delivered is not Delivery.NOT_SENT:
+            self.handed += 1
+
+        if self._sending is not None:
+            self._sending.came_back(call, delivered)

@@ -36,9 +36,10 @@ class Usage:
     input_tokens counts every input token, cache_read_tokens and
     cache_write_tokens among them (two separate parts of it); output_tokens
     counts every output token, reasoning_tokens among them; total_tokens is
-    input plus output. A count the service did not report is None. malformed
-    says that it reported something that is no count: such usage cannot be
-    priced.
+    input plus output. cache_write_30m_tokens and cache_write_12h_tokens are
+    the writes by how long they are kept, where the service says. A count the
+    service did not report is None. malformed says that it reported
+    something that is no count: such usage cannot be priced.
     """
 
     input_tokens: int | None = None
@@ -49,6 +50,8 @@ class Usage:
     total_tokens: int | None = None
     service_tier: str | None = None
     malformed: bool = False
+    cache_write_30m_tokens: int | None = None
+    cache_write_12h_tokens: int | None = None
 
 
 class AIProviderError(Exception):
@@ -135,6 +138,8 @@ class GenerationResult:
     reasoning_tokens: int | None = None
     service_tier: str | None = None
     usage_malformed: bool = False
+    cache_write_30m_tokens: int | None = None
+    cache_write_12h_tokens: int | None = None
 
     @property
     def usage(self) -> Usage:
@@ -147,6 +152,8 @@ class GenerationResult:
             total_tokens=self.total_tokens,
             service_tier=self.service_tier,
             malformed=self.usage_malformed,
+            cache_write_30m_tokens=self.cache_write_30m_tokens,
+            cache_write_12h_tokens=self.cache_write_12h_tokens,
         )
 
 
@@ -198,7 +205,22 @@ class AIProvider(ABC):
         reasoning_effort: str | None = None,
         json_schema_format: JsonSchemaFormat | None = None,
     ) -> GenerationResult:
+        """Generate an answer. A provider behind the gate is also given
+        timeout_seconds, the time its request may still take (app.live_gate)."""
         pass
+
+    def count_input_tokens(
+        self,
+        prompt: str,
+        reasoning_effort: str | None = None,
+        json_schema_format: JsonSchemaFormat | None = None,
+        timeout_seconds: float | None = None,
+    ) -> int:
+        """How many input tokens the service counts for the request
+        generate_text would send with these arguments; sending that request
+        to the service is a request too. A provider that cannot count stops
+        before anything is sent."""
+        raise AIProviderConfigError("The provider cannot count input tokens.")
 
     def identity(self) -> ProviderIdentity | None:
         """The service and model the next request would go to, from the
@@ -332,6 +354,8 @@ def _usage_of(response: object) -> Usage:
     usage = getattr(response, "usage", None)
     inputs = getattr(usage, "input_tokens_details", None)
     outputs = getattr(usage, "output_tokens_details", None)
+    # The writes by how long they are kept. SDK 3.8.0 does not declare these and keeps them as a mapping.
+    writes = getattr(inputs, "cache_write_tokens_details", None)
     reported = {
         "input_tokens": getattr(usage, "input_tokens", None),
         "output_tokens": getattr(usage, "output_tokens", None),
@@ -339,6 +363,8 @@ def _usage_of(response: object) -> Usage:
         "cache_write_tokens": getattr(inputs, "cache_write_tokens", None),
         "reasoning_tokens": getattr(outputs, "reasoning_tokens", None),
         "total_tokens": getattr(usage, "total_tokens", None),
+        "cache_write_30m_tokens": _detail(writes, "ttl_30m_tokens"),
+        "cache_write_12h_tokens": _detail(writes, "ttl_12h_tokens"),
     }
     tier = getattr(response, "service_tier", None)
 
@@ -347,6 +373,14 @@ def _usage_of(response: object) -> Usage:
         service_tier=tier if isinstance(tier, str) else None,
         malformed=any(value is not None and not is_count(value) for value in reported.values()),
     )
+
+
+def _detail(details: object, name: str) -> object:
+    """One count of a usage detail, whether the SDK made the detail an object or kept it as a mapping."""
+    if isinstance(details, dict):
+        return details.get(name)
+
+    return getattr(details, name, None)
 
 
 def _has_refusal(response: object) -> bool:
@@ -359,6 +393,12 @@ def _has_refusal(response: object) -> bool:
                 return True
 
     return False
+
+
+# What a count of the input takes of a generation request (POST /v1/responses/input_tokens, its
+# reference checked 2026-11-03). The rest of the request, store, max_output_tokens and
+# service_tier, is not among the count's parameters.
+COUNTED = ("model", "input", "reasoning", "text")
 
 
 class OpenAIProvider(AIProvider):
@@ -400,68 +440,15 @@ class OpenAIProvider(AIProvider):
         max_output_tokens: int | None = None,
         reasoning_effort: str | None = None,
         json_schema_format: JsonSchemaFormat | None = None,
+        timeout_seconds: float | None = None,
     ) -> GenerationResult:
-        request = {
-            "model": self._config.model,
-            "input": prompt,
-            "store": False,
-        }
-
-        # The caller's limit, never above the configured one.
-        output_limit = self._config.max_output_tokens
-
-        if max_output_tokens is not None:
-            output_limit = (
-                max_output_tokens
-                if output_limit is None
-                else min(max_output_tokens, output_limit)
-            )
-
-        if output_limit is not None:
-            request["max_output_tokens"] = output_limit
-
-        if reasoning_effort is not None:
-            request["reasoning"] = {"effort": reasoning_effort}
-
-        if self._config.service_tier is not None:
-            request["service_tier"] = self._config.service_tier
-
-        if json_schema_format is not None:
-            request["text"] = {
-                "format": {
-                    "type": "json_schema",
-                    "name": json_schema_format.name,
-                    "schema": json_schema_format.schema,
-                    "strict": True,
-                }
-            }
-
+        request = self._request(
+            prompt, max_output_tokens, reasoning_effort, json_schema_format
+        )
         started_at = time.perf_counter()
-        try:
-            response = self._client.responses.create(**request)
-        except APITimeoutError:
-            raise AIProviderTimeoutError(
-                "The provider request timed out."
-            ) from None
-        except APIConnectionError:
-            raise AIProviderConnectionError(
-                "Could not reach the provider."
-            ) from None
-        except RateLimitError:
-            raise AIProviderRateLimitError(
-                "The provider rate limit or quota was exceeded.",
-                sent=SendState.ANSWERED,
-            ) from None
-        except APIStatusError as error:
-            raise AIProviderResponseError(
-                f"The provider returned an error response "
-                f"(HTTP {error.status_code}).",
-                sent=SendState.ANSWERED,
-            ) from None
-        except APIError:
-            raise AIProviderResponseError(
-                "The provider request failed."
-            ) from None
+        response = self._answer(
+            self._client.responses.create, request, timeout_seconds
+        )
         latency_seconds = time.perf_counter() - started_at
         # Answered: whatever comes of it, what it used is known as far as reported.
         usage = _usage_of(response)
@@ -506,4 +493,119 @@ class OpenAIProvider(AIProvider):
             reasoning_tokens=usage.reasoning_tokens,
             service_tier=usage.service_tier,
             usage_malformed=usage.malformed,
+            cache_write_30m_tokens=usage.cache_write_30m_tokens,
+            cache_write_12h_tokens=usage.cache_write_12h_tokens,
         )
+
+    def count_input_tokens(
+        self,
+        prompt: str,
+        reasoning_effort: str | None = None,
+        json_schema_format: JsonSchemaFormat | None = None,
+        timeout_seconds: float | None = None,
+    ) -> int:
+        """The service's count of the input of the request generate_text
+        would send: the same request, with only what the count takes
+        (COUNTED). Errors and timeouts are told as generate_text tells them;
+        a count that is not a whole number of 1 or more is refused."""
+        request = self._request(
+            prompt, None, reasoning_effort, json_schema_format
+        )
+        counted = {key: request[key] for key in COUNTED if key in request}
+        response = self._answer(
+            self._client.responses.input_tokens.count, counted, timeout_seconds
+        )
+        count = getattr(response, "input_tokens", None)
+
+        if not is_count(count) or count < 1:
+            raise AIProviderResponseError(
+                "The provider returned no usable input token count.",
+                sent=SendState.ANSWERED,
+            )
+
+        return count
+
+    def _request(
+        self,
+        prompt: str,
+        max_output_tokens: int | None,
+        reasoning_effort: str | None,
+        json_schema_format: JsonSchemaFormat | None,
+    ) -> dict:
+        """The one request both generate_text and count_input_tokens start from."""
+        request = {
+            "model": self._config.model,
+            "input": prompt,
+            "store": False,
+        }
+
+        # The caller's limit, never above the configured one.
+        output_limit = self._config.max_output_tokens
+
+        if max_output_tokens is not None:
+            output_limit = (
+                max_output_tokens
+                if output_limit is None
+                else min(max_output_tokens, output_limit)
+            )
+
+        if output_limit is not None:
+            request["max_output_tokens"] = output_limit
+
+        if reasoning_effort is not None:
+            request["reasoning"] = {"effort": reasoning_effort}
+
+        if self._config.service_tier is not None:
+            request["service_tier"] = self._config.service_tier
+
+        if json_schema_format is not None:
+            request["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": json_schema_format.name,
+                    "schema": json_schema_format.schema,
+                    "strict": True,
+                }
+            }
+
+        return request
+
+    def _answer(self, method, request: dict, timeout_seconds: float | None):
+        """Hand one request to the SDK and tell its errors apart by how far it got.
+
+        timeout_seconds, when given, is what this request may still take,
+        never more than the configured timeout. Like that one, the SDK applies
+        it to each part of the request (connecting, reading, …): it is no
+        deadline on the whole."""
+        options = {}
+
+        if timeout_seconds is not None:
+            options["timeout"] = min(
+                timeout_seconds, self._config.timeout_seconds
+            )
+
+        try:
+            return method(**request, **options)
+        except APITimeoutError:
+            raise AIProviderTimeoutError(
+                "The provider request timed out."
+            ) from None
+        except APIConnectionError:
+            raise AIProviderConnectionError(
+                "Could not reach the provider."
+            ) from None
+        except RateLimitError:
+            raise AIProviderRateLimitError(
+                "The provider rate limit or quota was exceeded.",
+                sent=SendState.ANSWERED,
+            ) from None
+        except APIStatusError as error:
+            raise AIProviderResponseError(
+                f"The provider returned an error response "
+                f"(HTTP {error.status_code}).",
+                sent=SendState.ANSWERED,
+            ) from None
+        except APIError:
+            raise AIProviderResponseError(
+                "The provider request failed."
+            ) from None

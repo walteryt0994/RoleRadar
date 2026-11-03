@@ -1094,3 +1094,123 @@ def test_no_service_tier_is_sent_unless_configured(provider):
 def test_config_rejects_a_service_tier_that_is_not_a_short_name(tier):
     with pytest.raises(AIProviderConfigError):
         OpenAIProviderConfig(**_config_values(service_tier=tier))
+
+
+# --- counting a request's input (U2-C4 prerequisites) -------------------------------------------------
+
+
+COUNTING_CONFIG = OpenAIProviderConfig(
+    api_key="test-key-not-real",
+    model="test-model",
+    timeout_seconds=30.0,
+    max_retries=0,
+    max_output_tokens=500,
+    service_tier="default",
+)
+SCHEMA = JsonSchemaFormat("synthetic_format", {"type": "object"})
+
+
+@pytest.fixture
+def counting():
+    with patch("app.ai_provider.OpenAI"):
+        provider = OpenAIProvider(config=COUNTING_CONFIG)
+
+    provider._client.responses.create.return_value = _fake_response()
+    provider._client.responses.input_tokens.count.return_value = types.SimpleNamespace(
+        object="response.input_tokens", input_tokens=321
+    )
+
+    return provider
+
+
+def test_a_count_takes_the_request_a_generation_would_send_less_what_a_count_does_not_take(counting):
+    assert counting.count_input_tokens("Parse this.", reasoning_effort="low", json_schema_format=SCHEMA) == 321
+
+    counting.generate_text("Parse this.", reasoning_effort="low", json_schema_format=SCHEMA)
+    counted = counting._client.responses.input_tokens.count.call_args.kwargs
+    created = counting._client.responses.create.call_args.kwargs
+
+    # The prompt (input) and the format (text) are counted as they are sent; only these three are not.
+    assert set(counted) == {"model", "input", "reasoning", "text"}
+    assert counted == {key: created[key] for key in counted}
+    assert set(created) - set(counted) == {"store", "max_output_tokens", "service_tier"}
+
+
+def test_a_request_is_given_the_time_left_and_never_more_than_the_configured_timeout(counting):
+    counting.count_input_tokens("Parse this.", timeout_seconds=12.5)
+    assert counting._client.responses.input_tokens.count.call_args.kwargs["timeout"] == 12.5
+
+    counting.count_input_tokens("Parse this.", timeout_seconds=99)
+    assert counting._client.responses.input_tokens.count.call_args.kwargs["timeout"] == 30.0
+
+    counting.generate_text("Parse this.", timeout_seconds=7)
+    assert counting._client.responses.create.call_args.kwargs["timeout"] == 7
+
+    counting.generate_text("Parse this.")
+    assert "timeout" not in counting._client.responses.create.call_args.kwargs
+
+
+@pytest.mark.parametrize(
+    "raised, expected, sent",
+    [
+        (lambda: APITimeoutError(_fake_request()), AIProviderTimeoutError, SendState.HANDED),
+        (lambda: APIConnectionError(request=_fake_request()), AIProviderConnectionError, SendState.HANDED),
+        (lambda: RateLimitError("rate limited", response=_fake_http_response(429), body=None), AIProviderRateLimitError, SendState.ANSWERED),
+        (lambda: APIStatusError("bad request", response=_fake_http_response(400), body=None), AIProviderResponseError, SendState.ANSWERED),
+    ],
+    ids=["timeout", "connection", "rate-limit", "status"],
+)
+def test_a_count_that_fails_says_how_far_it_got(counting, raised, expected, sent):
+    counting._client.responses.input_tokens.count.side_effect = raised()
+
+    with pytest.raises(expected) as failed:
+        counting.count_input_tokens("Parse this.")
+
+    assert failed.value.sent is sent and failed.value.usage is None
+
+
+@pytest.mark.parametrize("count", [None, 0, -1, True, "7", 1.5], ids=["none", "zero", "negative", "bool", "text", "fraction"])
+def test_a_count_that_is_no_whole_number_of_one_or_more_is_refused_as_answered(counting, count):
+    counting._client.responses.input_tokens.count.return_value = types.SimpleNamespace(input_tokens=count)
+
+    with pytest.raises(AIProviderResponseError) as refused:
+        counting.count_input_tokens("Parse this.")
+
+    assert refused.value.sent is SendState.ANSWERED
+
+
+def test_a_provider_that_cannot_count_stops_before_anything_is_sent():
+    class Generating(AIProvider):
+        def generate_text(self, prompt, **options):
+            raise AssertionError("never asked")
+
+    with pytest.raises(AIProviderConfigError) as refused:
+        Generating().count_input_tokens("Parse this.")
+
+    assert refused.value.sent is SendState.NOT_SENT
+
+
+@pytest.mark.parametrize(
+    "details, kept",
+    [
+        # SDK 3.8.0 does not declare the split and keeps it as a mapping.
+        ({"ttl_30m_tokens": 3, "ttl_12h_tokens": 4}, (3, 4, False)),
+        (types.SimpleNamespace(ttl_30m_tokens=7, ttl_12h_tokens=0), (7, 0, False)),
+        (None, (None, None, False)),
+        ({"ttl_30m_tokens": "3", "ttl_12h_tokens": 4}, (None, 4, True)),
+    ],
+    ids=["mapping", "object", "not-said", "not-a-count"],
+)
+def test_cache_writes_by_how_long_they_are_kept_are_read_as_the_sdk_keeps_them(provider, details, kept):
+    response = _fake_response()
+    inputs = types.SimpleNamespace(cached_tokens=0, cache_write_tokens=7)
+
+    if details is not None:
+        inputs.cache_write_tokens_details = details
+
+    response.usage = types.SimpleNamespace(input_tokens=42, output_tokens=7, total_tokens=49, input_tokens_details=inputs)
+    provider._client.responses.create.return_value = response
+    result = provider.generate_text("Parse this job description.")
+
+    assert (result.cache_write_30m_tokens, result.cache_write_12h_tokens, result.usage_malformed) == kept
+    assert result.usage.cache_write_30m_tokens == kept[0]

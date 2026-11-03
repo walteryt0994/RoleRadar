@@ -16,15 +16,18 @@ provider (TaskStore.hand_on), after the gate of a real service has reserved
 its cost and made its own checks: a stop that came first keeps the request
 back, and the gate releases the reservation. From there the request is out:
 a stop cannot call it back, and its late answer is dropped (TaskStore.finish).
-It counts as sent once it comes back having gone out, or perhaps gone out
-(ai_provider.went_out), the rule the ledger is settled by: a timeout or a lost
-connection counts; a request its provider stopped before sending, with
-nothing reported for it, does not.
+It is counted once it comes back, by kind (a real service's count of the
+input, or a generation) and as sent or maybe sent (app.live_gate.delivery),
+the rule the ledger is settled by: a timeout or a lost connection counts as
+maybe; a request its provider stopped before sending, with nothing reported
+for it, not at all.
 
-A request the gate stops ends the task as rejected with the gate's reason; a
-provider that cannot be built, or is not the approved one, as failed with
-nothing sent; a request its provider stops on its own setup, as failed with
-that reason. Each keeps the count of the requests sent before.
+A request the gate stops ends the task as rejected with the gate's reason,
+a count that failed or gave no usable number among them (no rule fallback
+follows it); a provider that cannot be built, or is not the approved one,
+as failed with nothing sent; a request its provider stops on its own setup,
+as failed with that reason. Each keeps the count of the requests sent
+before, a count that went out included.
 """
 import logging
 from dataclasses import replace
@@ -34,6 +37,7 @@ from app.analysis_contracts import AnalysisFailure, AnalysisResult, AnalysisStat
 from app.experience_analysis import analyze_selected_experiences
 from app.job_analysis.service import ProviderUnavailable
 from app.job_analysis.tasks import Step, TaskStore
+from app.library.sends import Call, Delivery, Sends
 from app.live_gate import Blocked, LiveBlocked, LiveRefused
 
 logger = logging.getLogger("roleradar.job_analysis")
@@ -48,6 +52,8 @@ GATE_REASONS = {
     Blocked.COST: RejectionReason.GATE_COST,
     Blocked.CLOSED: RejectionReason.GATE_CLOSED,
     Blocked.ENDED: RejectionReason.GATE_ENDED,
+    Blocked.COUNT: RejectionReason.GATE_COUNT,
+    Blocked.INPUT: RejectionReason.GATE_INPUT,
 }
 
 
@@ -100,17 +106,15 @@ class _Sending:
     def __init__(self, store: TaskStore, task_id: str):
         self._store = store
         self._task_id = task_id
-        self.sent = 0
+        self.sends = Sends()
 
-    def hand_on(self) -> None:
-        if not self._store.hand_on(self._task_id):
+    def hand_on(self, call: Call) -> None:
+        if not self._store.hand_on(self._task_id, call):
             raise TaskStopped()
 
-    def came_back(self, went_out: bool) -> None:
-        self._store.came_back(self._task_id, went_out)
-
-        if went_out:
-            self.sent += 1
+    def came_back(self, call: Call, delivered: Delivery) -> None:
+        self._store.came_back(self._task_id, call, delivered)
+        self.sends = self.sends.plus(call, delivered)
 
 
 def run_task(store: TaskStore, database, task_id: str, provider_for) -> None:
@@ -131,7 +135,7 @@ def run_task(store: TaskStore, database, task_id: str, provider_for) -> None:
             status=status,
             task_fingerprint=task.fingerprint,
             mode="simulation" if task.request.recipient.provider == "simulation" else "live",
-            requests_sent=sending.sent,
+            requests_sent=sending.sends.total,
             problem=problem,
         )
 
@@ -161,5 +165,6 @@ def run_task(store: TaskStore, database, task_id: str, provider_for) -> None:
         logger.error("an analysis task failed unexpectedly (%s)", type(error).__name__)
         result = ended(AnalysisStatus.FAILED, INTERNAL_ERROR)
 
-    # One count for every outcome, the store's own: the requests that went out or may have.
-    store.finish(task_id, replace(result, requests_sent=sending.sent))
+    # One count for every outcome, the store's own: counts and generations that went out or may have
+    # (the store keeps them apart, by kind and by how sure).
+    store.finish(task_id, replace(result, requests_sent=sending.sends.total))
