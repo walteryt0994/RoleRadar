@@ -25,7 +25,10 @@ the real provider. An app opens one gate, for one approval (open_gate):
   by item; above the reservation it is charged in full and the approval
   paused; without usable usage it is kept at a conservative amount, as cost
   still to be checked, and the approval paused; a request its provider says
-  never left is released. Settling it again changes nothing.
+  never left is released. Settling it again changes nothing. The ledger row
+  keeps which check the usage failed, or that its cache writes were priced
+  by a documented default, and the log says the same with the cache counts
+  (C4 R1); neither keeps anything the request or the answer carried.
 
 What a request is reserved at comes from the approval's basis. A real
 service uses a budget policy (FixedReserve, U2-C cost control): every
@@ -74,6 +77,7 @@ from sqlalchemy import select
 
 from app.ai_provider import (
     AIProvider,
+    CacheWriteSplit,
     GenerationResult,
     JsonSchemaFormat,
     OpenAIProvider,
@@ -108,13 +112,32 @@ COUNTED = "counted"  # counted and narrowed; its generation may be out
 COUNT_SENT = "count_sent"  # its count went out
 COUNT_MAYBE = "count_maybe"  # its count may have gone out
 # Of a request whose usage tells nothing usable, or that a restart found reserved:
-UNKNOWN_USAGE = "unknown_usage"  # it was answered
+UNKNOWN_USAGE = "unknown_usage"  # it was answered (the approval's pause; rows before C4 R1 said only this)
 NO_ANSWER = "no_answer"  # no answer came: it may have gone out
 INTERRUPTED = "interrupted"  # a generation may have gone out (a counted group: after its count)
 INTERRUPTED_COUNTING = "interrupted_counting"  # only its count may have gone out
+# Of an answered request, why its usage could not be priced (account), in place of UNKNOWN_USAGE:
+USAGE_MISSING = "usage_missing"  # no usage, or no input or output count
+USAGE_MALFORMED = "usage_malformed"  # a count that is no count
+TIER_MISMATCH = "tier_mismatch"  # run on another service tier than approved
+INPUT_OVER_RANGE = "input_over_range"  # more input than the approval's prices were checked for
+CACHE_OVER_INPUT = "cache_over_input"  # cache reads and writes together more than the input
+CACHE_COUNT_MISSING = "cache_count_missing"  # a cache item billed on its own, its count not given
+CACHE_SPLIT_ABSENT = "cache_split_absent"  # writes, nothing said of how long they are kept, no default to go by
+CACHE_SPLIT_UNRECOGNIZED = "cache_split_unrecognized"  # said under other names or in another form
+CACHE_SPLIT_MALFORMED = "cache_split_malformed"  # said with something that is no count
+CACHE_SPLIT_INCOMPLETE = "cache_split_incomplete"  # a breakdown with neither count in it
+CACHE_SPLIT_MISMATCH = "cache_split_mismatch"  # the two not adding up to the writes
+CACHE_WRITE_12H = "cache_write_12h"  # kept 12 hours: no price is approved for that
+REASONING_OVER_OUTPUT = "reasoning_over_output"
+TOTAL_MISMATCH = "total_mismatch"  # a total that is not input plus output
 # Of a request whose usage could be priced:
 OVER_RESERVATION = "over_reservation"
 ABOVE_COUNT = "above_count"  # its input came out above its count
+# Writes said nothing of how long they are kept, priced as kept for the documented default (DefaultCacheTtl).
+CACHE_TTL_DEFAULT = "cache_ttl_default"
+# How long the writes an approval's cache-write price is for are kept.
+APPROVED_WRITE_TTL = "30m"
 
 
 class RequestUnit(StrEnum):
@@ -268,6 +291,28 @@ PLAIN_TEXT_REQUEST = frozenset({"model", "input", "store", "max_output_tokens", 
 
 
 @dataclass(frozen=True)
+class DefaultCacheTtl:
+    """Why writes reported with nothing said of how long they are kept may be priced as kept for ttl (C4 R1).
+
+    A request under a budget policy sets nothing about caching: its body has
+    only the names of PLAIN_TEXT_REQUEST and its input is plain text, so no
+    cache options and no breakpoints. For its model the provider documents
+    how long writes are kept then (source, read on checked_on). A reviewed
+    basis of the policy it belongs to, never a setting, and only for writes
+    of which nothing at all is said: a breakdown given in whatever way, a
+    12-hour write among them, is never replaced by it.
+    """
+
+    ttl: str
+    source: str
+    checked_on: str
+
+
+# GPT-5.6 and later: "Omitting both settings preserves the default "30m" behavior".
+GPT_5_6_DEFAULT_TTL = DefaultCacheTtl("30m", "https://developers.openai.com/api/docs/guides/prompt-caching", "2026-11-03")
+
+
+@dataclass(frozen=True)
 class FixedReserve:
     """A budget policy (U2-C cost control): what each request is reserved at, and how large it may be.
 
@@ -282,15 +327,21 @@ class FixedReserve:
     is an application-side budget (APPLICATION), checked before each
     request: a request already out may cost more than it was reserved at.
     name is its version; synthetic ones are made up for tests.
+    default_cache_ttl, where given, is how long the model keeps writes of
+    which nothing is said (DefaultCacheTtl); without it such writes are
+    unknown.
     """
 
     name: str
     reserve_input_tokens: int
     max_payload_bytes: int
     synthetic: bool = False
+    default_cache_ttl: DefaultCacheTtl | None = None
 
 
-FIXED_RESERVE_V1 = FixedReserve("fixed_reserve_v1", reserve_input_tokens=16_000, max_payload_bytes=32_000)
+FIXED_RESERVE_V1 = FixedReserve(
+    "fixed_reserve_v1", reserve_input_tokens=16_000, max_payload_bytes=32_000, default_cache_ttl=GPT_5_6_DEFAULT_TTL
+)
 # Budget policies by (provider, model, service tier): a reviewed change of this code, never a setting. Being
 # listed lets nothing out by itself: a real service also needs ROLERADAR_ANALYSIS_MODE=live and an approval
 # written out in full, and the default stays the simulation.
@@ -427,8 +478,23 @@ def delivery(sent: SendState, usage: Usage | None) -> Delivery:
     return Delivery.MAYBE if sent is SendState.HANDED else Delivery.NOT_SENT
 
 
-def charge(usage: Usage | None, terms: ApprovalTerms) -> int | None:
-    """What a generation cost by the approval's prices, rounded up; None when its usage cannot tell.
+@dataclass(frozen=True)
+class Accounting:
+    """What a generation's usage comes to by the approval's prices (account).
+
+    amount is its cost, or None when the usage cannot tell, and then problem
+    says why (USAGE_MISSING, TIER_MISMATCH, CACHE_SPLIT_ABSENT, …); basis is
+    CACHE_TTL_DEFAULT when its writes were priced by a documented default.
+    Neither holds anything the request or the answer carried.
+    """
+
+    amount: int | None
+    problem: str | None = None
+    basis: str | None = None
+
+
+def account(usage: Usage | None, terms: ApprovalTerms, default_ttl: DefaultCacheTtl | None = None) -> Accounting:
+    """What a generation cost by the approval's prices, rounded up, or why its usage cannot tell.
 
     The usage is checked whole before anything is priced. Every count given
     must be a whole number of 0 or more, and the counts must agree, whether
@@ -439,14 +505,23 @@ def charge(usage: Usage | None, terms: ApprovalTerms) -> int | None:
     approved service tier must be given, the input no larger than the
     approval's prices were checked for, and so must the count of a cache
     item billed on its own; the other counts may be left out. Where writes
-    are billed on their own, they must say how long they are kept, and none
-    may be kept longer than the default: no price is approved for that. A
-    cache item billed on its own is taken out of the input and billed once
-    at its own price; reasoning is billed as output, never again. Anything
-    else, or usage its provider found malformed, is unknown.
+    are billed on their own, the service must say how long they are kept,
+    under the documented names and nothing else, and none may be kept
+    longer than the default: no price is approved for that. Only where
+    it says nothing at all, and default_ttl (the policy's DefaultCacheTtl)
+    gives the approved write's lifetime, are the writes priced as kept that
+    long, and the basis says so. A cache item billed on its own is taken out
+    of the input and billed once at its own price; reasoning is billed as
+    output, never again. Anything else, or usage its provider found
+    malformed, is unknown, with the first check it failed.
     """
-    if usage is None or usage.malformed:
-        return None
+    if usage is None:
+        return Accounting(None, USAGE_MISSING)
+
+    split = usage.write_split
+
+    if usage.malformed or split is CacheWriteSplit.MALFORMED:
+        return Accounting(None, CACHE_SPLIT_MALFORMED if split is CacheWriteSplit.MALFORMED else USAGE_MALFORMED)
 
     counts = (
         usage.input_tokens,
@@ -460,32 +535,51 @@ def charge(usage: Usage | None, terms: ApprovalTerms) -> int | None:
     )
 
     if not all(count is None or is_count(count) for count in counts):
-        return None
+        return Accounting(None, USAGE_MALFORMED)
 
-    if usage.input_tokens is None or usage.output_tokens is None or usage.service_tier != terms.service_tier:
-        return None
+    if usage.input_tokens is None or usage.output_tokens is None:
+        return Accounting(None, USAGE_MISSING)
+
+    if usage.service_tier != terms.service_tier:
+        return Accounting(None, TIER_MISMATCH)
 
     if usage.input_tokens > terms.max_input_tokens:
         # Beyond what the approval's prices were checked for.
-        return None
+        return Accounting(None, INPUT_OVER_RANGE)
 
-    if (usage.cache_read_tokens or 0) + (usage.cache_write_tokens or 0) > usage.input_tokens:
-        return None
+    writes = usage.cache_write_tokens or 0
+
+    if (usage.cache_read_tokens or 0) + writes > usage.input_tokens:
+        return Accounting(None, CACHE_OVER_INPUT)
+
+    if split is CacheWriteSplit.OTHER:
+        # Whatever else it says may be writes kept otherwise: none of it is guessed at.
+        return Accounting(None, CACHE_SPLIT_UNRECOGNIZED)
 
     kept = (usage.cache_write_30m_tokens, usage.cache_write_12h_tokens)
 
-    if any(count is not None for count in kept) and sum(count or 0 for count in kept) != (usage.cache_write_tokens or 0):
-        return None
+    if any(count is not None for count in kept) and sum(count or 0 for count in kept) != writes:
+        return Accounting(None, CACHE_SPLIT_MISMATCH)
 
-    if terms.prices.cache_write is not None and usage.cache_write_tokens:
-        if all(count is None for count in kept) or usage.cache_write_12h_tokens:
-            return None
+    basis = None
+
+    if terms.prices.cache_write is not None and writes:
+        if split is CacheWriteSplit.ABSENT:
+            if default_ttl is None or default_ttl.ttl != APPROVED_WRITE_TTL:
+                return Accounting(None, CACHE_SPLIT_ABSENT)
+
+            basis = CACHE_TTL_DEFAULT
+        elif usage.cache_write_12h_tokens:
+            return Accounting(None, CACHE_WRITE_12H)
+        elif all(count is None for count in kept):
+            # A breakdown with neither count; one count adding up to the writes says the other is 0.
+            return Accounting(None, CACHE_SPLIT_INCOMPLETE)
 
     if usage.reasoning_tokens is not None and usage.reasoning_tokens > usage.output_tokens:
-        return None
+        return Accounting(None, REASONING_OVER_OUTPUT)
 
     if usage.total_tokens is not None and usage.total_tokens != usage.input_tokens + usage.output_tokens:
-        return None
+        return Accounting(None, TOTAL_MISMATCH)
 
     prices = terms.prices
     plain = usage.input_tokens
@@ -497,12 +591,27 @@ def charge(usage: Usage | None, terms: ApprovalTerms) -> int | None:
             continue
 
         if count is None:
-            return None
+            return Accounting(None, CACHE_COUNT_MISSING)
 
         total += count * price
         plain -= count
 
-    return _micro(total + plain * prices.input + usage.output_tokens * prices.output)
+    return Accounting(_micro(total + plain * prices.input + usage.output_tokens * prices.output), basis=basis)
+
+
+def charge(usage: Usage | None, terms: ApprovalTerms) -> int | None:
+    """What a generation cost by the approval's prices, rounded up; None when its usage cannot tell (account,
+    with no default for writes said nothing of)."""
+    return account(usage, terms).amount
+
+
+def _cache_facts(usage: Usage, terms: ApprovalTerms) -> str:
+    """What a usage says of its cache and tier, for the log: counts and how they were given, nothing it carried."""
+    return (
+        f"cache read {usage.cache_read_tokens}, cache write {usage.cache_write_tokens}, "
+        f"by lifetime {usage.write_split.value} (30m {usage.cache_write_30m_tokens}, 12h {usage.cache_write_12h_tokens}), "
+        f"tier {'as approved' if usage.service_tier == terms.service_tier else 'not as approved'}"
+    )
 
 
 def _micro(amount: Decimal) -> int:
@@ -905,12 +1014,13 @@ class LiveGate:
         generation never went out is released only if its count never did
         either; otherwise it is charged its count, as unknown (and paused)
         when that count only may have gone out and has a price. A generation
-        that went out is priced from its usage (charge) with its count's price
-        added: within the group's reservation it is settled, above it, or with
-        more input than counted, charged in full and paused. Usage that
-        cannot be priced keeps a conservative amount, an estimate and no
-        settlement: the reservation, or the reported counts at the
-        reservation price if more.
+        that went out is priced from its usage (account, with the policy's
+        default for writes said nothing of) with its count's price added:
+        within the group's reservation it is settled, above it, or with more
+        input than counted, charged in full and paused. Usage that cannot be
+        priced keeps a conservative amount, an estimate and no settlement: the
+        reservation, or the reported counts at the reservation price if more;
+        its row says which check it failed.
         """
         with self._database.transaction() as db:
             row = db.get(LiveRequest, request_id)
@@ -945,12 +1055,20 @@ class LiveGate:
                     if row.state == LiveRequestState.UNKNOWN:
                         _pause(db, row.approval_id, COUNT_MAYBE, now)
             else:
-                cost = charge(usage, self.terms)
+                accounted = account(usage, self.terms, self.policy.default_cache_ttl if self.policy else None)
+                cost = accounted.amount
+
+                if usage is not None and (cost is None or accounted.basis):
+                    logger.warning(
+                        "a real request's usage %s: %s",
+                        f"could not be priced ({accounted.problem})" if cost is None else f"was priced by {accounted.basis}",
+                        _cache_facts(usage, self.terms),
+                    )
 
                 if cost is None:
                     row.state = LiveRequestState.UNKNOWN
                     row.charged_micro_usd = self._conservative(row.reserved_micro_usd, fee, usage)
-                    row.reason = UNKNOWN_USAGE if delivery(sent, usage) is Delivery.SENT else NO_ANSWER
+                    row.reason = accounted.problem if delivery(sent, usage) is Delivery.SENT else NO_ANSWER
                     _pause(db, row.approval_id, UNKNOWN_USAGE, now)
                 else:
                     total = fee + cost
@@ -965,7 +1083,7 @@ class LiveGate:
                     else:
                         row.state = LiveRequestState.SETTLED
                         row.charged_micro_usd = total
-                        row.reason = None
+                        row.reason = accounted.basis
 
             row.settled_at = now
 

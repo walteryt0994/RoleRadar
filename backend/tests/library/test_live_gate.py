@@ -4,6 +4,7 @@ Nothing here reaches a real service: the providers are synthetic, the one
 real provider class is built around a patched SDK client and must be refused
 before anything is asked of it, and the launcher blocks the network anyway.
 """
+import logging
 import subprocess
 import sys
 import threading
@@ -14,6 +15,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from openai.types.responses import ResponseUsage
 from sqlalchemy import select
 
 from app import live_gate
@@ -24,6 +26,7 @@ from app.ai_provider import (
     AIProviderError,
     AIProviderRateLimitError,
     AIProviderTimeoutError,
+    CacheWriteSplit,
     GenerationResult,
     OpenAIProvider,
     OpenAIProviderConfig,
@@ -40,13 +43,16 @@ from app.library.models import LiveApproval, LiveRequest, LiveRequestState, crea
 from app.library.sends import Call, Delivery
 from app.live_gate import (
     FIXED_RESERVE_V1,
+    GPT_5_6_DEFAULT_TTL,
     ApprovalTerms,
     Blocked,
+    DefaultCacheTtl,
     FixedReserve,
     InputBound,
     LiveBlocked,
     LiveRefused,
     PriceBasis,
+    account,
     charge,
     open_gate,
     reservation,
@@ -145,6 +151,7 @@ def answer(usage: Usage) -> GenerationResult:
         usage_malformed=usage.malformed,
         cache_write_30m_tokens=usage.cache_write_30m_tokens,
         cache_write_12h_tokens=usage.cache_write_12h_tokens,
+        cache_write_split=usage.cache_write_split,
     )
 
 
@@ -544,17 +551,18 @@ def test_a_cost_above_its_reservation_is_charged_in_full_and_pauses_the_approval
     [
         # No answer came: it may have gone out.
         (AIProviderTimeoutError("The provider request timed out."), "no_answer"),
+        # Answered: the row says which check its usage failed (C4 R1); the approval's pause is unknown_usage.
         (
             Usage(input_tokens=120, output_tokens=30, cache_read_tokens=40, cache_write_tokens=10, service_tier="priority"),
-            "unknown_usage",
+            "tier_mismatch",
         ),
-        (Usage(service_tier="default"), "unknown_usage"),
+        (Usage(service_tier="default"), "usage_missing"),
         (RuntimeError("synthetic failure"), "no_answer"),
-        (replace(USED, total_tokens=9999), "unknown_usage"),
-        (replace(USED, input_tokens=-10_000), "unknown_usage"),
-        (replace(USED, malformed=True), "unknown_usage"),
+        (replace(USED, total_tokens=9999), "total_mismatch"),
+        (replace(USED, input_tokens=-10_000), "usage_malformed"),
+        (replace(USED, malformed=True), "usage_malformed"),
         # Written to the cache for 12 hours: no price is approved for that.
-        (replace(USED, cache_write_30m_tokens=0, cache_write_12h_tokens=10), "unknown_usage"),
+        (replace(USED, cache_write_30m_tokens=0, cache_write_12h_tokens=10), "cache_write_12h"),
     ],
     ids=["timeout", "other-tier", "no-counts", "not-a-provider-error", "total", "negative", "malformed", "kept-12h"],
 )
@@ -1189,7 +1197,7 @@ def test_usage_beyond_the_checked_prices_is_kept_at_a_conservative_amount_and_pa
     (row,) = requests_of(database)
 
     # An estimate, never a settlement: the reported counts at the reservation price, as that is more than the reservation.
-    assert (row.state, row.reason, row.charged_micro_usd) == (LiveRequestState.UNKNOWN, "unknown_usage", 5000 * 25 // 10 + 30 * 8)
+    assert (row.state, row.reason, row.charged_micro_usd) == (LiveRequestState.UNKNOWN, "input_over_range", 5000 * 25 // 10 + 30 * 8)
     assert approval_of(database).paused_reason == "unknown_usage"
 
 
@@ -1724,12 +1732,12 @@ def test_a_request_body_with_more_than_plain_text_is_refused_before_anything_is_
             "over_reservation",
         ),
         # Cost still to be checked: kept at no less than the reservation, and the approval pauses.
-        (Usage(service_tier="default"), "unknown", "unknown_usage", ANALYSIS_RESERVE, "unknown_usage"),
-        (replace(USED, cache_write_30m_tokens=0, cache_write_12h_tokens=10), "unknown", "unknown_usage", ANALYSIS_RESERVE, "unknown_usage"),
-        (replace(USED, service_tier="priority"), "unknown", "unknown_usage", ANALYSIS_RESERVE, "unknown_usage"),
+        (Usage(service_tier="default"), "unknown", "usage_missing", ANALYSIS_RESERVE, "unknown_usage"),
+        (replace(USED, cache_write_30m_tokens=0, cache_write_12h_tokens=10), "unknown", "cache_write_12h", ANALYSIS_RESERVE, "unknown_usage"),
+        (replace(USED, service_tier="priority"), "unknown", "tier_mismatch", ANALYSIS_RESERVE, "unknown_usage"),
         (AIProviderTimeoutError("The provider request timed out."), "unknown", "no_answer", ANALYSIS_RESERVE, "unknown_usage"),
         # Beyond what the prices were checked for: never priced, kept at the reported counts at the reservation price.
-        (Usage(40_000, 30, 0, 0, 0, 40_030, "default"), "unknown", "unknown_usage", 40_000 * 10 + 30 * 20, "unknown_usage"),
+        (Usage(40_000, 30, 0, 0, 0, 40_030, "default"), "unknown", "input_over_range", 40_000 * 10 + 30 * 20, "unknown_usage"),
     ],
     ids=["usage", "cache", "above-the-plan", "over", "no-usage", "kept-12h", "other-tier", "timeout", "beyond-checked-prices"],
 )
@@ -1760,6 +1768,148 @@ def test_under_a_budget_policy_a_request_is_accounted_from_its_usage_and_anythin
 
         if state == "unknown":
             assert gate.status().unknown_micro_usd == charged
+
+
+# --- cache writes by how long they are kept, and why usage could not be priced (C4 R1) ---------------------
+
+# The second request of the paused C4 batch: 1,974 input tokens, 1,971 of them written to the cache, 266 output.
+C4_SECOND = Usage(1_974, 266, 0, 1_971, 0, 2_240, "default")
+# Its 3 other input tokens at 4, the 1,971 written for 30 minutes at 5 and 266 output at 20: each input token once.
+C4_SECOND_COST = 3 * 4 + 1_971 * 5 + 266 * 20
+
+
+@pytest.mark.parametrize(
+    "usage, default, amount, problem, basis",
+    [
+        # Said as documented: priced at the approved price of 30-minute writes.
+        (replace(C4_SECOND, cache_write_30m_tokens=1_971, cache_write_12h_tokens=0), GPT_5_6_DEFAULT_TTL, C4_SECOND_COST, None, None),
+        # Nothing said: priced by the documented default and marked so; without it, or with another lifetime, unknown.
+        (C4_SECOND, GPT_5_6_DEFAULT_TTL, C4_SECOND_COST, None, "cache_ttl_default"),
+        (C4_SECOND, None, None, "cache_split_absent", None),
+        (C4_SECOND, DefaultCacheTtl("12h", "synthetic", "2026-11-03"), None, "cache_split_absent", None),
+        (Usage(2_000, 100, 500, 1_000, 0, 2_100, "default"), GPT_5_6_DEFAULT_TTL, 200 + 1_000 * 5 + 500 * 4 + 100 * 20, None, "cache_ttl_default"),
+        # What is said is never replaced by the default, however it is said.
+        (replace(C4_SECOND, cache_write_30m_tokens=0, cache_write_12h_tokens=1_971), GPT_5_6_DEFAULT_TTL, None, "cache_write_12h", None),
+        (replace(C4_SECOND, cache_write_30m_tokens=1_000, cache_write_12h_tokens=0), GPT_5_6_DEFAULT_TTL, None, "cache_split_mismatch", None),
+        (replace(C4_SECOND, cache_write_split=CacheWriteSplit.GIVEN), GPT_5_6_DEFAULT_TTL, None, "cache_split_incomplete", None),
+        (replace(C4_SECOND, cache_write_split=CacheWriteSplit.OTHER), GPT_5_6_DEFAULT_TTL, None, "cache_split_unrecognized", None),
+        (
+            replace(C4_SECOND, malformed=True, cache_write_split=CacheWriteSplit.MALFORMED),
+            GPT_5_6_DEFAULT_TTL,
+            None,
+            "cache_split_malformed",
+            None,
+        ),
+        # Nor anything else wrong with the usage: the default answers how long writes are kept, nothing more.
+        (replace(C4_SECOND, service_tier="priority"), GPT_5_6_DEFAULT_TTL, None, "tier_mismatch", None),
+        (replace(C4_SECOND, total_tokens=9_999), GPT_5_6_DEFAULT_TTL, None, "total_mismatch", None),
+        (replace(C4_SECOND, reasoning_tokens=267), GPT_5_6_DEFAULT_TTL, None, "reasoning_over_output", None),
+        (replace(C4_SECOND, cache_read_tokens=4), GPT_5_6_DEFAULT_TTL, None, "cache_over_input", None),
+        (replace(C4_SECOND, input_tokens=32_001, total_tokens=32_267), GPT_5_6_DEFAULT_TTL, None, "input_over_range", None),
+        # The first request of the batch, with no writes, as it was settled: $0.006784.
+        (Usage(831, 173, 0, 0, 0, 1_004, "default"), GPT_5_6_DEFAULT_TTL, 6_784, None, None),
+    ],
+    ids=[
+        "documented", "said-nothing", "no-default", "other-default", "reads-beside", "12-hours", "mismatch",
+        "incomplete", "unrecognized", "malformed", "other-tier", "total", "reasoning", "cache-above-input",
+        "beyond-checked-prices", "no-writes",
+    ],
+)
+def test_usage_is_priced_or_says_which_check_failed_and_a_default_lifetime_fills_only_what_was_never_said(
+    usage, default, amount, problem, basis
+):
+    assert account(usage, budget_terms(), default) == live_gate.Accounting(amount, problem, basis)
+
+
+@pytest.mark.parametrize(
+    "policy, state, reason, charged, paused",
+    [
+        (FIXED_RESERVE_V1, "settled", "cache_ttl_default", C4_SECOND_COST, None),
+        (replace(FIXED_RESERVE_V1, default_cache_ttl=None), "unknown", "cache_split_absent", ANALYSIS_RESERVE, "unknown_usage"),
+    ],
+    ids=["documented-default", "no-default"],
+)
+def test_the_paused_c4_usage_is_priced_by_the_policys_default_or_still_pauses_and_the_ledger_and_log_say_why(
+    gates, ledger, caplog, policy, state, reason, charged, paused
+):
+    database, _ = ledger
+    gate = gates(budget_terms(), policy)
+    caplog.set_level(logging.WARNING, logger="roleradar.live")
+    ask(gate, SyntheticProvider(C4_SECOND))
+    (row,) = requests_of(database)
+
+    assert (row.state, row.reason, row.charged_micro_usd) == (state, reason, charged)
+    assert (row.cache_read_tokens, row.cache_write_tokens) == (0, 1_971)
+    assert approval_of(database).paused_reason == paused
+    # The log says why, with the cache counts and how they were given: nothing the request carried.
+    assert reason in caplog.text and "cache write 1971, by lifetime absent" in caplog.text and PROMPT not in caplog.text
+
+
+def reply_with(details) -> MagicMock:
+    """A completed reply whose usage the SDK has read from JSON, its writes by lifetime given as details (or left out)."""
+    inputs = {"cached_tokens": 0, "cache_write_tokens": 1_971}
+
+    if details is not None:
+        inputs["cache_write_tokens_details"] = details
+
+    reply = MagicMock(status="completed", output=[], output_text="{}", model="gpt-5.6-sol", service_tier="default")
+    reply.usage = ResponseUsage.model_validate(
+        {
+            "input_tokens": 1_974,
+            "input_tokens_details": inputs,
+            "output_tokens": 266,
+            "output_tokens_details": {"reasoning_tokens": 0},
+            "total_tokens": 2_240,
+        }
+    )
+
+    return reply
+
+
+@pytest.mark.parametrize(
+    "details, state, reason, charged",
+    [
+        ({"ttl_30m_tokens": 1_971, "ttl_12h_tokens": 0}, "settled", None, C4_SECOND_COST),
+        (None, "settled", "cache_ttl_default", C4_SECOND_COST),
+        ({"ttl_30m_tokens": 0, "ttl_12h_tokens": 1_971}, "unknown", "cache_write_12h", ANALYSIS_RESERVE),
+        ({"ttl_30m_tokens": 1_971, "ttl_12h_tokens": 0, "ttl_24h_tokens": 0}, "unknown", "cache_split_unrecognized", ANALYSIS_RESERVE),
+        ([1_971, 0], "unknown", "cache_split_unrecognized", ANALYSIS_RESERVE),
+        ({"ttl_30m_tokens": "1971", "ttl_12h_tokens": 0}, "unknown", "cache_split_malformed", ANALYSIS_RESERVE),
+        ({}, "unknown", "cache_split_incomplete", ANALYSIS_RESERVE),
+    ],
+    ids=["documented", "left-out", "12-hours", "another-lifetime", "a-list", "text", "empty"],
+)
+def test_the_real_provider_reads_the_sdks_usage_and_the_gate_prices_or_pauses_by_what_it_says(gates, ledger, details, state, reason, charged):
+    database, _ = ledger
+    real_prices = PriceBasis(Decimal("4"), Decimal("0.4"), Decimal("5"), Decimal("20"), Decimal("10"), "https://synthetic.invalid/pricing", "2026-11-03")
+    approval = budget_terms(prices=real_prices, provider="openai", model="gpt-5.6-sol", endpoint="https://api.openai.com/v1")
+    gate = gates(approval, FIXED_RESERVE_V1)
+
+    with patch("app.ai_provider.OpenAI"), patch("app.ai_provider.DefaultHttpxClient"):
+        provider = OpenAIProvider(
+            OpenAIProviderConfig(
+                api_key="synthetic-not-a-key",
+                model="gpt-5.6-sol",
+                max_retries=0,
+                base_url="https://api.openai.com/v1",
+                use_environment_proxies=False,
+                max_output_tokens=8_000,
+                service_tier="default",
+            )
+        )
+
+    provider._client.responses.create.return_value = reply_with(details)
+
+    with gate.task("analysis", "owner-a", provider) as gated:
+        try:
+            gated.generate_text(PROMPT)
+        except AIProviderError:
+            pass
+
+    (row,) = requests_of(database)
+
+    assert (row.state, row.reason, row.charged_micro_usd) == (state, reason, charged)
+    assert approval_of(database).paused_reason == (None if state == "settled" else "unknown_usage")
 
 
 def test_under_a_budget_policy_a_request_kept_back_before_it_goes_out_is_released(gates, ledger):

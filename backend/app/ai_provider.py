@@ -30,6 +30,24 @@ class SendState(StrEnum):
     ANSWERED = "answered"
 
 
+class CacheWriteSplit(StrEnum):
+    """How a service said how long the cache writes it reported are kept (Usage.cache_write_split)."""
+
+    # Under the documented names (WRITE_TTLS) and no other; each count may still be missing.
+    GIVEN = "given"
+    # Nothing said about it at all.
+    ABSENT = "absent"
+    # Under other names besides, or in another form: what it says is not known.
+    OTHER = "other"
+    # Under the documented names, with something that is no count.
+    MALFORMED = "malformed"
+
+
+# The documented names of the writes by how long they are kept (prompt caching guide, checked 2026-11-03):
+# both are returned, also when one is 0, and they add up to the writes.
+WRITE_TTLS = ("ttl_30m_tokens", "ttl_12h_tokens")
+
+
 @dataclass(frozen=True)
 class Usage:
     """The token counts a service reported for one request and the tier it ran on; nothing it carried.
@@ -38,9 +56,10 @@ class Usage:
     cache_write_tokens among them (two separate parts of it); output_tokens
     counts every output token, reasoning_tokens among them; total_tokens is
     input plus output. cache_write_30m_tokens and cache_write_12h_tokens are
-    the writes by how long they are kept, where the service says. A count the
-    service did not report is None. malformed says that it reported
-    something that is no count: such usage cannot be priced.
+    the writes by how long they are kept, where the service says, and
+    cache_write_split how it said so. A count the service did not report is
+    None. malformed says that it reported something that is no count: such
+    usage cannot be priced.
     """
 
     input_tokens: int | None = None
@@ -53,6 +72,17 @@ class Usage:
     malformed: bool = False
     cache_write_30m_tokens: int | None = None
     cache_write_12h_tokens: int | None = None
+    # As read from a response (_usage_of); None for usage made up here, where the two counts above say it.
+    cache_write_split: CacheWriteSplit | None = None
+
+    @property
+    def write_split(self) -> CacheWriteSplit:
+        if self.cache_write_split is not None:
+            return self.cache_write_split
+
+        given = self.cache_write_30m_tokens is not None or self.cache_write_12h_tokens is not None
+
+        return CacheWriteSplit.GIVEN if given else CacheWriteSplit.ABSENT
 
 
 class AIProviderError(Exception):
@@ -141,6 +171,7 @@ class GenerationResult:
     usage_malformed: bool = False
     cache_write_30m_tokens: int | None = None
     cache_write_12h_tokens: int | None = None
+    cache_write_split: CacheWriteSplit | None = None
 
     @property
     def usage(self) -> Usage:
@@ -155,6 +186,7 @@ class GenerationResult:
             malformed=self.usage_malformed,
             cache_write_30m_tokens=self.cache_write_30m_tokens,
             cache_write_12h_tokens=self.cache_write_12h_tokens,
+            cache_write_split=self.cache_write_split,
         )
 
 
@@ -385,6 +417,7 @@ def _usage_of(response: object) -> Usage:
         **{name: value if is_count(value) else None for name, value in reported.items()},
         service_tier=tier if isinstance(tier, str) else None,
         malformed=any(value is not None and not is_count(value) for value in reported.values()),
+        cache_write_split=_split_of(writes),
     )
 
 
@@ -394,6 +427,28 @@ def _detail(details: object, name: str) -> object:
         return details.get(name)
 
     return getattr(details, name, None)
+
+
+def _split_of(details: object) -> CacheWriteSplit:
+    """How the writes by how long they are kept were given: only the names and whether the counts are counts."""
+    if details is None:
+        return CacheWriteSplit.ABSENT
+
+    if isinstance(details, dict):
+        names = set(details)
+    elif hasattr(details, "model_dump"):
+        # An SDK that declares the breakdown: its fields, declared or not.
+        names = set(details.model_dump())
+    else:
+        return CacheWriteSplit.OTHER
+
+    if not names <= set(WRITE_TTLS):
+        return CacheWriteSplit.OTHER
+
+    if any(count is not None and not is_count(count) for count in (_detail(details, name) for name in WRITE_TTLS)):
+        return CacheWriteSplit.MALFORMED
+
+    return CacheWriteSplit.GIVEN
 
 
 def _has_refusal(response: object) -> bool:
@@ -552,6 +607,7 @@ class OpenAIProvider(AIProvider):
             usage_malformed=usage.malformed,
             cache_write_30m_tokens=usage.cache_write_30m_tokens,
             cache_write_12h_tokens=usage.cache_write_12h_tokens,
+            cache_write_split=usage.cache_write_split,
         )
 
     def count_input_tokens(

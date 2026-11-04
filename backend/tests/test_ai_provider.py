@@ -23,6 +23,7 @@ from app.ai_provider import (
     AIProviderRefusalError,
     AIProviderResponseError,
     AIProviderTimeoutError,
+    CacheWriteSplit,
     JsonSchemaFormat,
     OpenAIProvider,
     OpenAIProviderConfig,
@@ -988,6 +989,8 @@ FULL_USAGE = Usage(
     reasoning_tokens=12,
     total_tokens=150,
     service_tier="default",
+    # The response says nothing of how long its writes are kept (C4 R1).
+    cache_write_split=CacheWriteSplit.ABSENT,
 )
 
 
