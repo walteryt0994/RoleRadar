@@ -10,7 +10,8 @@ The A1-R1 part keeps, as regressions, what the A1 acceptance found handled
 unsafely (its report, section 8, F1-F5), next to what must still hold: a
 real repost is analysed once, and a search that found nothing suitable may
 still say so. The A1-R2 and A1-R3 parts do the same for what the re-checks
-found left (sections 10 and 12).
+found left (sections 10 and 12), and the A2-0 part for a source giving back
+another source's records (A1 acceptance, section 14; A2 pre-check, 2.3).
 """
 import hashlib
 import json
@@ -43,7 +44,7 @@ from app.discovery.contracts import (
     Unlisted,
     search_fingerprint,
 )
-from app.discovery.sources import Access, Permission, Query, Register, SourceEntry, SourceTimeout
+from app.discovery.sources import Access, Permission, Query, Register, SourceEntry, SourceError, SourceTimeout
 from app.discovery.synthetic import CAREERS, LEADS, SyntheticSource
 from app.discovery.tools import (
     StartRefused,
@@ -1472,3 +1473,164 @@ def test_postings_given_back_that_cannot_be_verified_are_counted_and_never_make_
     # The id is never repeated or kept: not to the next step, not in what the search holds or tells.
     assert review(searched.summary) == () and review(claimed.summary) == ()
     assert UNVERIFIABLE not in repr((searched, claimed, outcome, run.found, run.known, run.failed, run.searched))
+
+
+# --- A2-0: a source giving back another source's records (A1 acceptance, 14; A2 pre-check, 2.3) ---
+
+# What a careers search gives back as another source's: a record of the other registered source, and one of a
+# source not registered at all. Their ids are plain, so only the source they name tells them apart.
+FOREIGN_LEAD = "l-foreign-4417"
+FOREIGN_ELSEWHERE = ("unregistered-board", "x-foreign-9902")
+CONTRACT_QUERIES = (
+    Query("数据", None, None, None),
+    Query("数据分析 实习生", "北京", "实习", "数据分析"),
+    Query("数据分析 实习生", "上海", "实习", "数据分析"),
+)
+
+
+def foreign_records():
+    first = synthetic.POSTINGS[0].posting
+
+    return (
+        replace(first, ref=PostingRef(LEADS, FOREIGN_LEAD), identity=None),
+        replace(first, ref=PostingRef(*FOREIGN_ELSEWHERE), identity=None),
+    )
+
+
+@pytest.mark.parametrize("given", ["nothing", "foreign", "foreign_and_own", "every_kind"])
+@pytest.mark.parametrize("covered", ["whole", "part"])
+def test_records_of_another_source_are_a_counted_anomaly_and_never_make_nothing_suitable(
+    database, library, clock, monkeypatch, covered, given
+):
+    """The acceptance's case: a careers search gives back records naming another source as theirs, a source
+    anomaly. They are never taken or named, only counted, and while any came back neither "nothing suitable" nor
+    "nothing in what was searched" may be said. A careers posting given back with them is taken as before; and
+    a source that truly gave back nothing still lets a search say so, of the whole scope or the part searched.
+    """
+    cities = ("北京",) if covered == "whole" else ("北京", "上海")
+    scope = replace(SCOPE, city=replace(SCOPE.city, values=cities), direction=replace(SCOPE.direction, others=Others.EXCLUDED))
+    run = begin(database, clock, confirmation_for(library, scope=scope))
+    first = synthetic.POSTINGS[0].posting
+    lead_record, elsewhere_record = foreign_records()
+    unverifiable = replace(first, ref=ref(UNVERIFIABLE), identity=None)
+    returned = {
+        "nothing": (),
+        "foreign": (lead_record, elsewhere_record),
+        "foreign_and_own": (lead_record, first),
+        "every_kind": (elsewhere_record, unverifiable, first),
+    }[given]
+    monkeypatch.setattr(run.register.adapter(CAREERS), "search", lambda query, timeout: returned)
+    searched = search_postings(run, CAREERS, "数据分析", city="北京", **WITHIN)
+    claimed = finish(run, EndReason.NO_RESULTS)
+    foreign = {"nothing": 0, "foreign": 2, "foreign_and_own": 1, "every_kind": 1}[given]
+    unverified = 1 if given == "every_kind" else 0
+
+    assert searched.outcome is Outcome.DONE
+    assert ("来源异常" in searched.summary) == bool(foreign)
+    assert not foreign or f"另有 {foreign} 条记录不属于这个来源（来源异常），没有采用。" in searched.summary
+
+    if given == "nothing":
+        # The source truly gave back nothing: said as before, of the whole scope or of the part searched.
+        whole = covered == "whole"
+
+        assert claimed.outcome is Outcome.DONE
+        assert claimed.summary == ("查找结束：没有合适结果。" if whole else "查找结束：已查查询无结果，仍有范围未核验。")
+        assert run.ended is (EndReason.NO_RESULTS if whole else EndReason.PARTLY_NO_RESULTS)
+    else:
+        anomaly = "来源返回的记录里{}有 {} 条不属于该来源（来源异常），不能说没有合适结果"
+        unsettled = "还有 1 个岗位没有结论（没有分析、待核验，或者分析没有完成）；"
+        reason = {
+            "foreign": anomaly.format("", 2),
+            "foreign_and_own": unsettled + anomaly.format("另", 1),
+            "every_kind": unsettled + "来源返回的岗位里另有 1 个编号不合要求，无法核验；" + anomaly.format("另", 1),
+        }[given]
+
+        # Neither kind of "nothing" was said, whether or not part of the scope is left.
+        assert (claimed.outcome, claimed.reason, run.ended) == (Outcome.REFUSED, reason, None)
+        # Nothing more is sent for them: the search may still end as enough, with them counted.
+        assert finish(run, EndReason.ENOUGH).outcome is Outcome.DONE and run.ended is EndReason.ENOUGH
+
+    outcome = run.outcome()
+    [record] = outcome.searches
+    own = [ref("c-bj-analyst")] if given in ("foreign_and_own", "every_kind") else []
+
+    assert (record.found, record.foreign, record.unverifiable) == (len(returned), foreign, unverified)
+    assert (outcome.foreign, outcome.unverifiable) == (foreign, unverified)
+    assert outcome.unsearched == (() if covered == "whole" else ("上海 · 实习 · 数据分析",))
+    # The careers posting given back with them is taken as before, and only it.
+    assert list(run.found) == own and [lead.ref for lead in outcome.leads] == own
+    # Their ids are never repeated or kept: not to the next step, not in what the search holds or tells.
+    assert review(searched.summary) == () and review(claimed.summary) == ()
+    held = repr((searched, claimed, outcome, run.found, run.known, run.failed, run.searched))
+
+    assert all(raw not in held for raw in (FOREIGN_LEAD, *FOREIGN_ELSEWHERE, UNVERIFIABLE))
+
+
+def reads_back(register: Register, wanted: PostingRef) -> bool:
+    """Whether the source a reference names reads it back as that very posting."""
+    try:
+        return register.adapter(wanted.source_id).read(wanted, 1.0).posting.ref == wanted
+    except SourceError:
+        return False
+
+
+def source_contract_breaches(register: Register, source_id: str) -> list[str]:
+    """How a registered adapter breaks the source contract the tools rest on: every record a search gives back is
+    the source's own, a read gives back the posting asked for, and a lead points to a posting an official source
+    the tools may call has. A new adapter is held to this before any search uses it."""
+    adapter = register.adapter(source_id)
+    returned = {posting.ref: posting for query in CONTRACT_QUERIES for posting in adapter.search(query, 1.0)}
+    breaches = [] if returned else ["no search gave anything back to check"]
+
+    for posting in returned.values():
+        if posting.ref.source_id != source_id:
+            breaches.append(f"a search gave back a record of {posting.ref.source_id}")
+            continue
+
+        if not reads_back(register, posting.ref):
+            breaches.append("a read did not give back the posting asked for")
+
+        if posting.official is not None:
+            entry = register.entry(posting.official.source_id)
+
+            if entry is None or entry.evidence is not EvidenceLevel.OFFICIAL or register.refusal(entry.source_id):
+                breaches.append("a lead points to no official source the tools may call")
+            elif not reads_back(register, posting.official):
+                breaches.append("a lead points to a posting its official source does not have")
+
+    return breaches
+
+
+@pytest.mark.parametrize("source_id", [entry.source_id for entry in synthetic.register().entries])
+def test_every_registered_adapter_keeps_to_its_own_source_and_its_leads_to_official_postings(source_id):
+    """The contract the fix rests on, for every registered adapter, before a search relies on it."""
+    assert source_contract_breaches(synthetic.register(), source_id) == []
+
+
+def test_the_contract_check_finds_an_adapter_giving_back_another_sources_records(monkeypatch):
+    """The check is not empty: an adapter giving back the leads source's record from careers is found."""
+    register = synthetic.register()
+    lead = synthetic.LEAD_POSTINGS[0].posting
+    monkeypatch.setattr(register.adapter(CAREERS), "search", lambda query, timeout: (lead,))
+
+    assert source_contract_breaches(register, CAREERS) == [f"a search gave back a record of {LEADS}"]
+
+
+def test_a_lead_naming_its_official_posting_is_no_anomaly(database, library, clock):
+    """A lead is the leads source's own record naming an official posting apart from its own id: it is taken as
+    before, nothing is counted as an anomaly, and the official posting it names is read and checked there."""
+    run = begin(database, clock, confirmation_for(library))
+    searched = search_postings(run, LEADS, "数据分析", city="上海", **WITHIN)
+    official = ref("c-sh-analyst")
+
+    assert searched.outcome is Outcome.DONE and "来源异常" not in searched.summary
+    assert list(run.found) == [ref("l-sh-analyst", LEADS)] and official in run.known
+
+    steps = [get_posting(run, [official]), check_posting(run, [official])]
+
+    assert [step.outcome for step in steps] == [Outcome.DONE, Outcome.DONE]
+    assert finish(run, EndReason.ENOUGH).outcome is Outcome.DONE
+
+    outcome = run.outcome()
+
+    assert ([record.foreign for record in outcome.searches], outcome.foreign) == ([0], 0)

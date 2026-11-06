@@ -375,6 +375,11 @@ class SearchRecord:
     plain (app.discovery.tools.PLAIN_ID). They are counted and never named:
     no id of theirs is kept. A search that got such postings back did not
     find nothing; it found what it could not verify.
+
+    foreign: how many of those named another source as theirs. A source gives
+    back only its own postings, so these are a source anomaly: never taken,
+    only counted, no id of theirs kept. A search that got them back did not
+    find nothing either.
     """
 
     source_id: str
@@ -383,6 +388,7 @@ class SearchRecord:
     found: int
     outcome: Outcome
     unverifiable: int = 0
+    foreign: int = 0
 
 
 @dataclass(frozen=True)
@@ -401,6 +407,9 @@ class SearchOutcome:
     # (one given back by two searches counts twice), never named and never judged. While any came back, a
     # search may not say it found nothing suitable.
     unverifiable: int
+    # Records sources gave back as another source's, a source anomaly: counted the same way, never named, never
+    # taken. While any came back, a search may not say it found nothing suitable either.
+    foreign: int
     # The combinations of the scope's values no single search covered: only with none left may a search
     # say it covered the scope or found nothing suitable.
     unsearched: tuple[str, ...]

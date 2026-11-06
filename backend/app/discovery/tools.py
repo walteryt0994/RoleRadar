@@ -42,8 +42,9 @@ analyze_posting and finish.
   the last word on whether the scope was covered, combination by
   combination of its values, and nothing suitable may be said only when
   every posting found has a conclusion and no source gave back postings
-  that could not be verified. With combinations left unsearched it is
-  said as "nothing suitable in what was searched, the rest unchecked".
+  that could not be verified or that were another source's. With
+  combinations left unsearched it is said as "nothing suitable in what was
+  searched, the rest unchecked".
 
 Each result's summary is short, and it may go to a model (U3 proposal, 5.4
 and 5.5): a posting's own words reach it only cut down, inside a marked
@@ -53,7 +54,10 @@ scope's values, which are conditions: a scope with any word the outbound
 rules stop does not start, and its refusal does not repeat it. A posting
 is named by its source's id only when that is a plain id (PLAIN_ID): one
 that is not is never taken or named, only counted as a posting that could
-not be verified. Keywords and filters are words of conditions only, within
+not be verified. A record a source gives back as another source's is never
+taken or named either, only counted as a source anomaly: a source gives back
+its own postings, and a lead names the official posting it points to apart
+from its own id. Keywords and filters are words of conditions only, within
 the scope, without sentences or contact details.
 """
 import hashlib
@@ -292,14 +296,19 @@ class SearchRun:
     def evidence(self, found: Found) -> EvidenceLevel:
         return self.register.entry(found.ref.source_id).evidence
 
-    def take(self, source_id: str, postings: Iterable[Posting]) -> tuple[list[Found], int]:
-        """Keep the postings a search gave that are new, each screened against the scope; and count those
-        whose references are not plain ids, which are never taken."""
-        new, unplain = [], 0
+    def take(self, source_id: str, postings: Iterable[Posting]) -> tuple[list[Found], int, int]:
+        """Keep the postings a search gave that are new, each screened against the scope; and count, never
+        taking them, those named as another source's (a source anomaly) and those whose ids are not plain."""
+        new, foreign, unplain = [], 0, 0
 
         for posting in postings:
-            # Another source's posting is not this source's to give; one found before is not new.
-            if posting.ref.source_id != source_id or posting.ref in self.found:
+            # Another source's posting is not this source's to give: whatever it is, it is only counted.
+            if posting.ref.source_id != source_id:
+                foreign += 1
+                continue
+
+            # One found before is not new.
+            if posting.ref in self.found:
                 continue
 
             if not _plain_posting(posting):
@@ -315,7 +324,7 @@ class SearchRun:
 
             new.append(found)
 
-        return new, unplain
+        return new, foreign, unplain
 
     def place(self, detail: PostingDetail) -> Found:
         """A posting as read: its source's facts now, its words, and when they were read."""
@@ -469,6 +478,7 @@ class SearchRun:
             unlisted=tuple((reason, tuple(refs)) for reason, refs in unlisted.items() if refs),
             merged=tuple(merged),
             unverifiable=sum(record.unverifiable for record in self.searches),
+            foreign=sum(record.foreign for record in self.searches),
             unsearched=rules.unsearched(self.scope, self.searched),
             unjudged=rules.unjudged(self.saved_preferences, self.confirmation.preferences),
             searches=tuple(self.searches),
@@ -671,12 +681,17 @@ def search_postings(
         return ToolResult(Tool.SEARCH, Outcome.FAILED, f"{name}{_failed(error)}：这次检索没有结果，不会重试。", type(error).__name__)
 
     run.searched.add(covered)
-    new, unplain = run.take(source_id, postings)
-    # Postings whose ids are not plain are kept only as a number: something came back that cannot be verified.
-    run.searches.append(SearchRecord(source_id, words, filters, len(postings), Outcome.DONE, unplain))
+    new, foreign, unplain = run.take(source_id, postings)
+    # What was never taken is kept only as numbers: another source's records, a source anomaly, and postings
+    # whose ids are not plain. Either way something came back that cannot be relied on.
+    run.searches.append(
+        SearchRecord(source_id, words, filters, len(postings), Outcome.DONE, unverifiable=unplain, foreign=foreign)
+    )
     lines = [_line(run, found) for found in new]
-    head = f"{name}返回 {len(postings)} 个岗位，新的 {len(new)} 个。" + (
-        f"另有 {unplain} 个岗位的编号不合要求（像联系方式或带别的符号），无法核验，没有采用。" if unplain else ""
+    head = (
+        f"{name}返回 {len(postings)} 个岗位，新的 {len(new)} 个。"
+        + (f"另有 {foreign} 条记录不属于这个来源（来源异常），没有采用。" if foreign else "")
+        + (f"另有 {unplain} 个岗位的编号不合要求（像联系方式或带别的符号），无法核验，没有采用。" if unplain else "")
     )
 
     return ToolResult(Tool.SEARCH, Outcome.DONE, "\n".join([head, *_listed(lines)]))
@@ -902,8 +917,10 @@ def finish(run: SearchRun, claim: EndReason) -> ToolResult:
     standings = [run.standing(run.kept(group)) for group in run.groups()]
     # Postings with no conclusion yet: never analysed, analysed and withdrawn, stopped or unfinished.
     unsettled = sum(standing is None or standing in (Unlisted.BLOCKED, Unlisted.INCOMPLETE) for standing in standings)
-    # Postings sources gave back that could not be verified: something came back, so never "nothing suitable".
+    # Postings sources gave back that could not be verified, and records they gave back as another source's:
+    # something came back, so never "nothing suitable", whether or not the scope was covered.
     unverifiable = sum(record.unverifiable for record in run.searches)
+    foreign = sum(record.foreign for record in run.searches)
 
     if run.materials_changed():
         end = EndReason.SOURCES_CHANGED
@@ -916,8 +933,8 @@ def finish(run: SearchRun, claim: EndReason) -> ToolResult:
         return run.refuse(Tool.FINISH, f"范围里还有 {len(left)} 个组合没查：{_listed_left(left)}")
     elif claim is EndReason.NO_RESULTS and any(isinstance(standing, Category) for standing in standings):
         return run.refuse(Tool.FINISH, "已经有完整的分析结果，不能说没有合适结果")
-    elif claim is EndReason.NO_RESULTS and (unsettled or unverifiable):
-        return run.refuse(Tool.FINISH, _unconcluded(unsettled, unverifiable))
+    elif claim is EndReason.NO_RESULTS and (unsettled or unverifiable or foreign):
+        return run.refuse(Tool.FINISH, _unconcluded(unsettled, unverifiable, foreign))
     elif left and claim is EndReason.NO_RESULTS:
         # Nothing suitable in what was searched, and nobody knows of the rest: said as it is, nothing more sent.
         end = EndReason.PARTLY_NO_RESULTS
@@ -929,12 +946,16 @@ def finish(run: SearchRun, claim: EndReason) -> ToolResult:
     return ToolResult(Tool.FINISH, Outcome.DONE, f"查找结束：{END_LABELS[end]}。")
 
 
-def _unconcluded(unsettled: int, unverifiable: int) -> str:
-    """Why nothing suitable may not be said: postings found with no conclusion, or given back unverifiable."""
+def _unconcluded(unsettled: int, unverifiable: int, foreign: int) -> str:
+    """Why nothing suitable may not be said: postings found with no conclusion, given back unverifiable, or
+    given back as another source's."""
     pieces = [f"还有 {unsettled} 个岗位没有结论（没有分析、待核验，或者分析没有完成）"] if unsettled else []
 
     if unverifiable:
         pieces.append(f"来源返回的岗位里{'另' if unsettled else ''}有 {unverifiable} 个编号不合要求，无法核验")
+
+    if foreign:
+        pieces.append(f"来源返回的记录里{'另' if pieces else ''}有 {foreign} 条不属于该来源（来源异常）")
 
     return "；".join(pieces) + "，不能说没有合适结果"
 
