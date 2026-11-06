@@ -4,6 +4,7 @@ Nothing here opens, reads or hashes the real database, the records directory
 or .env. Unsafe paths are built inside the temporary test root, and the guard
 is shown to refuse them before anything is created.
 """
+import ast
 import json
 import os
 import socket
@@ -39,6 +40,18 @@ LEGACY_MODULES = (
 # description contracts in app.schemas (data models only, no database) and
 # the provider code. The library package itself still loads none of them.
 SHARED_CONTRACTS = ("app.schemas", "app.experience_analysis", "app.job_analysis", "openai")
+# The search tools (U3-A1) start no task and enter no gate of their own, have no page and reach no
+# network: they load none of these modules, and their own code imports no network client.
+SEARCH_TOOLS = ("contracts", "rules", "sources", "synthetic", "tools")
+NOT_FOR_SEARCH_TOOLS = LEGACY_MODULES + (
+    "app.job_analysis.runner",
+    "app.job_analysis.tasks",
+    "app.job_analysis.service",
+    "app.job_analysis.live",
+    "app.job_analysis.web",
+    "app.web_main",
+)
+NETWORK_CLIENTS = {"socket", "ssl", "http", "urllib", "requests", "httpx", "httpx2", "aiohttp", "openai"}
 
 
 def test_launcher_points_every_database_variable_into_the_test_root(test_root):
@@ -101,6 +114,33 @@ def test_the_library_package_itself_loads_no_analysis_or_legacy_code():
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == []
+
+
+def test_the_search_tools_load_no_task_runner_gate_entry_page_or_network_client():
+    script = "\n".join(
+        [
+            "import importlib, json, sys",
+            f"for name in {SEARCH_TOOLS!r}:",
+            "    importlib.import_module(f'app.discovery.{name}')",
+            f"names = {NOT_FOR_SEARCH_TOOLS!r}",
+            "print(json.dumps([name for name in names if name in sys.modules]))",
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", script], cwd=BACKEND_DIR, env=os.environ.copy(), capture_output=True, text=True, timeout=60
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == []
+
+    imported = set()
+
+    for name in SEARCH_TOOLS:
+        tree = ast.parse((BACKEND_DIR / "app" / "discovery" / f"{name}.py").read_text(encoding="utf-8"))
+        imported |= {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
+        imported |= {node.module.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
+
+    assert not imported & NETWORK_CLIENTS
 
 
 def test_building_the_app_builds_no_service_client(tmp_path, test_root):
