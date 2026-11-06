@@ -559,8 +559,17 @@ def changed_fields(kind: str, extracted: dict, values: dict[str, str]) -> dict[s
     }
 
 
+# How a place ends when the words of its piece stand on more than one line (where).
+UNSURE = "无法确定是哪一处"
+
+
 def where(segments: list[dict], piece: dict) -> str:
-    """Where a piece stands, as people say it: the page, paragraph or table, and the line."""
+    """Where a piece stands, as people say it: the page, paragraph or table, and the line.
+
+    A piece names its segment, not where in it its words were found: words
+    that stand on several lines of the segment name every one of them, and
+    say that which one was meant cannot be told (U3-A0).
+    """
     number = piece["segment"]
 
     if not 1 <= number <= len(segments):
@@ -568,14 +577,35 @@ def where(segments: list[dict], piece: dict) -> str:
 
     segment = segments[number - 1]
     place = locator(segment)
-    text = segment_text(segment)
-    at = text.find(piece["quote"])
+    lines = _lines(segment_text(segment), piece["quote"])
 
-    if segment["kind"] == "paragraph" or at == -1:
+    if segment["kind"] == "paragraph" or not lines:
         return place
 
-    line = text.count("\n", 0, at) + 1
     # "表格 1 第 2 行", but "第 2 页第 3 行" and "粘贴的文字第 3 行".
     gap = " " if place[-1].isdigit() else ""
 
-    return f"{place}{gap}第 {line} 行"
+    if len(lines) == 1:
+        return f"{place}{gap}第 {lines[0]} 行"
+
+    *before, last = lines
+
+    return f"{place}{gap}第 {'、'.join(map(str, before))} 或 {last} 行，同样的文字出现在 {len(lines)} 行，{UNSURE}"
+
+
+def _lines(text: str, quote: str) -> list[int]:
+    """The lines, counted from 1, on which the quote starts in the text, each once."""
+    lines: list[int] = []
+    line, counted = 1, 0
+    at = text.find(quote)
+
+    while at != -1:
+        line += text.count("\n", counted, at)
+        counted = at
+
+        if not lines or lines[-1] != line:
+            lines.append(line)
+
+        at = text.find(quote, at + 1)
+
+    return lines

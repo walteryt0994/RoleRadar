@@ -233,6 +233,8 @@ def input_form(
             "notice": notice,
             "error": problem.message if problem else None,
             "unsaved_input": problem is not None and bool(inputs.posting.strip()),
+            # The service a task started from here would name (JobAnalysisRuntime.recipient), never a fixed text.
+            "service_label": presentation.service_label(jobs_of(request).recipient),
             "MAX_POSTING_CHARS": MAX_POSTING_CHARS,
             "MAX_EXPERIENCES": MAX_EXPERIENCES,
             "CATEGORY_LABELS": CATEGORY_LABELS,

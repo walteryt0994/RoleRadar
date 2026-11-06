@@ -108,6 +108,11 @@ def test_job_opportunities_lead_to_job_analysis_and_mark_where_you_are(browser_a
     assert not any(name in jobs for name in ("方向探索", "我的简历", "投递跟踪"))
 
 
+def test_the_input_page_names_the_service_its_tasks_would_go_to(browser_a):
+    # Here the simulation; a real service is named by itself (test_job_analysis_live, U3-A0).
+    assert '<p class="job-mode">使用本机模拟服务：由固定规则生成结果，不是 AI。</p>' in browser_a.get("/job-analysis").text
+
+
 def test_only_my_current_confirmed_versions_are_offered_and_none_is_ticked(browser_a, browser_b):
     kept = project(browser_a, title="确认过的项目", private_note=SENTINEL)
     browser_a.create(title="还没确认的项目", actions="合成内容")

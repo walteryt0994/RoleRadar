@@ -27,6 +27,7 @@ from app.library.candidates import (
     KIND_LABELS,
     PROBLEM_TEXTS,
     REFERENCE_KINDS,
+    UNSURE,
     current_values,
     extracted_value,
     parse_edits,
@@ -215,7 +216,11 @@ LINE = re.compile(r"(.*)第 (\d+) 行")
 
 
 def places_text(places: list[str]) -> str:
-    """Where pieces stand, each page or paragraph named once: 第 1 页第 2、3 行、表格 1 第 4 行."""
+    """Where pieces stand, each page or paragraph named once: 第 1 页第 2、3 行、表格 1 第 4 行.
+
+    A place whose line cannot be told (candidates.where) is kept whole, and
+    then every place is set apart by "；", so that what it says stays with it.
+    """
     groups: list[tuple[str, list[str]]] = []
 
     for place in dict.fromkeys(places):
@@ -228,7 +233,9 @@ def places_text(places: list[str]) -> str:
         else:
             groups.append((place, []))
 
-    return "、".join(f"{prefix}第 {'、'.join(lines)} 行" if lines else prefix for prefix, lines in groups)
+    apart = "；" if any(place.endswith(UNSURE) for place in places) else "、"
+
+    return apart.join(f"{prefix}第 {'、'.join(lines)} 行" if lines else prefix for prefix, lines in groups)
 
 
 def _title(kind: str, values: dict[str, str]) -> str:

@@ -72,8 +72,10 @@ from app.library.review import (
     field_state,
     structure_import,
 )
+from app.library.review_web import places_text
 from import_samples import UNREADABLE, make_pdf
 from library_helpers import Browser, form_for, forms_in
+from structuring_cases import CASES as STRUCTURING_CASES
 
 RESUME = """合成学生 Synthetic Student
 姓名：林合成 | 城市：杭州
@@ -109,6 +111,9 @@ PASTED = [{"kind": "text", "number": 1, "text": RESUME}]
 HOSTILE = '<script>alert("x")</script><img src=x onerror=alert(1)>'
 # ASCII, so it would show in the database file as it is (JSON keeps other text escaped).
 CANARY = "CANARY-b2a-7f3e"
+# The frozen long resume of U2-C4: some of its short words stand on more than one line.
+LONG = next(case.text for case in STRUCTURING_CASES if case.id == "long")
+UNSURE_73_85 = "粘贴的文字第 73 或 85 行，同样的文字出现在 2 行，无法确定是哪一处"
 
 
 # --- helpers ------------------------------------------------------------------
@@ -488,6 +493,44 @@ def test_the_simulation_reads_pages_paragraphs_and_tables_and_skips_what_was_not
     assert all(item["segment"] != 2 for found in checked.candidates for items in found.extracted.values() for item in items)
 
 
+@pytest.mark.parametrize(
+    ("quote", "place"),
+    [
+        # The four places C4 R2 and R3 showed at the first line their words stand on (U3-A0).
+        ("个人项目", UNSURE_73_85),
+        ("课程项目", "粘贴的文字第 55 或 89 行，同样的文字出现在 2 行，无法确定是哪一处"),
+        ("2022.07-2022.08", "粘贴的文字第 49 或 108 行，同样的文字出现在 2 行，无法确定是哪一处"),
+        ("成员", "粘贴的文字第 84 或 121 行，同样的文字出现在 2 行，无法确定是哪一处"),
+        ("合成理工大学", "粘贴的文字第 2、95、115 或 128 行，同样的文字出现在 4 行，无法确定是哪一处"),
+        ("校园失物招领网站", "粘贴的文字第 85 行"),
+    ],
+)
+def test_words_on_several_lines_name_every_line_and_say_which_cannot_be_told(quote, place):
+    assert where([{"kind": "text", "number": 1, "text": LONG}], {"segment": 1, "quote": quote}) == place
+
+
+def test_pages_and_tables_name_each_line_once_and_a_paragraph_only_itself():
+    segments = [
+        {"kind": "page", "number": 2, "text": "Skills\nPython\nProjects\nBuilt it in Python and Python"},
+        {"kind": "table", "number": 1, "rows": [["校园活动报名工具", "后端"], ["课程作业查重工具", "后端"]]},
+        {"kind": "paragraph", "number": 3, "text": "负责后端，后端接口也由我维护"},
+    ]
+
+    # Twice on one line is still one line.
+    assert where(segments, {"segment": 1, "quote": "Python"}) == "第 2 页第 2 或 4 行，同样的文字出现在 2 行，无法确定是哪一处"
+    assert where(segments, {"segment": 1, "quote": "Built it"}) == "第 2 页第 4 行"
+    assert where(segments, {"segment": 2, "quote": "后端"}) == "表格 1 第 1 或 2 行，同样的文字出现在 2 行，无法确定是哪一处"
+    assert where(segments, {"segment": 3, "quote": "后端"}) == "第 3 段"
+    assert where(segments, {"segment": 1, "quote": "Rust"}) == "第 2 页"
+
+
+def test_a_place_that_cannot_be_told_is_kept_whole_and_the_places_are_set_apart():
+    assert places_text(["第 1 页第 2 行", "第 1 页第 3 行", "表格 1 第 4 行"]) == "第 1 页第 2、3 行、表格 1 第 4 行"
+    assert places_text(["粘贴的文字第 5 行", UNSURE_73_85, "粘贴的文字第 8 行", UNSURE_73_85]) == (
+        f"粘贴的文字第 5 行；{UNSURE_73_85}；粘贴的文字第 8 行"
+    )
+
+
 def test_text_without_known_sections_gives_nothing_to_review():
     assert structure([{"kind": "text", "number": 1, "text": "一段没有标题的合成文字\n第二行"}]) == []
 
@@ -653,6 +696,27 @@ def test_a_pdf_is_structured_with_page_and_line_sources(app, browser_a):
 
     assert [row.kind for row in rows(app, import_id)] == ["project"]
     assert "这一栏逐字摘自原文第 1 页第 3 行" in page and "有页面没有读出来，整理结果可能缺内容" in page
+
+
+def test_a_place_that_cannot_be_told_reads_the_same_on_the_review_and_edit_pages_and_in_the_export(app, browser_a):
+    import_id = paste(browser_a, LONG)
+    ask(browser_a, import_id)
+    (found,) = [
+        row for row in rows(app, import_id)
+        if row.kind == "project" and row.extracted["title"] == [{"segment": 1, "quote": "校园失物招领网站"}]
+    ]
+    assert found.extracted["role"] == [{"segment": 1, "quote": "个人项目"}]
+
+    page = browser_a.get(f"/imports/{import_id}/review").text
+    assert f"这一栏逐字摘自原文{UNSURE_73_85}" in page and "这一栏逐字摘自原文粘贴的文字第 85 行" in page
+    page = browser_a.get(f"/imports/{import_id}/candidates/{found.id}/edit").text
+    assert f"自动整理（逐字摘自原文{UNSURE_73_85}）：</span><span class=\"text\">个人项目" in page
+
+    # The export says the same, its fields as before.
+    record = json.loads(browser_a.get(f"/imports/{import_id}/candidates.json").content)
+    (entry,) = [item for item in record["candidates"] if item["id"] == found.id]
+    assert entry["fields"]["role"]["sources"] == [{"where": UNSURE_73_85, "segment": 1, "quote": "个人项目"}]
+    assert entry["fields"]["title"]["sources"] == [{"where": "粘贴的文字第 85 行", "segment": 1, "quote": "校园失物招领网站"}]
 
 
 # --- reviewing them -------------------------------------------------------------------------------

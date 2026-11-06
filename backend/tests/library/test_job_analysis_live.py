@@ -194,6 +194,14 @@ def test_a_live_review_names_its_recipient_notice_and_what_is_left(live):
     assert stored.request.notice_version == "live-3"
 
 
+def test_a_live_input_page_names_the_real_service_not_the_simulation(live):
+    _, browser = live()
+    text = page_text(browser, "/job-analysis")
+
+    # The words of the running page (presentation.service_label), never the simulation's fixed text (U3-A0).
+    assert "使用真实服务：请求发给 synthetic 的 synthetic-model。" in text and "本机模拟服务" not in text
+
+
 def test_a_live_task_goes_through_the_gate_and_says_whose_result_it_is(live):
     provider = LiveAnswering()
     app, browser = live(provider)

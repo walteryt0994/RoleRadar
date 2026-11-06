@@ -188,13 +188,16 @@ def _usd(micro_usd: int) -> str:
     return f"{micro_usd / 1_000_000:.2f}"
 
 
-def running_label(task) -> str:
-    recipient = task.request.recipient
-
+def service_label(recipient) -> str:
+    """Which service a task goes to, as the input page (the app's) and the running page (the task's) say it."""
     if recipient.provider == SIMULATION_PROVIDER:
         return "本机模拟服务：由固定规则生成结果，不是 AI。"
 
     return f"真实服务：请求发给 {PROVIDER_NAMES.get(recipient.provider, recipient.provider)} 的 {recipient.model}。"
+
+
+def running_label(task) -> str:
+    return service_label(task.request.recipient)
 
 
 def mode_label(result) -> str:
