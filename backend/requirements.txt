@@ -7,3 +7,23 @@ python-multipart
 pypdf
 openai
 jinja2==3.1.6
+
+# U3-A2: LangGraph and its dependencies, pinned to the set that was hash-checked and installed offline
+# (2026-11-07). langgraph is the package the project will use; the other 15 come with it.
+# langsmith's pytest plugin is blocked for ordinary pytest runs in pytest.ini.
+langgraph==1.2.16
+distro==1.9.0
+jsonpatch==1.36
+jsonpointer==3.4
+langchain-core==1.7.0
+langchain-protocol==0.0.20
+langgraph-checkpoint==4.3.0
+langgraph-prebuilt==1.1.1
+langgraph-sdk==0.4.8
+langsmith==0.14.12
+orjson==3.13.0
+ormsgpack==1.13.0
+requests-toolbelt==1.0.0
+uuid-utils==0.18.0
+xxhash==4.0.2
+zstandard==0.25.0
