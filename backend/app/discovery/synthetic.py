@@ -13,6 +13,12 @@ number), a closed one, one without requirements, one with words addressed
 to the system, one with an office address, cities the user cannot accept,
 two cities with and without a choice, a start date too early, and a site
 that never answers a check.
+
+PAGED (U3-A2) stands for a careers site whose type filter does not work: it
+gives a first page of five, senior full-time roles first, whatever type is
+asked for, and finds its interns only when the type is among the words
+searched for. It is the frozen case of the A2 pre-check (section 1), where a
+search has to adjust to its own results.
 """
 from dataclasses import dataclass
 from datetime import date
@@ -25,7 +31,13 @@ CAREERS = "synthetic-careers"
 LEADS = "synthetic-leads"
 BASIS = "合成数据，只在测试和本机预览中使用，不联网"
 CHECKED_ON = "2026-11-06"
-ADDRESSES = {CAREERS: "https://careers.synthetic.invalid/postings", LEADS: "https://leads.synthetic.invalid/items"}
+# A careers site whose type filter does not work (U3-A2, below).
+PAGED = "synthetic-paged"
+ADDRESSES = {
+    CAREERS: "https://careers.synthetic.invalid/postings",
+    LEADS: "https://leads.synthetic.invalid/items",
+    PAGED: "https://paged.synthetic.invalid/postings",
+}
 ENTRIES = (
     SourceEntry(CAREERS, "合成招聘官网", Access.SYNTHETIC, Permission.VERIFIED, EvidenceLevel.OFFICIAL, BASIS, CHECKED_ON),
     SourceEntry(LEADS, "合成搜索线索", Access.SYNTHETIC, Permission.VERIFIED, EvidenceLevel.LEAD, BASIS, CHECKED_ON),
@@ -210,3 +222,52 @@ def _matches(posting: Posting, query: Query, terms: list[str]) -> bool:
 def register() -> Register:
     """The register of an offline search: the two synthetic sources, each with an adapter of its own."""
     return Register(ENTRIES, {CAREERS: SyntheticSource(CAREERS, POSTINGS), LEADS: SyntheticSource(LEADS, LEAD_POSTINGS)})
+
+
+# --- U3-A2: a site whose type filter does not work --------------------------------------------------
+
+# How many postings it gives back for one search: its first page only.
+PAGE = 5
+PAGED_ENTRY = SourceEntry(
+    PAGED, "合成招聘官网（类型筛选不可靠）", Access.SYNTHETIC, Permission.VERIFIED, EvidenceLevel.OFFICIAL, BASIS, CHECKED_ON
+)
+PAGED_GRANTS = (PAGED_ENTRY.grant,)
+SENIOR = "岗位要求：\n- 3 年以上相关工作经验\n- 精通 SQL"
+SENIOR_FIRST = (
+    # Its first page for "数据分析" in Beijing, whatever type is asked for: senior full-time roles.
+    *(
+        _posting(PAGED, f"p-senior-{number}", "资深数据分析师", f"合成金融{number}", ("北京",), SENIOR, job_type="全职")
+        for number in range(1, 6)
+    ),
+    # Interns in Beijing, found only once the type is among the words searched for.
+    _posting(PAGED, "p-bj-intern-1", "数据分析实习生", "合成数据科技", ("北京",), ANALYST),
+    _posting(PAGED, "p-bj-intern-2", "数据分析实习生", "合成零售", ("北京",), SQL_ONLY),
+    _posting(PAGED, "p-bj-intern-3", "数据分析实习生", "合成出行", ("北京",), PYTHON_ONLY),
+    # Another combination of the same scope.
+    _posting(PAGED, "p-sh-intern-1", "数据分析实习生", "合成传媒", ("上海",), ANALYST),
+)
+
+
+class PagedSource(SyntheticSource):
+    """A careers site that ignores the type asked for: the first page of postings in the city and direction asked
+    for with every word searched for in their titles, in its own order."""
+
+    def search(self, query: Query, timeout: float) -> tuple[Posting, ...]:
+        self.calls.append(("search", query))
+        self.timeouts.append(timeout)
+        self._fault("search", None)
+        terms = query.keywords.split()
+        found = [
+            item.posting
+            for item in self._postings.values()
+            if (query.city is None or query.city in item.posting.cities)
+            and (query.direction is None or query.direction == item.posting.direction)
+            and all(term in item.posting.title for term in terms)
+        ]
+
+        return tuple(found[:PAGE])
+
+
+def paged_register() -> Register:
+    """The register of the senior-first case: one official source, its type filter not working."""
+    return Register((PAGED_ENTRY,), {PAGED: PagedSource(PAGED, SENIOR_FIRST)})

@@ -515,6 +515,32 @@ def test_one_real_task_at_a_time_and_only_for_an_approved_purpose(gates):
     ask(gate, SyntheticProvider())
 
 
+def test_a_search_for_postings_is_one_task_of_its_own_purpose(gates, ledger):
+    """U3-A2: a search's decisions and analyses are requests of one task, recorded under its purpose."""
+    database, _ = ledger
+    gate = gates(terms(purposes=frozenset({"discovery"})))
+    provider = SyntheticProvider()
+
+    with pytest.raises(LiveBlocked) as other:
+        with gate.task("analysis", "owner-a", provider):
+            pass
+
+    assert other.value.reason is Blocked.PURPOSE
+
+    with gate.task("discovery", "owner-a", provider) as gated:
+        gated.generate_text(PROMPT, max_output_tokens=40)
+        gated.generate_text(PROMPT)
+
+        with pytest.raises(LiveBlocked) as busy:
+            with gate.task("discovery", "owner-b", SyntheticProvider()):
+                pass
+
+    assert busy.value.reason is Blocked.BUSY
+    # A decision asks for less; the rest of a search keeps the analysis limit.
+    assert [call["max_output_tokens"] for call in provider.calls] == [40, 100]
+    assert [row.purpose for row in requests_of(database)] == ["discovery", "discovery"]
+
+
 def test_a_request_left_unsettled_keeps_the_next_one_out(gates):
     gate = gates()
     gate._reserve("analysis", "owner-a", 100)
@@ -851,6 +877,21 @@ def test_terms_that_are_missing_or_doubtful_are_refused(change, says):
     environ = {name: value for name, value in {**APPROVED, **change}.items() if value is not None}
 
     with pytest.raises(LiveRefused, match=says):
+        live.load_live_approval(live.load_live_policy(environ), environ)
+
+
+def test_an_approval_may_cover_searches_for_postings(monkeypatch):
+    """U3-A2: discovery is a purpose an approval names like the others; no other word is taken."""
+    monkeypatch.setitem(live_gate.RESERVE_POLICIES, ("openai", "synthetic-model", "default"), live_gate.FIXED_RESERVE_V1)
+    environ = {**APPROVED, "ROLERADAR_LIVE_PURPOSES": "analysis, discovery"}
+    approved = live.load_live_approval(live.load_live_policy(environ), environ)
+
+    assert approved.purposes == frozenset({"analysis", "discovery"})
+    assert approved.output_limit("discovery") == approved.max_output_tokens
+
+    environ["ROLERADAR_LIVE_PURPOSES"] = "analysis,search"
+
+    with pytest.raises(LiveRefused, match="analysis、structuring、discovery"):
         live.load_live_approval(live.load_live_policy(environ), environ)
 
 

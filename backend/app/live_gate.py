@@ -156,6 +156,9 @@ class LiveRefused(Exception):
 class Purpose(StrEnum):
     ANALYSIS = "analysis"
     STRUCTURING = "structuring"
+    # A whole search for postings (U3-A2): its decisions and the analyses within it, under one task and one
+    # ledger. Its requests take the analysis output limit; a decision asks for less (app.discovery.agent).
+    DISCOVERY = "discovery"
 
 
 class Blocked(StrEnum):

@@ -52,6 +52,10 @@ NOT_FOR_SEARCH_TOOLS = LEGACY_MODULES + (
     "app.web_main",
 )
 NETWORK_CLIENTS = {"socket", "ssl", "http", "urllib", "requests", "httpx", "httpx2", "aiohttp", "openai"}
+# The search agent (U3-A2): its loop, the fixed flow and its task store start no analysis task and have no page;
+# only its runner gets a service, through app.job_analysis.service. None of its own code imports a network client.
+AGENT_MODULES = ("agent", "baseline", "tasks")
+NOT_FOR_THE_AGENT = LEGACY_MODULES + ("app.job_analysis.runner", "app.job_analysis.tasks", "app.job_analysis.web", "app.web_main")
 
 
 def test_launcher_points_every_database_variable_into_the_test_root(test_root):
@@ -136,6 +140,33 @@ def test_the_search_tools_load_no_task_runner_gate_entry_page_or_network_client(
     imported = set()
 
     for name in SEARCH_TOOLS:
+        tree = ast.parse((BACKEND_DIR / "app" / "discovery" / f"{name}.py").read_text(encoding="utf-8"))
+        imported |= {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
+        imported |= {node.module.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
+
+    assert not imported & NETWORK_CLIENTS
+
+
+def test_the_search_agent_starts_no_analysis_task_and_has_no_page_or_network_client():
+    script = "\n".join(
+        [
+            "import importlib, json, sys",
+            f"for name in {AGENT_MODULES!r}:",
+            "    importlib.import_module(f'app.discovery.{name}')",
+            f"names = {NOT_FOR_THE_AGENT!r}",
+            "print(json.dumps([name for name in names if name in sys.modules]))",
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", script], cwd=BACKEND_DIR, env=os.environ.copy(), capture_output=True, text=True, timeout=60
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == []
+
+    imported = set()
+
+    for name in (*AGENT_MODULES, "runner"):
         tree = ast.parse((BACKEND_DIR / "app" / "discovery" / f"{name}.py").read_text(encoding="utf-8"))
         imported |= {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
         imported |= {node.module.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}

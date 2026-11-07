@@ -226,7 +226,7 @@ def load_live_approval(policy: LivePolicy, environ=None) -> ApprovalTerms:
     purposes = [purpose.strip() for purpose in values["purposes"].split(",")]
 
     if len(set(purposes)) != len(purposes) or not set(purposes) <= set(Purpose):
-        raise LiveRefused("批准的用途只能是 analysis、structuring，用逗号分开，各写一次。")
+        raise LiveRefused("批准的用途只能是 analysis、structuring、discovery，用逗号分开，各写一次。")
 
     if not SERVICE_TIER.fullmatch(values["service_tier"]):
         raise LiveRefused("服务档要写成一个小写名称，例如服务商文档里的那个档位名。")

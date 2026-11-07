@@ -1297,3 +1297,16 @@ def _ref(ref: PostingRef) -> str:
 
 def _failed(error: SourceError) -> str:
     return "没有在时限内回答" if isinstance(error, SourceTimeout) else "出错了"
+
+
+# For the search agent (U3-A2), which shows the next decision the postings found the way these summaries do.
+
+
+def posting_line(run: SearchRun, found: Found) -> str:
+    """A posting as the summaries list it: its public facts masked and cut, and its marks; none of the user's words."""
+    return _line(run, found)
+
+
+def shown_ref(ref: PostingRef) -> str:
+    """A reference as the summaries name it: never one that is not plain."""
+    return _ref(ref)

@@ -9,8 +9,9 @@ pytest collects tests and while any application module is first imported:
   folders inside it) all point into that root, and so do TMPDIR and
   pytest's --basetemp;
 - OPENAI_*, ROLERADAR_LIVE_*, ROLERADAR_ANALYSIS_MODE and proxy variables
-  are removed; plugin auto-loading is off (so pytest-cov cannot rewrite
-  backend/.coverage); no .pyc files or .pytest_cache are written;
+  are removed, and so are LANGSMITH_* and LANGCHAIN_*, which could switch
+  LangSmith tracing on (U3-A2); plugin auto-loading is off (so pytest-cov
+  cannot rewrite backend/.coverage); no .pyc files or .pytest_cache are written;
 - an audit plugin, loaded at pytest start-up, blocks network connections and
   DNS lookups and records SQLite connections and file writes. After the run
   this launcher checks that every recorded connection and write stayed
@@ -34,7 +35,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 BACKEND_DIR = HERE.parents[1]
 REPO_ROOT = BACKEND_DIR.parent
-REMOVED_PREFIXES = ("OPENAI_", "AZURE_OPENAI_", "ROLERADAR_LIVE_")
+REMOVED_PREFIXES = ("OPENAI_", "AZURE_OPENAI_", "ROLERADAR_LIVE_", "LANGSMITH_", "LANGCHAIN_")
 REMOVED_NAMES = {
     "ROLERADAR_ANALYSIS_MODE",
     "DATABASE_URL",
