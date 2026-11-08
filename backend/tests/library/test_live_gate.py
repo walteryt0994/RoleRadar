@@ -895,6 +895,78 @@ def test_an_approval_may_cover_searches_for_postings(monkeypatch):
         live.load_live_approval(live.load_live_policy(environ), environ)
 
 
+# --- how many requests an approval may allow, by its purposes (U3-B1) ----------------------------------------------
+
+
+def asking(purposes, requests) -> dict:
+    """APPROVED for these purposes (None: not written at all) and this many requests."""
+    environ = {**APPROVED, "ROLERADAR_LIVE_MAX_REQUESTS": str(requests)}
+
+    if purposes is None:
+        environ.pop("ROLERADAR_LIVE_PURPOSES")
+    else:
+        environ["ROLERADAR_LIVE_PURPOSES"] = purposes
+
+    return environ
+
+
+@pytest.mark.parametrize(
+    "purposes, cap",
+    [
+        ("discovery", 32),
+        (" discovery ", 32),
+        ("analysis", 20),
+        ("structuring", 20),
+        ("analysis, discovery", 20),
+        ("discovery,structuring", 20),
+        ("analysis, structuring, discovery", 20),
+    ],
+    ids=["discovery", "discovery-spaced", "analysis", "structuring", "analysis-discovery", "discovery-structuring", "all-three"],
+)
+def test_only_an_approval_for_discovery_alone_may_allow_more_than_twenty_requests(monkeypatch, purposes, cap):
+    monkeypatch.setitem(live_gate.RESERVE_POLICIES, ("openai", "synthetic-model", "default"), live_gate.FIXED_RESERVE_V1)
+
+    assert live.analysis_setup(asking(purposes, cap)).terms.max_requests == cap
+
+    with pytest.raises(ConfigError, match=f"请求次数上限要写成 1 到 {cap} 之间的整数"):
+        live.analysis_setup(asking(purposes, cap + 1))
+
+
+@pytest.mark.parametrize(
+    "purposes",
+    [None, "", "discovery,discovery", "discovery, search", "Discovery", "discovery;analysis"],
+    ids=["missing", "empty", "repeated", "unknown-beside", "capitalised", "wrong-separator"],
+)
+def test_purposes_missing_unknown_or_repeated_never_open_the_higher_cap(monkeypatch, purposes):
+    monkeypatch.setitem(live_gate.RESERVE_POLICIES, ("openai", "synthetic-model", "default"), live_gate.FIXED_RESERVE_V1)
+
+    with pytest.raises(ConfigError, match="请求次数上限要写成 1 到 20 之间的整数"):
+        live.analysis_setup(asking(purposes, 21))
+
+    # Within the lower cap the purposes themselves are refused, as before.
+    with pytest.raises(ConfigError, match="用途|ROLERADAR_LIVE_PURPOSES"):
+        live.analysis_setup(asking(purposes, 20))
+
+
+def test_the_policy_read_on_its_own_keeps_twenty_whatever_the_purposes_say():
+    assert live.load_live_policy(asking("discovery", 20)).max_requests == 20
+
+    with pytest.raises(LiveRefused, match="请求次数上限要写成 1 到 20 之间的整数"):
+        live.load_live_policy(asking("discovery", 21))
+
+
+def test_an_approval_refuses_a_policy_that_allows_more_than_its_purposes_may(monkeypatch):
+    """However a policy came to allow more (here made by hand), the approval's own purposes decide."""
+    monkeypatch.setitem(live_gate.RESERVE_POLICIES, ("openai", "synthetic-model", "default"), live_gate.FIXED_RESERVE_V1)
+    widened = replace(live.load_live_policy(asking("analysis", 20)), max_requests=21)
+
+    with pytest.raises(LiveRefused, match="这份批准的用途最多放行 20 次请求"):
+        live.load_live_approval(widened, asking("analysis", 20))
+
+    with pytest.raises(LiveRefused, match="这份批准的用途最多放行 32 次请求"):
+        live.load_live_approval(replace(widened, max_requests=33), asking("discovery", 20))
+
+
 def test_a_synthetic_policy_or_a_certified_bound_never_stands_in_for_the_budget_policy(monkeypatch):
     key = ("openai", "synthetic-model", "default")
     monkeypatch.setitem(live_gate.RESERVE_POLICIES, key, replace(live_gate.FIXED_RESERVE_V1, synthetic=True))

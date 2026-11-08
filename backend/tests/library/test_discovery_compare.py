@@ -28,6 +28,7 @@ from app.discovery.compare_tasks import FROZEN_DIGEST, TASKS, derive_truth, seed
 from app.discovery.contracts import EndReason, Tool
 from app.discovery.runner import ParentStopped
 from app.discovery.synthetic import ADDRESSES, CAREERS, LEADS
+from app.job_analysis import live as live_config
 from app.job_analysis.simulation import SimulatedProvider
 from app.live_gate import FIXED_RESERVE_V1, LiveRefused, LiveSetup
 from discovery_helpers import ref
@@ -238,6 +239,105 @@ def test_an_approval_for_other_purposes_is_refused_before_anything_is_made(new_f
         run_batch(folder, live=live(ReplayService([]), purposes=frozenset({"discovery", "analysis"})))
 
     assert not folder.exists()
+
+
+# --- the real configuration, read by the app's parser and taken by the command (U3-B1) ------------------------------
+
+# A B1 approval as the Owner would write it, but for its made-up id and key.
+B1_TERMS = {
+    "ROLERADAR_ANALYSIS_MODE": "live",
+    "ROLERADAR_LIVE_PROVIDER": "openai",
+    "ROLERADAR_LIVE_MODEL": "gpt-5.6-sol",
+    "ROLERADAR_LIVE_ENDPOINT": "https://api.openai.com/v1",
+    "ROLERADAR_LIVE_MAX_REQUESTS": "32",
+    "ROLERADAR_LIVE_MAX_OUTPUT_TOKENS": "2000",
+    "ROLERADAR_LIVE_TIMEOUT_SECONDS": "60",
+    "ROLERADAR_LIVE_RULES_CHECKED_ON": "2026-11-08",
+    "OPENAI_API_KEY": "synthetic-not-a-key",
+    "ROLERADAR_LIVE_APPROVAL_ID": "u3b1-synthetic-test",
+    "ROLERADAR_LIVE_PURPOSES": "discovery",
+    "ROLERADAR_LIVE_SERVICE_TIER": "default",
+    "ROLERADAR_LIVE_REASONING_EFFORT": "low",
+    "ROLERADAR_LIVE_STRUCTURING_MAX_BYTES": "8000",
+    "ROLERADAR_LIVE_STRUCTURING_MAX_OUTPUT_TOKENS": "8000",
+    "ROLERADAR_LIVE_MAX_INPUT_TOKENS": "32000",
+    "ROLERADAR_LIVE_MAX_COST_USD": "2.00",
+    "ROLERADAR_LIVE_PRICE_INPUT": "4.00",
+    "ROLERADAR_LIVE_PRICE_CACHE_READ": "0.40",
+    "ROLERADAR_LIVE_PRICE_CACHE_WRITE": "5.00",
+    "ROLERADAR_LIVE_PRICE_OUTPUT": "20.00",
+    "ROLERADAR_LIVE_PRICE_RESERVE_INPUT": "10.00",
+    "ROLERADAR_LIVE_PRICE_SOURCE": "https://developers.openai.com/api/docs/pricing",
+    "ROLERADAR_LIVE_PRICE_CHECKED_ON": "2026-11-08",
+    "ROLERADAR_LIVE_PRICE_COUNT": "not_applicable",
+    "ROLERADAR_LIVE_BUDGET_POLICY": "fixed_reserve_v1",
+    "ROLERADAR_LIVE_BUDGET_SCOPE": "application",
+    "ROLERADAR_LIVE_RESERVE_INPUT_TOKENS": "16000",
+    "ROLERADAR_LIVE_MAX_PAYLOAD_BYTES": "32000",
+}
+
+
+class StandIn(ReplayService):
+    """A made-up stand-in for the approved recipient: its identity and the body its configuration would build. It
+    answers from a list and sends nothing."""
+
+    def identity(self):
+        return ProviderIdentity("openai", "gpt-5.6-sol", "https://api.openai.com/v1")
+
+    def request_body(self, prompt, max_output_tokens=None, reasoning_effort=None, json_schema_format=None):
+        return responses_request(
+            "gpt-5.6-sol",
+            prompt,
+            max_output_tokens=max_output_tokens,
+            reasoning_effort=reasoning_effort,
+            service_tier="default",
+            json_schema_format=json_schema_format,
+        )
+
+
+def test_a_discovery_approval_for_32_requests_reaches_the_comparison_through_the_real_parser(monkeypatch, offline, new_folder):
+    """The terms are read by the app's own parser and taken by the command as they are; only the service is a
+    stand-in, made where the real one would be (live_config.make_live_provider)."""
+    service = StandIn(replayed(offline[0]))
+    made = []
+
+    def make(policy, environ=None, **settings):
+        made.append(settings)
+        return service
+
+    monkeypatch.setattr(live_config, "make_live_provider", make)
+    folder = new_folder()
+
+    assert compare.main(["--send", str(folder), "--digest", FROZEN_DIGEST], environ=B1_TERMS) == 0
+
+    summary = json.loads((folder / "batch.json").read_text(encoding="utf-8"))
+    approval = summary["approval"]
+    # The approval as parsed, nothing swapped after: 32 requests, discovery alone, the proposed recipient and budget.
+    assert (approval["max_requests"], approval["purposes"], approval["model"], approval["max_cost_micro_usd"]) == (32, ["discovery"], "gpt-5.6-sol", 2_000_000)
+    assert made == [{"service_tier": "default", "max_output_tokens": 2_000}]
+    # More than 20 requests went through the gate: the higher cap is the one in force.
+    assert len(service.calls) == summary["gate"]["requests_used"] == 25 and summary["gate"]["requests_left"] == 7
+    assert (summary["mode"], summary["stopped"], summary["failed"], summary["not_run"]) == ("send", None, [], [])
+    assert {call["max_output_tokens"] for call in service.calls} == {2_000}
+    assert {call["reasoning_effort"] for call in service.calls} == {"low"}
+
+
+@pytest.mark.parametrize(
+    "change, says",
+    [
+        ({"ROLERADAR_LIVE_MAX_REQUESTS": "33"}, "请求次数上限要写成 1 到 32 之间的整数"),
+        ({"ROLERADAR_LIVE_PURPOSES": "analysis, discovery"}, "请求次数上限要写成 1 到 20 之间的整数"),
+        ({"ROLERADAR_LIVE_PURPOSES": "discovery,discovery"}, "请求次数上限要写成 1 到 20 之间的整数"),
+        ({"ROLERADAR_LIVE_PURPOSES": "analysis, discovery", "ROLERADAR_LIVE_MAX_REQUESTS": "20"}, "只能写 discovery 一个用途"),
+    ],
+    ids=["33-requests", "mixed-32", "repeated-32", "mixed-20"],
+)
+def test_the_command_takes_no_more_than_the_parser_allows(monkeypatch, tmp_path, capsys, change, says):
+    monkeypatch.setattr(live_config, "make_live_provider", lambda *args, **kwargs: pytest.fail("a service was made"))
+    folder = tmp_path / "b1"
+
+    assert compare.main(["--send", str(folder), "--digest", FROZEN_DIGEST], environ={**B1_TERMS, **change}) == 2
+    assert says in capsys.readouterr().err and not folder.exists()
 
 
 class Failing:

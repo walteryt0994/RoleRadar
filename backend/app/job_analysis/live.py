@@ -35,6 +35,12 @@ approval, and terms for a model and tier with no policy are refused.
 analysis_setup turns what the environment asks for into the app's service
 (U2-C2): the simulated one, or a real one from approved terms; asked for
 and refused, it stops the app from starting rather than quietly simulating.
+
+How many requests an approval may allow follows its purposes (U3-B1,
+request_cap): at most MAX_REQUESTS, except an approval for discovery alone,
+fully checked, which may allow MAX_DISCOVERY_REQUESTS. The policy read on
+its own keeps the lower cap, and load_live_approval refuses any policy that
+allows more than its purposes may, however it was read.
 """
 import os
 import re
@@ -84,6 +90,10 @@ REROUTING_VARIABLES = (
 KEY_VARIABLE = "OPENAI_API_KEY"
 # Upper bounds for any approval of this batch: a few synthetic samples.
 MAX_REQUESTS = 20
+# The one exception (U3-B1): an approval whose purposes, fully checked, are discovery alone may allow this many
+# requests, for the frozen comparison's four tasks of at most eight decisions each (app.discovery.compare). Any
+# other purposes, a mix with discovery among them, and the policy read on its own keep MAX_REQUESTS (request_cap).
+MAX_DISCOVERY_REQUESTS = 32
 MAX_OUTPUT_TOKENS = 4000
 MAX_TIMEOUT_SECONDS = 120
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -152,7 +162,46 @@ class LivePolicy:
 
 
 def load_live_policy(environ=None) -> LivePolicy:
-    """The policy the environment asks for, or LiveRefused saying what is missing or doubtful."""
+    """The policy the environment asks for, or LiveRefused saying what is missing or doubtful.
+
+    Read on its own it allows at most MAX_REQUESTS requests, whatever purposes the environment names: only the
+    purposes of an approval, as load_live_approval checks them, may allow more (analysis_setup).
+    """
+    return _policy(environ, None)
+
+
+def request_cap(purposes: frozenset[str] | None) -> int:
+    """The most requests an approval may allow: MAX_DISCOVERY_REQUESTS when its checked purposes are discovery alone,
+    MAX_REQUESTS for any other purposes, and for none (missing or not valid)."""
+    return MAX_DISCOVERY_REQUESTS if purposes == frozenset({Purpose.DISCOVERY.value}) else MAX_REQUESTS
+
+
+def _checked_purposes(raw: str) -> frozenset[str]:
+    """The purposes an approval names, comma-separated, each a Purpose and each once; else LiveRefused."""
+    purposes = [purpose.strip() for purpose in raw.split(",")]
+
+    if len(set(purposes)) != len(purposes) or not set(purposes) <= set(Purpose):
+        raise LiveRefused("批准的用途只能是 analysis、structuring、discovery，用逗号分开，各写一次。")
+
+    return frozenset(purposes)
+
+
+def _purposes_or_none(environ: Mapping[str, str]) -> frozenset[str] | None:
+    """The purposes of the approval in the environment, checked as load_live_approval checks them; None when they
+    are missing or not valid, so that only the lower request cap applies (load_live_approval then says why)."""
+    raw = environ.get(APPROVAL_SETTINGS["purposes"], "").strip()
+
+    if not raw:
+        return None
+
+    try:
+        return _checked_purposes(raw)
+    except LiveRefused:
+        return None
+
+
+def _policy(environ, purposes: frozenset[str] | None) -> LivePolicy:
+    """The policy, its requests capped by request_cap(purposes): an approval's purposes as checked, or None."""
     environ = os.environ if environ is None else environ
 
     if environ.get(MODE_VARIABLE) != LIVE:
@@ -183,7 +232,7 @@ def load_live_policy(environ=None) -> LivePolicy:
     if not DATE.fullmatch(values["rules_checked_on"]):
         raise LiveRefused("处理规则的核对日期要写成 YYYY-MM-DD。")
 
-    max_requests = _whole(values["max_requests"], 1, MAX_REQUESTS, "请求次数上限")
+    max_requests = _whole(values["max_requests"], 1, request_cap(purposes), "请求次数上限")
     max_output_tokens = _whole(values["max_output_tokens"], 1, MAX_OUTPUT_TOKENS, "输出上限")
     timeout = _whole(values["timeout_seconds"], 1, MAX_TIMEOUT_SECONDS, "超时秒数")
 
@@ -210,7 +259,10 @@ def load_live_approval(policy: LivePolicy, environ=None) -> ApprovalTerms:
 
     Every term must be written out. Prices read here are never synthetic.
     The terms must name the budget policy of this model and service tier
-    (RESERVE_POLICIES) with its very terms; none other is taken.
+    (RESERVE_POLICIES) with its very terms; none other is taken. The
+    policy's requests must be within what these purposes may allow
+    (request_cap): more than MAX_REQUESTS only for discovery alone, however
+    the policy was read.
     """
     environ = os.environ if environ is None else environ
     missing = [variable for variable in APPROVAL_SETTINGS.values() if not environ.get(variable, "").strip()]
@@ -223,10 +275,11 @@ def load_live_approval(policy: LivePolicy, environ=None) -> ApprovalTerms:
     if not APPROVAL_ID.fullmatch(values["approval_id"]):
         raise LiveRefused("批准编号只能由字母、数字和 . _ - 组成，最多 64 个字符。")
 
-    purposes = [purpose.strip() for purpose in values["purposes"].split(",")]
+    purposes = _checked_purposes(values["purposes"])
+    cap = request_cap(purposes)
 
-    if len(set(purposes)) != len(purposes) or not set(purposes) <= set(Purpose):
-        raise LiveRefused("批准的用途只能是 analysis、structuring、discovery，用逗号分开，各写一次。")
+    if policy.max_requests > cap:
+        raise LiveRefused(f"这份批准的用途最多放行 {cap} 次请求；只写 discovery 的批准才能到 {MAX_DISCOVERY_REQUESTS} 次。")
 
     if not SERVICE_TIER.fullmatch(values["service_tier"]):
         raise LiveRefused("服务档要写成一个小写名称，例如服务商文档里的那个档位名。")
@@ -293,7 +346,7 @@ def load_live_approval(policy: LivePolicy, environ=None) -> ApprovalTerms:
 
     return ApprovalTerms(
         approval_id=values["approval_id"],
-        purposes=frozenset(purposes),
+        purposes=purposes,
         provider=policy.provider,
         model=policy.model,
         endpoint=policy.endpoint,
@@ -346,7 +399,9 @@ def analysis_setup(environ: Mapping[str, str]) -> LiveSetup | None:
         raise ConfigError(f"不认识的分析模式“{mode}”；不设置时只用模拟服务。")
 
     try:
-        policy = load_live_policy(environ)
+        # Requests capped by the approval's own purposes, as checked: more than MAX_REQUESTS for discovery alone;
+        # load_live_approval checks the purposes and the cap again.
+        policy = _policy(environ, _purposes_or_none(environ))
         terms = load_live_approval(policy, environ)
     except LiveRefused as refused:
         raise ConfigError(f"要求使用真实服务，但不能启用：{refused}") from None
