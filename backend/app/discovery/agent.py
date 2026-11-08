@@ -25,14 +25,15 @@ One step (A2 pre-check, 2.1):
 
 The trace (Trace) is short and kept in memory with its task: per step its tool, its parameters at the level of the
 scope, what came of it in one line and the decider's note, made safe (safe_note). It never holds a prompt, an
-experience, a preference or a posting's text.
+experience, a preference or a posting's text. Each step, once recorded, may also be handed to on_step (U3-A3: the
+running page's progress, app.discovery.tasks.DiscoveryTaskStore.progress); what it does with it changes nothing here.
 
 LangSmith tracing stays off: a search does not start with tracing variables set (app.discovery.runner), and the
 graph runs inside tracing_context(enabled=False) besides.
 """
 import itertools
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal, Protocol, TypedDict
 
@@ -812,10 +813,11 @@ class LoopState(TypedDict):
 class _Loop:
     """The nodes of one search's graph, sharing the run, the decider and the trace."""
 
-    def __init__(self, run: SearchRun, decider: Decider, limit: int):
+    def __init__(self, run: SearchRun, decider: Decider, limit: int, on_step: Callable[[TraceStep], object] | None = None):
         self.run = run
         self.decider = decider
         self.limit = limit
+        self.on_step = on_step
         self.steps: list[TraceStep] = []
         self.last: ToolResult | None = None
         self.last_search: tuple[str, str, Combination] | None = None
@@ -904,6 +906,10 @@ class _Loop:
         self.steps.append(self._record())
         self.last = self.step.get("result")
 
+        if self.on_step is not None:
+            # The step as the trace keeps it, and nothing more.
+            self.on_step(self.steps[-1])
+
         if self.run.ended is not None or self.run.stopping():
             return {"go": "stop"}
 
@@ -984,10 +990,16 @@ def build_graph(loop: _Loop):
 
 
 def run_agent(
-    run: SearchRun, decider: Decider, *, limit: int = MAX_DECISIONS, recursion_limit: int = RECURSION_LIMIT
+    run: SearchRun,
+    decider: Decider,
+    *,
+    limit: int = MAX_DECISIONS,
+    recursion_limit: int = RECURSION_LIMIT,
+    on_step: Callable[[TraceStep], object] | None = None,
 ) -> Finished:
-    """Run the loop until the search ends, then say what it found. recursion_limit is LangGraph's backstop only."""
-    loop = _Loop(run, decider, limit)
+    """Run the loop until the search ends, then say what it found. recursion_limit is LangGraph's backstop only;
+    on_step is given each step once it is recorded."""
+    loop = _Loop(run, decider, limit, on_step)
     graph = build_graph(loop)
 
     with tracing_context(enabled=False):

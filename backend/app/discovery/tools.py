@@ -538,6 +538,15 @@ class _Stop:
         return self._run.stopping()
 
 
+def scope_check(scope: SearchScope) -> tuple[str, ...]:
+    """What keeps a search of this scope from starting, as start() finds it; nothing when the scope may start.
+
+    Read-only (U3-A3): a review page asks it before the user confirms, so it shows the very problems start() would
+    refuse with. It reads no database, builds no service, starts nothing; start() still checks it all again.
+    """
+    return (*rules.scope_problems(scope), *_scope_words_problems(scope))
+
+
 def start(
     database: Database,
     confirmation: ParentConfirmation,
@@ -555,7 +564,7 @@ def start(
     service, the provider the parent's gate admitted once for the whole
     search. cancel: anything with is_set(), such as a threading.Event.
     """
-    problems = [*rules.scope_problems(confirmation.scope), *_scope_words_problems(confirmation.scope)]
+    problems = list(scope_check(confirmation.scope))
 
     if approval is None or approval.fingerprint != search_fingerprint(confirmation):
         problems.append("这次查找没有经过确认，或者确认的不是这次查找")

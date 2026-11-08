@@ -160,7 +160,7 @@ def build_plan(db: Session, owner_id: str, inputs: TaskInputs) -> ScopePlan:
             "sources",
         )
 
-    sources = tuple(_source_plan(entry, inputs.left_out) for entry in entries)
+    sources = tuple(source_plan(entry, inputs.left_out) for entry in entries)
 
     for source in sources:
         if not source.sent:
@@ -170,7 +170,7 @@ def build_plan(db: Session, owner_id: str, inputs: TaskInputs) -> ScopePlan:
                 "sources",
             )
 
-    preferences = _preference_plans(db, owner_id, inputs.left_out) if inputs.use_preferences else ()
+    preferences = preference_plans(db, owner_id, inputs.left_out) if inputs.use_preferences else ()
     outbound = len(masked) + sum(
         len(plan.text) for source in sources for plan in source.fields if plan.status == SEND
     ) + sum(len(plan.text) for plan in preferences if plan.status == SEND)
@@ -200,7 +200,11 @@ def _status(key: str, text: str, left_out: frozenset[str]) -> tuple[str, tuple[s
     return (LEFT_OUT if key in left_out else SEND), ()
 
 
-def _source_plan(entry: ConfirmedExperience, left_out: frozenset[str]) -> SourcePlan:
+def source_plan(entry: ConfirmedExperience, left_out: frozenset[str]) -> SourcePlan:
+    """One confirmed experience, field by field: sent, left out by the user, or stopped by app.outbound_review.
+
+    Also what a search for postings shows of the experiences each of its analyses sends (app.discovery.web).
+    """
     fields = []
 
     for definition in CATEGORY_FIELDS[entry.category]:
@@ -213,7 +217,8 @@ def _source_plan(entry: ConfirmedExperience, left_out: frozenset[str]) -> Source
     return SourcePlan(entry=entry, title=display_title(entry.content, entry.category), fields=tuple(fields))
 
 
-def _preference_plans(db: Session, owner_id: str, left_out: frozenset[str]) -> tuple[PreferencePlan, ...]:
+def preference_plans(db: Session, owner_id: str, left_out: frozenset[str]) -> tuple[PreferencePlan, ...]:
+    """The saved preferences, each sent, left out by the user, or stopped by app.outbound_review."""
     saved = current_preferences(db, owner_id)
     plans = []
 

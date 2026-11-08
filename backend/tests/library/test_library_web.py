@@ -75,6 +75,15 @@ JOB_ROUTES = {
     ("POST", "/job-analysis/tasks/{task_id}/cancel"),
     ("POST", "/job-analysis/tasks/{task_id}/again"),
 }
+# The search preview (U3-A3); test_discovery_pages.py checks their access rules.
+DISCOVERY_ROUTES = {
+    ("GET", "/discover"),
+    ("POST", "/discover/review"),
+    ("GET", "/discover/tasks/{task_id}"),
+    ("GET", "/discover/tasks/{task_id}/status"),
+    ("POST", "/discover/tasks/{task_id}/confirm"),
+    ("POST", "/discover/tasks/{task_id}/cancel"),
+}
 # The resume import pages (U2-B1); test_library_imports.py checks their access rules.
 IMPORT_ROUTES = {
     ("GET", "/imports"),
@@ -248,6 +257,7 @@ def test_every_route_is_either_public_or_listed_as_protected(app):
         | {("POST", path) for path in POST_ROUTES}
         | {("POST", path) for path in UPLOAD_ROUTES}
         | JOB_ROUTES
+        | DISCOVERY_ROUTES
         | IMPORT_ROUTES
         | REVIEW_ROUTES
         | STRUCTURING_ROUTES

@@ -4,28 +4,7 @@
 {% set area = "jobs" %}
 {% block title %}{% if task.stage == "running" %}正在分析{% elif task.stage == "cancelled" %}分析已取消{% else %}岗位分析结果{% endif %}{% endblock %}
 
-{# One requirement: its conclusion in the row, the posting's words and the cited experiences when opened. #}
-{% macro finding_row(finding) %}
-<details class="fold finding">
-  <summary><span class="fold-title finding-text">{{ finding.text }}</span><span class="finding-verdict">{{ conclusion_label(finding) }}</span><span class="chevron">{{ i.icon("chevron-right") }}</span></summary>
-  <div class="finding-body">
-    <p class="finding-label">岗位原文</p>
-    <blockquote class="quote">{{ finding.job_posting_quote }}</blockquote>
-    {% for citation in finding.citations %}
-    <p class="finding-label">{{ titles[citation.item_id].title }}<span>{{ CATEGORY_LABELS[citation.category] }}</span><span>确认版 {{ versions[citation.item_id] }}</span><span>{{ field_label(citation.category, citation.field) }}</span><span>{{ BASIS_LABELS[citation.basis] }}</span></p>
-    <blockquote class="quote">{{ citation.quote }}</blockquote>
-    {% if citation.context|list != [citation.quote] %}
-    <p class="finding-context">所在句子：{{ citation.context|join("／") }}</p>
-    {% endif %}
-    {% endfor %}
-    <ul class="reasons">
-      {% for reason in reason_labels(finding.reasons) %}
-      <li>{{ reason }}</li>
-      {% endfor %}
-    </ul>
-  </div>
-</details>
-{% endmacro %}
+{% from "_findings.html" import finding_row with context %}
 
 {% block layout %}
 <main id="main" class="job-page job-reading" tabindex="-1"{% if task.stage == "running" %} data-task-running data-task-status="/job-analysis/tasks/{{ task.id }}/status"{% endif %}>

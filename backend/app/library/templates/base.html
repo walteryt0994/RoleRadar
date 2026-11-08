@@ -38,10 +38,11 @@
     {% endif %}
   </header>
   {% if user and area == "jobs" %}
-  {# 岗位机会 has one part so far; later parts get no entry until they exist. #}
+  {# The parts of 岗位机会 that exist; later parts get no entry until they do. #}
   <div class="subbar">
     <nav class="subnav" aria-label="岗位机会">
-      <a href="/job-analysis" aria-current="page">岗位分析</a>
+      <a href="/job-analysis"{% if section != "discover" %} aria-current="page"{% endif %}>岗位分析</a>
+      <a href="/discover"{% if section == "discover" %} aria-current="page"{% endif %}>找岗位</a>
     </nav>
   </div>
   {% elif user %}

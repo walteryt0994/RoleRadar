@@ -1,0 +1,291 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% import "_icons.html" as i %}
+{% from "_findings.html" import finding_row with context %}
+{% set area = "jobs" %}
+{% set section = "discover" %}
+{% block title %}{% if task.stage == "running" %}正在查找{% elif task.stage == "cancelled" %}查找已停止{% else %}找岗位结果{% endif %}{% endblock %}
+
+{# One step as the trace keeps it; job_analysis.js adds the steps of a running search in the same shape. #}
+{% macro step_item(step) %}
+<li>
+  <p class="step-title">{{ step.title }}</p>
+  {% if step.params %}<p class="step-params">{{ step.params }}</p>{% endif %}
+  {% if step.summary %}<p class="step-summary">{{ step.summary }}</p>{% endif %}
+  {% if step.note %}<p class="step-note">{{ step.note }}</p>{% endif %}
+</li>
+{% endmacro %}
+
+{# A posting analysed in full: where it came from, its three times, what to confirm first, then the analysis. #}
+{% macro result_card(result) %}
+<article class="discover-result">
+  <h4>{{ result.title }}</h4>
+  <p class="review-meta"><span>{{ result.company }}</span><span>{{ result.source }}</span><span>岗位编号 {{ shown_ref(result.ref) }}</span></p>
+  {% if result.first_checks %}
+  <p class="result-label">申请前先确认</p>
+  <ul class="points">
+    {% for item in result.first_checks %}
+    <li>{{ item }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if result.notes %}
+  <ul class="points">
+    {% for note in result.notes %}
+    <li>{{ note }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  <dl class="facts">
+    <div><dt>发布</dt><dd>{{ stated(result.posted_on) }}</dd></div>
+    <div><dt>截止</dt><dd>{{ deadlines_text(result.deadlines) }}</dd></div>
+    <div><dt>核对</dt><dd>{{ checked_text(result.checked_at) }}</dd></div>
+    <div><dt>证据</dt><dd>{{ evidence_label(result.evidence) }}</dd></div>
+    <div><dt>原始链接</dt><dd class="plain-address">{{ result.url }}（合成示例地址，不能访问）</dd></div>
+  </dl>
+  <details class="fold">
+    {{ m.fold_summary("分析依据") }}
+    {% set analysis = result.analysis %}
+    <p class="result-label">招聘条件</p>
+    {% for finding in analysis.findings if finding.group == Group.HARD_CONSTRAINT %}
+    {{ finding_row(finding) }}
+    {% else %}
+    <p class="empty">岗位里没有找到明确的硬性条件。</p>
+    {% endfor %}
+    <p class="result-label">经历支持</p>
+    {% for finding in analysis.findings if finding.group != Group.HARD_CONSTRAINT %}
+    {{ finding_row(finding) }}
+    {% else %}
+    <p class="empty">岗位里没有找到技能要求。</p>
+    {% endfor %}
+    <p class="result-label">工作偏好</p>
+    {% if analysis.preferences != "compared" %}
+    <p class="empty">本次未参考偏好。</p>
+    {% else %}
+    {% for finding in analysis.preference_findings %}
+    {% set topic = PREFERENCE_TOPICS[finding.field] %}
+    <details class="fold finding">
+      <summary><span class="fold-title finding-text">{{ topic[0] }}{% if topic[2] %}（{{ topic[2] }}）{% endif %}</span><span class="finding-verdict">{{ preference_label(finding) }}</span><span class="chevron">{{ i.icon("chevron-right") }}</span></summary>
+      <div class="finding-body">
+        <p class="finding-label">你的偏好</p>
+        <blockquote class="quote">{{ finding.text }}</blockquote>
+        {% for quote in finding.job_quotes %}
+        <p class="finding-label">岗位原文</p>
+        <blockquote class="quote">{{ quote }}</blockquote>
+        {% endfor %}
+        <ul class="reasons">
+          {% for reason in reason_labels(finding.reasons) %}
+          <li>{{ reason }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    </details>
+    {% endfor %}
+    {% endif %}
+    <p class="hint">“目前未找到支持材料”只说明所选的经历里没有写到，不代表你不会。</p>
+  </details>
+</article>
+{% endmacro %}
+
+{# What a search found, also what a stopped one had found when it ended for that very stop. #}
+{% macro found_sections() %}
+{% if changed_since %}
+<p class="warning" role="alert">查找之后，所选的资料有了变化（修改、重新确认、删除或偏好改动）。下面的分析按核对时的版本得出，不是当前有效的分析。</p>
+{% endif %}
+{% if not outcome.personalised %}
+<p class="notice">{{ NOT_PERSONALISED }}。</p>
+{% endif %}
+
+<section class="result-section" aria-labelledby="results-title">
+  <h2 id="results-title">完整分析结果</h2>
+  {% if outcome.results %}
+  {% for category, heading, items in results_by_category if items %}
+  <h3 class="result-group">{{ heading }}</h3>
+  {% for result in items %}
+  {{ result_card(result) }}
+  {% endfor %}
+  {% endfor %}
+  {% else %}
+  <p class="empty">这次没有完整分析的岗位。</p>
+  {% endif %}
+</section>
+
+<section class="result-section" aria-labelledby="leads-title">
+  <h2 id="leads-title">未分析线索</h2>
+  {% if outcome.leads %}
+  <p class="hint">只列公开信息和没有分析的原因，不给结论。</p>
+  <ul class="lead-list">
+    {% for lead in outcome.leads %}
+    <li class="lead">
+      <p class="pick-title">{{ lead.title }}</p>
+      <p class="review-meta"><span>{{ lead.company }}</span><span>{{ lead.cities|join("、") if lead.cities else "工作地点未写明" }}</span><span>{{ lead.source }}（{{ evidence_label(lead.evidence) }}）</span></p>
+      <p class="lead-times">发布 {{ stated(lead.posted_on) }} · 截止 {{ stated(lead.deadline) }} · 核对 {{ checked_text(lead.checked_at) }}</p>
+      <p>没有分析的原因：{{ lead.why }}</p>
+      {% for note in lead.notes %}
+      <p class="hint">{{ note }}</p>
+      {% endfor %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty">没有未分析的线索。</p>
+  {% endif %}
+  {% if outcome.more_leads %}
+  <p class="hint">另有 {{ outcome.more_leads }} 条线索没有列出。</p>
+  {% endif %}
+</section>
+
+<section class="result-section" aria-labelledby="unlisted-title">
+  <h2 id="unlisted-title">没有列出的岗位</h2>
+  {% if outcome.unlisted or outcome.merged or outcome.unverifiable or outcome.foreign %}
+  <ul class="points">
+    {% for reason, refs in outcome.unlisted %}
+    <li>{{ UNLISTED_LABELS[reason] }}：{{ refs|length }} 个</li>
+    {% endfor %}
+    {% if outcome.merged %}
+    <li>和保留的那一条是同一个岗位，已合并：{{ outcome.merged|length }} 个</li>
+    {% endif %}
+    {% if outcome.unverifiable %}
+    <li>编号无法核验，没有采用：{{ outcome.unverifiable }} 个</li>
+    {% endif %}
+    {% if outcome.foreign %}
+    <li>来源返回了属于别的来源的记录（来源异常），没有采用：{{ outcome.foreign }} 条</li>
+    {% endif %}
+  </ul>
+  {% else %}
+  <p class="empty">没有。</p>
+  {% endif %}
+</section>
+
+<section class="result-section" aria-labelledby="searched-title">
+  <h2 id="searched-title">这次查了什么</h2>
+  <dl class="facts">
+    <div><dt>结束原因</dt><dd>{{ end_label }}</dd></div>
+    <div><dt>来源</dt><dd>{{ source_names }}（本机合成数据，不联网）</dd></div>
+    <div><dt>检索</dt><dd>
+      {% if searches %}
+      <ul class="plain-list">
+        {% for line in searches %}
+        <li>{{ line }}</li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      没有检索。
+      {% endif %}
+    </dd></div>
+    {% if outcome.unsearched %}
+    <div><dt>没查的组合</dt><dd>{{ outcome.unsearched|join("；") }}</dd></div>
+    {% endif %}
+    {% if outcome.unjudged %}
+    <div><dt>没有判断的偏好</dt><dd>{{ outcome.unjudged|join("；") }}</dd></div>
+    {% endif %}
+    {% if outcome.refusals %}
+    <div><dt>被拒的动作</dt><dd>{{ outcome.refusals|join("；") }}</dd></div>
+    {% endif %}
+  </dl>
+  <h3 class="result-group">步骤</h3>
+  <ol class="discover-steps">
+    {% for step in trace_steps %}
+    {{ step_item(step) }}
+    {% endfor %}
+  </ol>
+</section>
+{% endmacro %}
+
+{% block layout %}
+<main id="main" class="job-page job-reading" tabindex="-1"{% if task.stage == "running" %} data-task-running data-task-status="/discover/tasks/{{ task.id }}/status"{% endif %}>
+  {% if notice %}
+  <p class="notice" role="status">{{ notice }}</p>
+  {% endif %}
+
+  {% if task.stage == "running" %}
+  <header class="job-head">
+    <h1>正在查找</h1>
+    <p class="job-mode">{{ PREVIEW }}</p>
+  </header>
+  <p class="task-status" role="status" data-task-step>{{ status_line }}</p>
+  <ol class="discover-steps" data-task-steps>
+    {% for step in steps %}
+    {{ step_item(step) }}
+    {% endfor %}
+  </ol>
+  <p class="hint">每完成一步这里会更新；没有更新时可以<a href="/discover/tasks/{{ task.id }}" data-skip-leave-guard>刷新状态</a>。</p>
+  <form method="post" action="/discover/tasks/{{ task.id }}/cancel" data-task-cancel>
+    {{ m.csrf() }}
+    <input type="hidden" name="next" value="">
+    <button type="submit">取消查找</button>
+  </form>
+  <p class="hint">取消后不再开始新的步骤。</p>
+  <section class="review-section" aria-labelledby="scope-title">
+    <h2 id="scope-title">正在使用</h2>
+    <dl class="facts">
+      {% for label, text in scope_lines %}
+      <div><dt>{{ label }}</dt><dd>{{ text }}</dd></div>
+      {% endfor %}
+      <div><dt>经历</dt><dd>{% if material.sources %}{% for source in material.sources %}{{ source.title }}（{{ source.sent|length }} 栏）{% if not loop.last %}、{% endif %}{% endfor %}{% else %}没有选择，不做个性化分析{% endif %}</dd></div>
+    </dl>
+  </section>
+  <dialog id="task-leave-dialog" aria-labelledby="task-leave-title">
+    <h2 id="task-leave-title">查找还在进行</h2>
+    <div class="dialog-actions">
+      <button type="button" data-task-choice="stay" class="secondary">继续查看</button>
+      <button type="button" data-task-choice="cancel" class="danger">取消查找并离开</button>
+    </div>
+  </dialog>
+
+  {% elif task.stage == "cancelled" %}
+  <header class="job-head">
+    <h1>{% if task.cancelled_by == "timeout" %}查找已超时{% else %}查找已取消{% endif %}</h1>
+    <p class="job-mode">{{ PREVIEW }}</p>
+  </header>
+  <p>{{ cancelled_by }}，之后没有再开始新的步骤。{{ requests }}。</p>
+  {% if task.finished %}
+  <p class="hint">下面是查找停止时已经得到的内容，不是完整的查找。</p>
+  {{ found_sections() }}
+  {% elif steps %}
+  <section class="result-section" aria-labelledby="done-steps-title">
+    <h2 id="done-steps-title">停止前完成的步骤</h2>
+    <ol class="discover-steps">
+      {% for step in steps %}
+      {{ step_item(step) }}
+      {% endfor %}
+    </ol>
+    <p class="hint">停止时没有可以展示的结果。</p>
+  </section>
+  {% endif %}
+  <div class="actions">
+    <a class="button primary" href="/discover?from={{ task.id }}">修改后重新查找</a>
+  </div>
+
+  {% else %}
+  <header class="job-head">
+    <h1>{% if problem %}查找没有完成{% else %}找岗位结果{% endif %}</h1>
+    <p class="job-mode">{{ PREVIEW }}</p>
+  </header>
+  {% if problem %}
+  <div class="error" role="alert">
+    <p>{{ problem }}</p>
+    {% if task.problems %}
+    <ul class="points">
+      {% for item in task.problems %}
+      <li>{{ item }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+  {% else %}
+  {{ found_sections() }}
+  {% endif %}
+  <p class="hint result-foot">这是临时结果：保留 {{ TASK_TTL_MINUTES }} 分钟，服务重启后需要重做；不会保存，也不会投递。{{ requests }}。</p>
+  <div class="actions">
+    <a href="/discover?from={{ task.id }}">修改后重新查找</a>
+    <a href="/discover">开始新的查找</a>
+  </div>
+  {% endif %}
+</main>
+{% endblock %}
+{% block scripts %}
+{% if task.stage == "running" %}
+<script src="/static/job_analysis.js"></script>
+{% endif %}
+{% endblock %}

@@ -5,7 +5,9 @@ resume import pages (app.library.imports_web), the review of their
 candidates (app.library.review_web) and their adoption at the user's choice
 (app.library.adoption_web), finishing an import and keeping its original
 as an attachment (app.library.finish_web), the job analysis pages
-(app.job_analysis), stores data in its own SQLite file and attachment
+(app.job_analysis), the preview of finding postings on synthetic sources
+with simulated decisions and analyses only (app.discovery.web, U3-A3: it never
+takes the real service below), stores data in its own SQLite file and attachment
 folder, and never imports the legacy database, models or routers. A resume
 import is read on this machine in a child process and sent nowhere; its
 candidates come from local simulated rules, or, with a real service whose
@@ -44,6 +46,7 @@ from app.library.finish_web import install_finish
 from app.library.imports_web import install_imports
 from app.library.models import create_schema, read_library_id
 from app.library.review_web import install_review
+from app.discovery.web import DiscoveryRuntime, install_discovery
 from app.job_analysis.live import analysis_setup
 from app.job_analysis.service import LiveService
 from app.job_analysis.tasks import SWEEP_SECONDS
@@ -133,6 +136,8 @@ def create_app(
     # One real service, one gate: structuring (U2-C3) and the analysis share it.
     install_structuring(app, live=service)
     install_job_analysis(app, simulation_delay=simulation_delay, sweep_seconds=job_sweep_seconds, live=service)
+    # The search preview gets no service: it runs the simulation only (app.discovery.web).
+    install_discovery(app, simulation_delay=simulation_delay, sweep_seconds=job_sweep_seconds)
 
     return app
 
@@ -151,13 +156,15 @@ async def _lifespan(app: FastAPI):
         task = asyncio.create_task(_cleanup_loop(runtime))
 
     jobs = app.state.job_analysis
-    # Analysis tasks expire and overdue ones stop even when no page asks about them.
+    searches = app.state.discovery
+    # Analysis tasks and searches expire, and overdue ones stop, even when no page asks about them.
     jobs.sweeper = asyncio.create_task(_sweep_loop(jobs))
+    searches.sweeper = asyncio.create_task(_sweep_loop(searches))
 
     try:
         yield
     finally:
-        for running in (task, jobs.sweeper):
+        for running in (task, jobs.sweeper, searches.sweeper):
             if running is not None:
                 running.cancel()
 
@@ -168,6 +175,7 @@ async def _lifespan(app: FastAPI):
         # closes once (jobs.shutdown), after any request still out is settled.
         app.state.structuring.shutdown()
         jobs.shutdown()
+        searches.shutdown()
         runtime.database.engine.dispose()
 
 
@@ -182,15 +190,15 @@ async def _cleanup_loop(runtime: LibraryRuntime) -> None:
             logger.exception("unexpected error in the clean-up loop")
 
 
-async def _sweep_loop(jobs: JobAnalysisRuntime) -> None:
-    """Sweep the analysis tasks every jobs.sweep_seconds for as long as the app runs."""
+async def _sweep_loop(jobs: JobAnalysisRuntime | DiscoveryRuntime) -> None:
+    """Sweep the analysis tasks, or the searches, every jobs.sweep_seconds for as long as the app runs."""
     while True:
         await asyncio.sleep(jobs.sweep_seconds)
 
         try:
             await asyncio.to_thread(jobs.sweep)
         except Exception as error:  # keep the loop alive; the next pass retries
-            logger.error("unexpected error while sweeping analysis tasks (%s)", type(error).__name__)
+            logger.error("unexpected error while sweeping tasks (%s)", type(error).__name__)
 
 
 def check_bind_host(host: str) -> None:

@@ -20,6 +20,10 @@ One executor runs a started task (A2 acceptance, 7.3): it takes the right atomic
 a second one dispatched for the same task gets nothing and must leave it alone. Only the holder may say how the search
 ended, and only once (finish): nothing said afterwards, by it or anyone, changes that.
 
+While it runs, the holder may add each step the search took, as its short trace keeps it (progress, U3-A3): only while
+the task is running within its time and nothing ended it, and at most MAX_STEPS of them. A step said by anyone else, or
+after a stop, the end or the time, is not kept, so the page of a stopped search never gains a step.
+
 What a search leaves when it ends is its outcome and its short trace (app.discovery.agent.Finished), or why it did not
 run (problem). Whether that is taken is decided under the store's lock, against the task as it is then (A2 acceptance,
 7.2): still running within its time, the task is done and the result published. Stopped meanwhile, it stays stopped,
@@ -33,13 +37,15 @@ import time
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
-from app.discovery.agent import Finished
+from app.discovery.agent import MAX_DECISIONS, Finished, TraceStep
 from app.discovery.contracts import EndReason, ParentConfirmation, SearchApproval, search_fingerprint
 from app.library.sends import Call, Delivery, Sends
 
 TASK_TTL_SECONDS = 30 * 60
 MAX_TASKS = 32
 MAX_TASKS_PER_SESSION = 4
+# The steps of a running search kept for its page: one a decision, so never more than the decisions it may take.
+MAX_STEPS = MAX_DECISIONS
 # Who may stop a task, besides its time running out.
 STOPPED_BY = ("user", "logout", "shutdown")
 # How a search must itself have ended for its result to be kept once its task was stopped, by who stopped it.
@@ -104,6 +110,11 @@ class DiscoveryTask:
     worker: str | None = None
     # Whether its executor has said how it ended: nothing may change that afterwards.
     over: bool = False
+    # The steps taken so far, as the trace keeps them (progress): tool, parameters at the level of the scope, one
+    # line of what came of it, a safe note; never a prompt, an answer, an experience or a posting's text.
+    steps: tuple[TraceStep, ...] = ()
+    # What the page entered and reviewed for this search, kept to show it again; the store never reads it.
+    draft: object = None
 
     @property
     def seconds(self) -> float:
@@ -123,7 +134,9 @@ class DiscoveryTaskStore:
         self._lock = threading.Lock()
         self._tasks: dict[str, DiscoveryTask] = {}
 
-    def create(self, owner_id: str, session: str, confirmation: ParentConfirmation, flow: Flow = Flow.AGENT) -> DiscoveryTask:
+    def create(
+        self, owner_id: str, session: str, confirmation: ParentConfirmation, flow: Flow = Flow.AGENT, *, draft: object = None
+    ) -> DiscoveryTask:
         if confirmation.owner_id != owner_id:
             raise ValueError("a search is confirmed by its own user")
 
@@ -144,6 +157,7 @@ class DiscoveryTaskStore:
                 flow=Flow(flow),
                 fingerprint=search_fingerprint(confirmation),
                 touched=self.clock(),
+                draft=draft,
             )
             self._tasks[task.id] = task
 
@@ -226,6 +240,22 @@ class DiscoveryTaskStore:
 
             return True
 
+    def progress(self, task_id: str, worker: str | None, step: TraceStep) -> bool:
+        """One more step of a running search, said by the executor holding it: kept only while the task runs within
+        its time and nothing ended it, and while fewer than MAX_STEPS are kept. Whether it was kept."""
+        with self._lock:
+            task = self._tasks.get(task_id)
+
+            if task is None or task.over or worker is None or task.worker != worker or not self._in_time(task):
+                return False
+
+            if len(task.steps) >= MAX_STEPS:
+                return False
+
+            task.steps = (*task.steps, step)
+
+            return True
+
     def came_back(self, task_id: str, call: Call, delivered: Delivery) -> None:
         """A request handed on came back: counted as sent or as maybe sent, even for a task stopped meanwhile."""
         with self._lock:
@@ -273,6 +303,15 @@ class DiscoveryTaskStore:
                 self._cancel(task, "user")
 
             return replace(task)
+
+    def discard(self, task_id: str, owner_id: str, session: str) -> None:
+        """Forget a search still waiting for its confirmation, replaced by a new review: its old page starts nothing."""
+        with self._lock:
+            task = self._mine(task_id, owner_id, session)
+
+            if task is not None and task.stage is Stage.REVIEW:
+                task.cancel.set()
+                del self._tasks[task.id]
 
     def end_session(self, session: str) -> None:
         with self._lock:

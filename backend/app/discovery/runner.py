@@ -23,6 +23,9 @@ One executor (A2 acceptance, 7.3): before any provider, source or decision, run_
 (DiscoveryTaskStore.claim). A second one dispatched for the same task gets nothing and returns at once, without
 ending the task for it; only the holder says how the search ended, and the store decides then whether its result
 may be taken (DiscoveryTaskStore.finish).
+
+Progress (U3-A3): each step the agent records goes to the store with the holder's token (DiscoveryTaskStore.progress),
+which keeps it only while the task runs within its time; the running page shows those.
 """
 import logging
 import os
@@ -177,7 +180,9 @@ def run_search(
             if task.flow is Flow.BASELINE:
                 finished = baseline.run_baseline(run)
             else:
-                finished = agent.run_agent(run, decider_for(guarded))
+                finished = agent.run_agent(
+                    run, decider_for(guarded), on_step=lambda step: store.progress(task_id, worker, step)
+                )
     except tools.StartRefused as refused:
         # Nothing was sent: the confirmation does not hold as it is now.
         problem, problems = START_REFUSED, refused.problems

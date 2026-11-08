@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% set area = "jobs" %}
+{% set section = "discover" %}
+{% block title %}找岗位{% endblock %}
+{% block layout %}
+<main id="main" class="job-page" tabindex="-1">
+  {% if notice %}
+  <p class="notice" role="status">{{ notice }}</p>
+  {% endif %}
+  <header class="job-head">
+    <h1>找岗位</h1>
+    <p class="job-mode">{{ PREVIEW }}</p>
+  </header>
+  {% if problems %}
+  <div class="error" role="alert">
+    <p>还不能核对：</p>
+    <ul class="points">
+      {% for problem in problems %}
+      <li>{{ problem }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  {% if tracing %}
+  <p class="warning" role="status">环境里设置了可能打开 LangSmith 追踪的变量（{{ tracing|join("、") }}），查找不会开始。请去掉这些变量后重新启动本地网页。</p>
+  {% endif %}
+  {% if dropped %}
+  <p class="warning" role="status">之前选择的 {{ dropped }} 段经历已经修改、重新确认或删除，没有自动选上；请按当前内容重新选择。</p>
+  {% endif %}
+  {# Nothing starts from this page: the next step only checks what was entered and shows the search to confirm. #}
+  <form method="post" action="/discover/review" class="job-columns" data-leave-guard{% if unsaved_input %} data-initially-dirty{% endif %}>
+    {{ m.csrf() }}
+    <section{% if not problems %} data-reveal{% endif %} class="job-panel{% if where == 'scope' %} has-problem{% endif %}" aria-labelledby="want-title">
+      <h2 id="want-title">要找什么</h2>
+      <div class="field">
+        <label for="f-targets">岗位名称</label>
+        <span class="hint" id="h-targets">可以写几个，用顿号分开。</span>
+        <input type="text" id="f-targets" name="targets" value="{{ inputs.targets }}" maxlength="200" aria-describedby="h-targets">
+      </div>
+      {% for dimension, label, offer, given in dimensions %}
+      <fieldset class="dimension">
+        <legend>{{ label }}</legend>
+        {% if offer.values %}
+        <ul class="value-list">
+          {% for value in offer.values %}
+          <li><label class="check"><input type="checkbox" name="{{ dimension.value }}" value="{{ value }}"{% if value in given.ticked %} checked{% endif %}>{{ value }}{% if value in offer.ideal %}<span class="value-note">理想</span>{% endif %}</label></li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="hint">求职偏好里没有填写。</p>
+        {% endif %}
+        {% if offer.excluded %}
+        <p class="hint">不能接受：{{ offer.excluded|join("、") }}。不会检索，也不能选。</p>
+        {% endif %}
+        <div class="field">
+          <label for="f-{{ dimension.value }}-added">也查</label>
+          <input type="text" id="f-{{ dimension.value }}-added" name="{{ dimension.value }}_added" value="{{ given.added }}" maxlength="200" aria-describedby="h-added">
+        </div>
+        <fieldset class="choice-group">
+          <legend>所列以外的{{ label }}</legend>
+          <div class="choice-row">
+            <label class="check"><input type="radio" name="{{ dimension.value }}_others" value="{{ Others.INCLUDED.value }}"{% if given.others == Others.INCLUDED.value %} checked{% endif %}>本次不限</label>
+            <label class="check"><input type="radio" name="{{ dimension.value }}_others" value="{{ Others.EXCLUDED.value }}"{% if given.others == Others.EXCLUDED.value %} checked{% endif %}>只看所列的</label>
+          </div>
+        </fieldset>
+      </fieldset>
+      {% endfor %}
+      <p class="hint" id="h-added">“也查”可以填几项，用顿号分开，每项最多 {{ VALUE_CHARS }} 字。“本次不限”仍然排除不能接受的；没有选择就不能开始。理想的排在前面，不用来过滤。</p>
+    </section>
+    <section{% if not problems %} data-reveal{% endif %} class="job-panel{% if where == 'sources' %} has-problem{% endif %}" aria-labelledby="pick-title">
+      <h2 id="pick-title">用哪些经历分析</h2>
+      {% if experiences %}
+      <p class="hint">可以不选：不选就只查找、读取和核对岗位，不做个性化分析。只能选已确认的经历，一次最多 {{ MAX_EXPERIENCES }} 段。</p>
+      <ul class="pick-list">
+        {% for entry in experiences %}
+        <li class="pick">
+          <div class="pick-choice">
+            <input type="checkbox" id="pick-{{ loop.index }}" name="source" value="{{ entry.item_id }}:{{ entry.version_id }}"{% if entry.item_id in ticked %} checked{% endif %}>
+            <label for="pick-{{ loop.index }}">
+              <span class="pick-title">{{ display_title(entry.content, entry.category) }}</span>
+              <span class="pick-meta"><span>{{ CATEGORY_LABELS[entry.category] }}</span><span>已确认，确认版 {{ entry.version_number }}</span></span>
+            </label>
+          </div>
+          <details class="fold pick-content">
+            {{ m.fold_summary("确认的内容") }}
+            <dl class="fields">
+              {% for field in CATEGORY_FIELDS[entry.category] %}
+              {% if entry.content.get(field.name) %}
+              <dt>{{ field_label(entry.category, field.name) }}</dt>
+              <dd><p class="text">{{ entry.content[field.name] }}</p></dd>
+              {% endif %}
+              {% endfor %}
+            </dl>
+          </details>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="empty-state">还没有已确认的经历：这次只能查找、读取和核对岗位，不做个性化分析。</p>
+      {% endif %}
+      {% if unconfirmed > 0 %}
+      <p class="hint">另有 {{ unconfirmed }} 段经历还没有确认，确认后才能用于分析。</p>
+      {% endif %}
+      <div class="job-option">
+        <label class="check"><input type="checkbox" name="use_preferences" value="yes"{% if inputs.use_preferences %} checked{% endif %}>分析时参考我的其他求职偏好</label>
+        <p class="hint">城市、求职类型和岗位方向按左边的范围核对，不随分析发送。{% if analysed_preferences %}其他偏好在核对时可以逐项去掉；{% else %}你还没有填写其他偏好；{% endif %}没有选择经历时不参考偏好。</p>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="primary">核对查找内容</button>
+      </div>
+      <p class="hint">下一步只列出这次查找会用到的内容，确认之前不会开始。</p>
+    </section>
+  </form>
+  <dialog id="leave-dialog" aria-labelledby="leave-title">
+    <h2 id="leave-title">离开后，这里填写的内容不会保留</h2>
+    <div class="dialog-actions">
+      <button type="button" data-leave-choice="stay" class="secondary">继续填写</button>
+      <button type="button" data-leave-choice="discard" class="danger">放弃并离开</button>
+    </div>
+  </dialog>
+</main>
+{% endblock %}
+{% block scripts %}
+<script src="/static/leave_guard.js"></script>
+{% endblock %}
