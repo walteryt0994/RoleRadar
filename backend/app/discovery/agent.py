@@ -42,7 +42,14 @@ from langgraph.graph import END, START, StateGraph
 from langsmith import tracing_context
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app.ai_provider import AIProvider, AIProviderError, JsonSchemaFormat, request_bytes, responses_request
+from app.ai_provider import (
+    AIProvider,
+    AIProviderConfigError,
+    AIProviderError,
+    JsonSchemaFormat,
+    request_bytes,
+    responses_request,
+)
 from app.discovery import rules, tools
 from app.discovery.contracts import (
     DIMENSION_LABELS,
@@ -657,43 +664,85 @@ class ModelDecider:
 
     A prompt goes out only once it passed the outbound rules and is within the size a request may have
     (request_problem); otherwise nothing is sent and the search ends at the gate (DecisionNotSent).
+
+    output_tokens and max_request_bytes are this decider's own: by default DECISION_OUTPUT_TOKENS and
+    MAX_DECISION_BYTES, which a search of the product keeps. An evaluation may give its own (U3-B0): an output limit,
+    still capped by the gate's approval, and a request limit never above MAX_DECISION_BYTES. Bytes are what is seen
+    here, never a count of tokens.
     """
 
     kind = "model"
 
-    def __init__(self, provider: AIProvider):
+    def __init__(self, provider: AIProvider, *, output_tokens: int | None = None, max_request_bytes: int | None = None):
+        # Left out, each is the module's value as it stands when the decider is made: the product's own.
+        output_tokens = DECISION_OUTPUT_TOKENS if output_tokens is None else output_tokens
+        max_request_bytes = MAX_DECISION_BYTES if max_request_bytes is None else max_request_bytes
+
+        if not _positive(output_tokens):
+            raise ValueError("a decision's output limit is a whole number of tokens above zero")
+
+        if not _positive(max_request_bytes) or max_request_bytes > MAX_DECISION_BYTES:
+            raise ValueError(f"a decision's request limit is a whole number of bytes above zero, at most {MAX_DECISION_BYTES}")
+
         self.provider = provider
+        self.output_tokens = output_tokens
+        self.max_request_bytes = max_request_bytes
 
     def decide(self, observation: Observation) -> str:
         prompt = decision_prompt(observation)
-        problem = request_problem(prompt, self.provider)
+        problem = request_problem(prompt, self.provider, output_tokens=self.output_tokens, max_bytes=self.max_request_bytes)
 
         if problem is not None:
             raise DecisionNotSent(problem)
 
         return self.provider.generate_text(
-            prompt, max_output_tokens=DECISION_OUTPUT_TOKENS, json_schema_format=ACTION_FORMAT
+            prompt, max_output_tokens=self.output_tokens, json_schema_format=ACTION_FORMAT
         ).text
 
 
-def request_problem(prompt: str, provider: AIProvider | None = None) -> str | None:
-    """Why a decision's prompt may not go out: words the outbound rules stop, or a body larger than allowed."""
+def _positive(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def request_problem(
+    prompt: str,
+    provider: AIProvider | None = None,
+    *,
+    output_tokens: int = DECISION_OUTPUT_TOKENS,
+    max_bytes: int = MAX_DECISION_BYTES,
+) -> str | None:
+    """Why a decision's prompt may not go out: words the outbound rules stop, or a body larger than allowed.
+
+    The body measured is the very one provider says it would send, every field of it, when provider can tell
+    (AIProvider.request_body); otherwise a Responses request built for its model. Bytes, never tokens.
+    """
     if review(prompt, posting=True):
         return "决策提示没有通过外发检查"
 
-    identity = provider.identity() if provider is not None else None
-    body = responses_request(
-        identity.requested_model if identity is not None else "model",
-        prompt,
-        max_output_tokens=DECISION_OUTPUT_TOKENS,
-        json_schema_format=ACTION_FORMAT,
-    )
-    size = request_bytes(body)
+    size = request_bytes(_decision_body(prompt, provider, output_tokens))
 
-    if size > MAX_DECISION_BYTES:
-        return f"决策请求有 {size} 字节，超过 {MAX_DECISION_BYTES} 字节的上限"
+    if size > max_bytes:
+        return f"决策请求有 {size} 字节，超过 {max_bytes} 字节的上限"
 
     return None
+
+
+def _decision_body(prompt: str, provider: AIProvider | None, output_tokens: int) -> dict:
+    if provider is not None:
+        try:
+            return provider.request_body(prompt, max_output_tokens=output_tokens, json_schema_format=ACTION_FORMAT)
+        except AIProviderConfigError:
+            # It cannot tell its body (a gated or simulated provider): measure the request built for its model.
+            pass
+
+    identity = provider.identity() if provider is not None else None
+
+    return responses_request(
+        identity.requested_model if identity is not None else "model",
+        prompt,
+        max_output_tokens=output_tokens,
+        json_schema_format=ACTION_FORMAT,
+    )
 
 
 def first_words(scope: SearchScope) -> str:
