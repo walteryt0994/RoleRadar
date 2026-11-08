@@ -29,12 +29,20 @@ A LiveApproval row (U2-C1) is one approval of real AI requests: its terms
 as first used and whether it is paused. A LiveRequest row is one request
 the gate let through: what was reserved for it and what it was charged,
 never what it carried (see app.live_gate).
+
+A DirectionExploration row (U3-C1) is one direction exploration the user
+chose to keep: the checked result as it was, never rewritten, and how it was
+made. A DirectionDecision row is one decision about a direction (keep, defer,
+exclude); a user has at most one in use per direction name. A DirectionSource
+row says which record, version and fields an exploration or a decision rests
+on, by ids and field names only: the record lives by its own rules, and how it
+stands now is worked out when asked (app.library.references).
 """
 import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import JSON, ForeignKey, Index, Integer, String, Text, UniqueConstraint, inspect
+from sqlalchemy import JSON, ForeignKey, Index, Integer, String, Text, UniqueConstraint, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Mapped, Session, mapped_column
@@ -50,10 +58,11 @@ from app.library.errors import ConfigError
 # 6: where each adopted candidate was written (U2-B2b).
 # 7: resume imports the user saved as drafts to keep checking later (U2-B3a).
 # 8: the approvals of real AI requests and the ledger of what each cost (U2-C1).
-# A file of version 3, 4, 5, 6 or 7 is upgraded by app.library.migrate.
-SCHEMA_VERSION = "8"
+# 9: saved direction explorations, direction decisions and what each rests on (U3-C1).
+# A file of version 3 to 8 is upgraded by app.library.migrate.
+SCHEMA_VERSION = "9"
 # The versions app.library.migrate upgrades from.
-UPGRADABLE_SCHEMA_VERSIONS = ("3", "4", "5", "6", "7")
+UPGRADABLE_SCHEMA_VERSIONS = ("3", "4", "5", "6", "7", "8")
 
 
 class ItemState(StrEnum):
@@ -71,6 +80,36 @@ class TargetType(StrEnum):
     EXPERIENCE = "experience"
     VERSION = "experience_version"
     ATTACHMENT = "attachment"
+    # Records of their own (U3-C1): their purge job names the record itself as its item.
+    DIRECTION_EXPLORATION = "direction_exploration"
+    DIRECTION_DECISION = "direction_decision"
+
+
+class SourceKind(StrEnum):
+    """What a direction record rests on: a confirmed experience, or the job preferences (U3-C1)."""
+
+    EXPERIENCE = "experience"
+    PREFERENCES = "preferences"
+
+
+class SourceHolder(StrEnum):
+    EXPLORATION = "exploration"
+    DECISION = "decision"
+
+
+class DecisionState(StrEnum):
+    KEEP = "keep"
+    DEFER = "defer"
+    EXCLUDE = "exclude"
+
+
+class DecisionBasis(StrEnum):
+    # Decided on a saved exploration, which it stays linked to.
+    SAVED_EXPLORATION = "saved_exploration"
+    # Decided on an exploration that was not saved: the full analysis was not kept, only what it rested on.
+    UNSAVED_EXPLORATION = "unsaved_exploration"
+    # The user's own choice, stated or affirmed again by them; what it rested on before stays as history.
+    PERSONAL = "personal"
 
 
 class AttachmentState(StrEnum):
@@ -493,6 +532,90 @@ class LiveRequest(LibraryBase):
     reason: Mapped[str | None] = mapped_column(String(30))
     reserved_at: Mapped[datetime] = mapped_column(UTCDateTime)
     settled_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class DirectionExploration(LibraryBase):
+    """One direction exploration the user chose to keep (U3-C1).
+
+    content is the checked result as it was saved and never changes; generation says how it was made (who
+    answered, the prompt and notice versions, the input fingerprint, when), as the server recorded it.
+    result_id is the id the server gave the result: saving it again finds this row. revision goes up with
+    every delete, restore or purge request. deleted_at, purge_after and deletion_id work as for records; one
+    deleted together with a record or version carries that deletion's id and comes back only with it.
+    """
+
+    __tablename__ = "direction_explorations"
+    __table_args__ = (UniqueConstraint("owner_id", "result_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    result_id: Mapped[str] = mapped_column(String(36))
+    content: Mapped[dict] = mapped_column(JSON)
+    generation: Mapped[dict] = mapped_column(JSON)
+    revision: Mapped[int] = mapped_column(Integer)
+    saved_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    deleted_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    purge_after: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    deletion_id: Mapped[str | None] = mapped_column(String(36))
+
+
+class DirectionDecision(LibraryBase):
+    """One decision about a direction (U3-C1): keep, defer or exclude.
+
+    name_key is the name as compared (see app.directions.contracts.name_key); a user has at most one
+    decision in use per name_key, which the partial unique index makes sure of. basis says what the decision
+    rests on (DecisionBasis); exploration_id names the saved exploration it was made on, and stays when that
+    exploration is deleted or purged, so the decision never passes for one made afresh. revision goes up with
+    every change; pages and callers name it.
+    """
+
+    __tablename__ = "direction_decisions"
+    __table_args__ = (
+        Index(
+            "ux_direction_decisions_in_use",
+            "owner_id",
+            "name_key",
+            unique=True,
+            sqlite_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(60))
+    name_key: Mapped[str] = mapped_column(String(120))
+    state: Mapped[str] = mapped_column(String(20))
+    basis: Mapped[str] = mapped_column(String(30))
+    exploration_id: Mapped[str | None] = mapped_column(String(36))
+    revision: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    deleted_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    purge_after: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    deletion_id: Mapped[str | None] = mapped_column(String(36))
+
+
+class DirectionSource(LibraryBase):
+    """One record a direction exploration or decision rests on (U3-C1): ids and field names, never content.
+
+    holder_type and holder_id name the exploration or decision; kind, item_id and version_id the experience
+    or preferences and the version used; fields the fields that version was used for. item_id is no foreign
+    key: the record is deleted, restored or purged by its own rules, and a row here never holds it back or
+    brings it back. The rows go when their holder is purged.
+    """
+
+    __tablename__ = "direction_sources"
+    __table_args__ = (Index("ix_direction_sources_holder", "holder_type", "holder_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    holder_type: Mapped[str] = mapped_column(String(20))
+    holder_id: Mapped[str] = mapped_column(String(36))
+    kind: Mapped[str] = mapped_column(String(20))
+    item_id: Mapped[str] = mapped_column(String(36), index=True)
+    version_id: Mapped[str] = mapped_column(String(36), index=True)
+    fields: Mapped[list] = mapped_column(JSON)
 
 
 class AuditEvent(LibraryBase):

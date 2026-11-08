@@ -68,6 +68,8 @@ def test_zip_export_has_readme_data_manifest_and_one_file_per_experience(browser
     assert data["recycle_bin"] == []
     assert manifest["counts"] == {
         "experiences": 2, "profile": 0, "preferences": 0, "recycle_bin": 0, "attachments": 0, "imports": 0,
+        # Format 8 (U3-C1): saved direction explorations and decisions, none here.
+        "direction_explorations": 0, "direction_decisions": 0, "direction_recycle_bin": 0,
     }
 
     folder = folders.pop()

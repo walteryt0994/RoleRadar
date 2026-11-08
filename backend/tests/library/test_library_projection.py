@@ -47,7 +47,9 @@ from app.library.service import (
 from library_helpers import PDF, forms_in
 
 SENTINEL = "快照外哨兵-u1d-7f3c"
-REFERENCE_NOTE = "本经历库尚未建立与分析、简历的关联，无法列出它们是否用过这些内容；这次删除只处理经历库里的内容。"
+# Since U3-C1 direction records resting on a record are counted (none here, so not mentioned); the job analysis
+# and résumés keep no references yet.
+REFERENCE_NOTE = "本经历库尚未建立与岗位分析、简历的关联，无法列出它们是否用过这些内容；这次删除只处理经历库里的内容。"
 # Some fields of each category filled in, the others left empty.
 WRITTEN = {
     PROJECT: {"title": "合成项目", "actions": "只写了一句做了什么"},

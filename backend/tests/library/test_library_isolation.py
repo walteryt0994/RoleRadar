@@ -56,6 +56,18 @@ NETWORK_CLIENTS = {"socket", "ssl", "http", "urllib", "requests", "httpx", "http
 # only its runner gets a service, through app.job_analysis.service. None of its own code imports a network client.
 AGENT_MODULES = ("agent", "baseline", "tasks")
 NOT_FOR_THE_AGENT = LEGACY_MODULES + ("app.job_analysis.runner", "app.job_analysis.tasks", "app.job_analysis.web", "app.web_main")
+# The direction records (U3-C1) are contracts and internal entries over the library: no analysis, search, gate,
+# service client or page, and none of their own code imports a network client.
+DIRECTION_MODULES = ("contracts", "records")
+NOT_FOR_DIRECTIONS = LEGACY_MODULES + (
+    "app.job_analysis",
+    "app.discovery",
+    "app.live_gate",
+    "app.ai_provider",
+    "app.experience_analysis",
+    "app.web_main",
+    "openai",
+)
 
 
 def test_launcher_points_every_database_variable_into_the_test_root(test_root):
@@ -168,6 +180,33 @@ def test_the_search_agent_starts_no_analysis_task_and_has_no_page_or_network_cli
 
     for name in (*AGENT_MODULES, "runner"):
         tree = ast.parse((BACKEND_DIR / "app" / "discovery" / f"{name}.py").read_text(encoding="utf-8"))
+        imported |= {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
+        imported |= {node.module.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
+
+    assert not imported & NETWORK_CLIENTS
+
+
+def test_the_direction_records_load_no_analysis_search_gate_page_or_network_client():
+    script = "\n".join(
+        [
+            "import importlib, json, sys",
+            f"for name in {DIRECTION_MODULES!r}:",
+            "    importlib.import_module(f'app.directions.{name}')",
+            f"names = {NOT_FOR_DIRECTIONS!r}",
+            "print(json.dumps([name for name in names if name in sys.modules]))",
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", script], cwd=BACKEND_DIR, env=os.environ.copy(), capture_output=True, text=True, timeout=60
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == []
+
+    imported = set()
+
+    for name in DIRECTION_MODULES:
+        tree = ast.parse((BACKEND_DIR / "app" / "directions" / f"{name}.py").read_text(encoding="utf-8"))
         imported |= {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
         imported |= {node.module.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
 

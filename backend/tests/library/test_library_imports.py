@@ -42,6 +42,7 @@ from app.library.models import (
     SCHEMA_VERSION,
     Attachment,
     AuditEvent,
+    DirectionSource,
     ExperienceItem,
     ExperienceVersion,
     ImportAdoption,
@@ -49,6 +50,7 @@ from app.library.models import (
     ImportDraft,
     ImportState,
     ImportStructuring,
+    LiveApproval,
     LiveRequest,
     PurgeJob,
     ResumeImport,
@@ -1042,7 +1044,10 @@ def test_export_all_holds_the_kept_imports_and_says_they_are_temporary(app, brow
     readme = files["README.md"].decode("utf-8")
     (entry,) = manifest["imports"]
 
-    assert manifest["format_version"] == 7 and manifest["counts"]["imports"] == 1 and manifest["complete"]
+    assert manifest["format_version"] == 8 and manifest["counts"]["imports"] == 1 and manifest["complete"]
+    # Format 8 (U3-C1): the direction records are counted too, none here, and data.json says so.
+    assert (manifest["counts"]["direction_explorations"], manifest["counts"]["direction_decisions"]) == (0, 0)
+    assert data["directions"] == {"explorations": [], "decisions": []}
     assert entry["import_id"] == kept_id and entry["original_status"] == "included"
     assert files[entry["original_path"]] == PDF_FILE[1]
     assert files[entry["text_path"]].decode("utf-8").startswith("=== 第 1 页 ===")
@@ -1062,16 +1067,18 @@ def test_export_all_says_when_an_import_file_is_missing(app, browser_a):
     assert manifest["complete"] is False and manifest["imports"][0]["original_status"] == "missing"
 
 
-# --- the structure upgrade from versions 3, 4, 5 and 6 ----------------------------------------------------
+# --- the structure upgrade from versions 3 to 8 ----------------------------------------------------------
 
 # The tables each older structure version lacks, in an order they can be dropped in.
-NEW_IN_8 = ("live_requests", "live_approvals")
+NEW_IN_9 = ("direction_sources", "direction_decisions", "direction_explorations")
+NEW_IN_8 = NEW_IN_9 + ("live_requests", "live_approvals")
 LACKING = {
     "3": NEW_IN_8 + ("import_drafts", "import_adoptions", "import_candidates", "import_structurings", "resume_imports"),
     "4": NEW_IN_8 + ("import_drafts", "import_adoptions", "import_candidates", "import_structurings"),
     "5": NEW_IN_8 + ("import_drafts", "import_adoptions"),
     "6": NEW_IN_8 + ("import_drafts",),
     "7": NEW_IN_8,
+    "8": NEW_IN_9,
 }
 OLDER_VERSIONS = list(LACKING)
 
@@ -1079,12 +1086,13 @@ OLDER_VERSIONS = list(LACKING)
 def older_file(path: Path, clock, version: str = "3") -> dict:
     """A library of an older structure version, with a row in each of its tables; returns its row counts.
 
-    Versions 4 to 8 only add tables, so the current file without them and
+    Versions 4 to 9 only add tables, so the current file without them and
     with the older version number is that version's file. From version 4 on
     the file holds a resume import, from version 5 on its candidates too:
     one waiting, one edited, one left out; from version 6 on it also says
-    where the edited one was adopted, and a version 7 file has the import
-    saved as a draft.
+    where the edited one was adopted, from version 7 on the import is saved
+    as a draft, and a version 8 file also has an approval of real AI
+    requests with one settled request in its ledger.
     """
     engine = make_engine(path)
     create_schema(engine)
@@ -1129,7 +1137,7 @@ def older_file(path: Path, clock, version: str = "3") -> dict:
         )
         db.add(AuditEvent(owner_id=user, item_id=item, object_type="experience", object_id=item, action="created", at=now))
 
-        if version in ("4", "5", "6", "7"):
+        if version in ("4", "5", "6", "7", "8"):
             imported = str(uuid.uuid4())
             db.add(
                 ResumeImport(
@@ -1141,7 +1149,7 @@ def older_file(path: Path, clock, version: str = "3") -> dict:
                 )
             )
 
-        if version in ("5", "6", "7"):
+        if version in ("5", "6", "7", "8"):
             db.flush()
             db.add(
                 ImportStructuring(
@@ -1155,7 +1163,7 @@ def older_file(path: Path, clock, version: str = "3") -> dict:
                 (("pending", None), ("pending", {"title": "改过的合成标题"}), ("excluded", None)), start=1
             ):
                 candidate = str(uuid.uuid4())
-                adopted = version in ("6", "7") and edits is not None
+                adopted = version in ("6", "7", "8") and edits is not None
                 db.add(
                     ImportCandidate(
                         id=candidate, import_id=imported, owner_id=user, position=position, kind="other",
@@ -1173,9 +1181,20 @@ def older_file(path: Path, clock, version: str = "3") -> dict:
                         )
                     )
 
-        if version == "7":
+        if version in ("7", "8"):
             db.flush()
             db.add(ImportDraft(import_id=imported, owner_id=user, saved_at=now, deleted_at=None, purge_after=None))
+
+        if version == "8":
+            db.add(LiveApproval(approval_id="synthetic-approval", terms={"model": "synthetic"}, created_at=now, paused_at=None, paused_reason=None))
+            db.flush()
+            db.add(
+                LiveRequest(
+                    id=str(uuid.uuid4()), approval_id="synthetic-approval", purpose="analysis", owner_id=user, state="settled",
+                    reserved_micro_usd=200000, charged_micro_usd=4772, input_tokens=753, cache_read_tokens=0,
+                    cache_write_tokens=0, output_tokens=88, service_tier="default", reason=None, reserved_at=now, settled_at=now,
+                )
+            )
 
     with engine.begin() as connection:
         for name in LACKING[version]:
@@ -1265,9 +1284,10 @@ def test_upgrading_an_older_file_keeps_every_row_and_its_identity(make_config, t
     assert after == counts and set(new.values()) == {0}
     assert rows_of(path, before) == before
     assert version == "3" or counts["resume_imports"] == 1
-    assert version not in ("5", "6", "7") or counts["import_candidates"] == 3
-    assert version not in ("6", "7") or counts["import_adoptions"] == 1
-    assert version != "7" or counts["import_drafts"] == 1
+    assert version not in ("5", "6", "7", "8") or counts["import_candidates"] == 3
+    assert version not in ("6", "7", "8") or counts["import_adoptions"] == 1
+    assert version not in ("7", "8") or counts["import_drafts"] == 1
+    assert version != "8" or (counts["live_approvals"], counts["live_requests"]) == (1, 1)
     assert tables_of(path) == set(LibraryBase.metadata.tables)
     # Running it again changes nothing, and the app opens the file.
     digest = digest_of(path)
@@ -1289,7 +1309,7 @@ def test_an_upgraded_file_has_the_structure_of_a_new_one(tmp_path, clock, versio
 
 @pytest.mark.parametrize(
     ("version", "failing"),
-    [("3", ResumeImport), ("4", ImportCandidate), ("5", ImportAdoption), ("6", ImportDraft), ("7", LiveRequest)],
+    [("3", ResumeImport), ("4", ImportCandidate), ("5", ImportAdoption), ("6", ImportDraft), ("7", LiveRequest), ("8", DirectionSource)],
 )
 def test_a_failed_upgrade_leaves_the_file_as_it_was(tmp_path, clock, monkeypatch, capsys, version, failing):
     path = tmp_path / "library.db"
@@ -1308,7 +1328,7 @@ def test_a_failed_upgrade_leaves_the_file_as_it_was(tmp_path, clock, monkeypatch
     assert meta_of(path)["schema_version"] == version and set(counts) == tables_of(path)
 
 
-@pytest.mark.parametrize(("version", "table"), [("6", "import_drafts"), ("7", "live_approvals")])
+@pytest.mark.parametrize(("version", "table"), [("6", "import_drafts"), ("7", "live_approvals"), ("8", "direction_explorations")])
 def test_a_file_that_already_has_a_new_table_is_refused_untouched(tmp_path, clock, version, table):
     path = tmp_path / "library.db"
     older_file(path, clock, version)
@@ -1322,7 +1342,7 @@ def test_a_file_that_already_has_a_new_table_is_refused_untouched(tmp_path, cloc
     assert digest_of(path) == digest
 
 
-@pytest.mark.parametrize("version", ["2", "9"])
+@pytest.mark.parametrize("version", ["2", "10"])
 def test_other_versions_are_refused_untouched(tmp_path, clock, version):
     path = tmp_path / "library.db"
     older_file(path, clock)

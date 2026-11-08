@@ -30,7 +30,10 @@ added or supplemented. That note comes from the record's own history,
 holds no words and is exported only with the record itself. Since U2-B3a
 the imports include those saved as drafts and drafts in the recycle bin
 (until their restore deadline), each saying how it is kept; exporting them
-restores, saves or adopts nothing.
+restores, saves or adopts nothing. Since U3-C1 the package also holds the
+saved direction explorations and direction decisions, in use and still
+restorable, each saying how what it rests on stands now: in data.json and,
+readable, in directions.md (see direction_export.py).
 """
 import hashlib
 import json
@@ -58,6 +61,7 @@ from app.library.content import (
     display_title,
 )
 from app.library.attachments import TYPE_LABELS
+from app.library.direction_export import DirectionExport, collect_directions, directions_markdown
 from app.library.errors import ChangedFile, FileStoreError, MissingFile
 from app.library.files import CHUNK_BYTES, IMPORTS, FileStore
 from app.library.imports import draft_of, import_text, kept_imports
@@ -89,7 +93,8 @@ EXPORT_FORMAT = "roleradar-library-export"
 # 5: the candidates of those imports and their review (U2-B2a), in candidates.json.
 # 6: where adopted candidates went, and on each record the imports that wrote it (U2-B2b).
 # 7: imports saved as drafts and drafts in the recycle bin, each with how it is kept (U2-B3a).
-EXPORT_FORMAT_VERSION = 7
+# 8: saved direction explorations and direction decisions, each with how what it rests on stands (U3-C1).
+EXPORT_FORMAT_VERSION = 8
 SHARE_WARNING = (
     "注意：这份文件包含你的私有备注或联系方式。导出文件离开 RoleRadar 后不再受平台的权限保护；"
     "分享或发送之前，请先检查并删掉不想让别人看到的内容。"
@@ -98,7 +103,7 @@ NOT_INCLUDED = (
     "已超过恢复期限或已永久删除的内容，包括附件文件",
     "没有上传完成的附件",
     "已放弃、已到期或已永久删除的简历导入，包括超过恢复期限的导入草稿",
-    "分析结果、岗位简历和投递记录：这些功能还没有建立",
+    "岗位分析结果、岗位简历和投递记录：这些功能还没有建立",
 )
 IMPORT_SOURCES = {ImportSource.PDF: "PDF", ImportSource.DOCX: "Word（.docx）", ImportSource.TEXT: "粘贴的文字"}
 IMPORT_STATES = {"reading": "正在读取", "read": "文字已读取", "partial": "部分读取", "failed": "读取失败"}
@@ -143,6 +148,8 @@ class ExportContent:
     drafts: dict[str, ImportDraft | None] = field(default_factory=dict)
     # The candidates and review of each structured import, by import id (U2-B2a).
     reviews: dict[str, dict] = field(default_factory=dict)
+    # Saved direction explorations and direction decisions, in use and restorable (U3-C1).
+    directions: DirectionExport = field(default_factory=DirectionExport)
 
 
 @dataclass
@@ -395,6 +402,7 @@ def collect_export(db: Session, owner_id: str, now: datetime) -> ExportContent:
         imports=imports,
         drafts=drafts,
         reviews=reviews,
+        directions=collect_directions(db, owner_id, now),
     )
 
 
@@ -557,14 +565,23 @@ def _write_zip(content: ExportContent, files: FileStore, owner_label: str, now: 
                 _import_record(row, entry, content.reviews.get(row.id), content.drafts.get(row.id))
                 for row, entry in zip(content.imports, manifest_imports)
             ],
+            "directions": {
+                "explorations": content.directions.explorations,
+                "decisions": content.directions.decisions,
+            },
         }
         texts["data.json"] = _json_bytes(data)
+
+        if content.directions.explorations or content.directions.decisions:
+            texts["directions.md"] = directions_markdown(content.directions, now).encode("utf-8")
+
         texts["README.md"] = _readme(
             owner_label,
             now,
             listing,
             manifest_attachments,
             [(row, entry, content.drafts.get(row.id)) for row, entry in zip(content.imports, manifest_imports)],
+            content.directions,
         ).encode("utf-8")
         texts["manifest.json"] = _json_bytes(
             {
@@ -579,6 +596,7 @@ def _write_zip(content: ExportContent, files: FileStore, owner_label: str, now: 
                     "recycle_bin": len(content.binned),
                     "attachments": sum(1 for entry in manifest_attachments if entry["status"] == INCLUDED),
                     "imports": len(content.imports),
+                    **content.directions.counts(),
                 },
                 "not_included": list(NOT_INCLUDED),
                 "attachments": manifest_attachments,
@@ -709,7 +727,9 @@ def _readme(
     listing: dict,
     attachments: list[dict],
     imports: list[tuple[ResumeImport, dict, ImportDraft | None]],
+    directions: DirectionExport | None = None,
 ) -> str:
+    directions = directions or DirectionExport()
     included = [entry for entry in attachments if entry["status"] == INCLUDED]
     left_out = [entry for entry in attachments if entry["status"] != INCLUDED]
     imports_left_out = [entry for _, entry, _ in imports if entry["original_status"] not in (None, INCLUDED)]
@@ -745,6 +765,17 @@ def _readme(
         "当前经历中单独删除的附件在 `recycle-bin/deleted-attachments/` 里，文件夹名对应 `experiences/` 里的经历。",
         f"- `imports/`：还在暂存期内的简历导入，共 {len(imports)} 份，每份有读到的文字（`text.txt`）和原文件；"
         "整理过的还有待核对的条目和核对进度（`candidates.json`）。它们不属于经历库，见下面的“导入中的临时资料”。",
+    ]
+
+    if directions.explorations or directions.decisions:
+        counts = directions.counts()
+        lines.append(
+            f"- `directions.md`：你保存的方向探索 {counts['direction_explorations']} 次、方向决定 "
+            f"{counts['direction_decisions']} 条，以及回收站里还能恢复的 {counts['direction_recycle_bin']} 条；"
+            "每条都写明它依据的资料现在的状态。方向探索是当时的结果，不会随资料改动而改写。"
+        )
+
+    lines += [
         "- `data.json`：同样的内容整理成结构化数据，方便以后导入其他工具。",
         "- `manifest.json`：文件清单、每个文件的 SHA-256 校验值，以及每个附件的来源和状态。",
         "",

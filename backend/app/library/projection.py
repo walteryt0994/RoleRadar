@@ -19,8 +19,11 @@ current_preferences reads the job preferences as saved: they are a wish
 list, never confirmed, and a task compares only the fields its user chose.
 
 list_references says what the library knows about other modules using a
-record. No other module keeps references yet, so the answer says exactly
-that, never "no references".
+record. Since U3-C1 saved direction explorations and direction decisions
+keep references to the records they rest on, so the answer lists them; the
+job analysis and résumés keep none yet, so for them it says exactly that,
+never "no references". list_version_references does the same for one
+version of a record.
 """
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -32,10 +35,11 @@ from sqlalchemy.orm import Session
 from app.library.content import CATEGORY_FIELDS, EXPERIENCE_CATEGORIES, PREFERENCES
 from app.library.errors import InconsistentRecord, NotFound
 from app.library.models import ExperienceItem, ExperienceVersion, ItemState, VersionKind
+from app.library.references import referencing
 from app.library.service import is_expired, new_id
 
 NOT_ESTABLISHED = "not_established"
-# The modules that will use records once they exist: analysis (U2) and résumés (U4).
+# The modules that use records but keep no references to them yet: the job analysis (U2) and résumés (U4).
 DOWNSTREAM_MODULES = ("analysis", "resume")
 
 
@@ -249,13 +253,17 @@ def current_preferences(db: Session, owner_id: str) -> dict[str, str]:
 class ReferenceStatus:
     """What the library knows about other modules using a record.
 
-    NOT_ESTABLISHED: the modules keep no references to the library yet, so
-    it cannot tell whether they used the record. That is not the same as
-    knowing that they did not.
+    status NOT_ESTABLISHED is for modules: they keep no references to the
+    library yet, so it cannot tell whether they used the record. That is not
+    the same as knowing that they did not. explorations and decisions are
+    the saved direction explorations and the decisions in use that rest on
+    the record (U3-C1): known, so listed, and none means none.
     """
 
     status: str
     modules: tuple[str, ...]
+    explorations: tuple[str, ...] = ()
+    decisions: tuple[str, ...] = ()
 
 
 def list_references(
@@ -281,4 +289,45 @@ def list_references(
     if item is None or is_expired(item, now):
         raise NotFound()
 
-    return ReferenceStatus(status=NOT_ESTABLISHED, modules=DOWNSTREAM_MODULES)
+    directions = referencing(db, owner_id, item.id)
+
+    return ReferenceStatus(
+        status=NOT_ESTABLISHED,
+        modules=DOWNSTREAM_MODULES,
+        explorations=directions.explorations,
+        decisions=directions.decisions,
+    )
+
+
+def list_version_references(
+    db: Session,
+    owner_id: str,
+    item_id: str,
+    version_id: str,
+    now: datetime,
+    kinds: tuple[str, ...] = EXPERIENCE_CATEGORIES,
+) -> ReferenceStatus:
+    """The reference status of one version of one of the owner's records, kept or still restorable."""
+    version = db.scalar(
+        select(ExperienceVersion)
+        .join(ExperienceItem, ExperienceItem.id == ExperienceVersion.item_id)
+        .where(
+            ExperienceVersion.id == version_id,
+            ExperienceVersion.item_id == item_id,
+            ExperienceVersion.owner_id == owner_id,
+            ExperienceItem.owner_id == owner_id,
+            ExperienceItem.category.in_(kinds),
+        )
+    )
+
+    if version is None or is_expired(version, now):
+        raise NotFound()
+
+    directions = referencing(db, owner_id, item_id, version.id)
+
+    return ReferenceStatus(
+        status=NOT_ESTABLISHED,
+        modules=DOWNSTREAM_MODULES,
+        explorations=directions.explorations,
+        decisions=directions.decisions,
+    )

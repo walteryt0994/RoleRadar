@@ -154,6 +154,7 @@ from app.library.presentation import (
     format_remaining,
     format_short,
     format_size,
+    direction_note,
     record_page,
     reference_note,
     section_of,
@@ -162,7 +163,7 @@ from app.library.presentation import (
     unfilled_labels,
     version_label,
 )
-from app.library.projection import list_references
+from app.library.projection import list_references, list_version_references
 from app.library.sends import sends_text
 from app.library.service import (
     active_item,
@@ -1551,6 +1552,7 @@ def version_delete_page(
     with rt.database.transaction() as db:
         item, version = deletable_version(db, user.id, item_id, version_id, ALL_KINDS)
         state = version_state(db, version)
+        references = list_version_references(db, user.id, item.id, version.id, now, ALL_KINDS)
 
     return confirm_page(
         request,
@@ -1562,6 +1564,7 @@ def version_delete_page(
             f"{RESTORE_WINDOW.days} 天内（截至 {format_local(now + RESTORE_WINDOW)}）"
             "可以在历史页恢复，也可以提前永久删除。",
             "已经下载到本机的导出文件如果包含这个版本，需要你自己处理。",
+            *_version_direction_points(references),
         ],
         action=f"/experiences/{item.id}/versions/{version.id}/delete",
         button="删除这个历史版本",
@@ -1615,11 +1618,19 @@ def version_purge_page(
     with rt.database.transaction() as db:
         item, version = trashed_version(db, user.id, item_id, version_id, rt.now(), ALL_KINDS)
         state = version_state(db, version)
+        references = list_version_references(db, user.id, item.id, version.id, rt.now(), ALL_KINDS)
 
-    return _version_purge_confirm(request, user, item, version, state)
+    return _version_purge_confirm(request, user, item, version, state, references)
 
 
-def _version_purge_confirm(request, user, item, version, state, error=None, status_code=200):
+def _version_direction_points(references, *, purge: bool = False) -> list[str]:
+    """The line a version's deletion pages add when direction records rest on it (U3-C1); none otherwise."""
+    note = direction_note(references, purge=purge, version=True)
+
+    return [note] if note else []
+
+
+def _version_purge_confirm(request, user, item, version, state, references, error=None, status_code=200):
     return confirm_page(
         request,
         user,
@@ -1629,6 +1640,7 @@ def _version_purge_confirm(request, user, item, version, state, error=None, stat
             f"只删除这一个历史版本，{_owner_noun(item)}的当前内容和其他版本不受影响。",
             "清理会立即开始；如果暂时没有完成，这个版本也已经不能访问或恢复，系统会自动重试。",
             "已经下载到本机的导出文件不受影响。",
+            *_version_direction_points(references, purge=True),
         ],
         action=f"/experiences/{item.id}/versions/{version.id}/purge",
         button="永久删除这个历史版本",
@@ -1656,6 +1668,7 @@ def version_purge(
         with rt.database.transaction() as db:
             item, version = trashed_version(db, user.id, item_id, version_id, rt.now(), ALL_KINDS)
             check_version_state(db, version, expected)
+            references = list_version_references(db, user.id, item.id, version.id, rt.now(), ALL_KINDS)
 
         return _version_purge_confirm(
             request,
@@ -1663,6 +1676,7 @@ def version_purge(
             item,
             version,
             expected,
+            references,
             error="请先勾选“我了解永久删除后无法恢复”。",
             status_code=422,
         )
@@ -1826,7 +1840,7 @@ def _purge_confirm(request, user, item, attachments, references, error=None, sta
             what,
             "清理会立即开始；如果暂时没有完成，内容也已经不能访问或恢复，系统会自动重试，并在回收站显示进度。",
             "已经下载到本机的导出文件不受影响。",
-            reference_note(references),
+            reference_note(references, purge=True),
         ],
         action=f"/experiences/{item.id}/purge",
         button="永久删除",

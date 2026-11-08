@@ -32,6 +32,14 @@ class Conflict(LibraryError):
         self.current = current
 
 
+class RecordConflict(LibraryError):
+    """A direction exploration or decision was asked to change by someone who saw an earlier state of it (U3-C1)."""
+
+    def __init__(self, record_id: str):
+        super().__init__("record state conflict")
+        self.record_id = record_id
+
+
 class VersionConflict(LibraryError):
     """A history-version page was prepared for an earlier delete/restore state."""
 

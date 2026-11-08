@@ -2,11 +2,14 @@
 
 Version 4 added resume_imports (U2-B1); version 5 added import_structurings
 and import_candidates (U2-B2a); version 6 added import_adoptions (U2-B2b);
-version 7 added import_drafts (U2-B3a); version 8 adds live_approvals and
-live_requests, the ledger of real AI requests (U2-C1). An upgrade passes
-every step from the file's version: a version 3 file gets all seven tables,
-a version 4 file the last six, a version 5 file the last four, a version 6
-file the last three, a version 7 file the last two.
+version 7 added import_drafts (U2-B3a); version 8 added live_approvals and
+live_requests, the ledger of real AI requests (U2-C1); version 9 adds
+direction_explorations, direction_decisions and direction_sources, the saved
+direction explorations and decisions and what each rests on (U3-C1). An
+upgrade passes every step from the file's version: a version 3 file gets all
+ten tables, a version 4 file the last nine, a version 5 file the last seven,
+a version 6 file the last six, a version 7 file the last five, a version 8
+file the last three.
 Nothing already in the file changes; the new tables are created
 empty, with their indexes. The upgrade is an explicit command, never a part
 of starting the app. From backend/, with the app stopped and the file
@@ -17,7 +20,7 @@ backed up:
 
 Before anything changes, the file must exist, pass the same path checks as
 the app's database (never the legacy RoleRadar database, never inside the
-repository), be a library database of version 3, 4, 5, 6 or 7 with its library id
+repository), be a library database of version 3 to 8 with its library id
 and without any table the upgrade would create, and pass SQLite's quick
 check. The upgrade is one transaction that takes the write lock first: it
 creates the tables and then sets the version, so any failure leaves the
@@ -42,6 +45,9 @@ from app.library.errors import ConfigError
 from app.library.models import (
     SCHEMA_VERSION,
     UPGRADABLE_SCHEMA_VERSIONS,
+    DirectionDecision,
+    DirectionExploration,
+    DirectionSource,
     ImportAdoption,
     ImportCandidate,
     ImportDraft,
@@ -59,6 +65,7 @@ STEPS: tuple[tuple[str, tuple[Table, ...]], ...] = (
     ("6", (ImportAdoption.__table__,)),
     ("7", (ImportDraft.__table__,)),
     ("8", (LiveApproval.__table__, LiveRequest.__table__)),
+    ("9", (DirectionExploration.__table__, DirectionDecision.__table__, DirectionSource.__table__)),
 )
 REFUSED, FAILED = 2, 1
 FROM_VERSIONS = " 或 ".join(UPGRADABLE_SCHEMA_VERSIONS)
@@ -187,7 +194,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m app.library.migrate",
         description=f"把经历库数据库从结构版本 {FROM_VERSIONS} 升级到 {SCHEMA_VERSION}"
-        "（新增简历导入暂存表、导入候选的核对表、采纳记录表、导入草稿表，以及真实 AI 请求的批准和用量账本表）。不加 --apply 时只检查，不修改文件。",
+        "（新增简历导入暂存表、导入候选的核对表、采纳记录表、导入草稿表、真实 AI 请求的批准和用量账本表，"
+        "以及方向探索、方向决定和它们依据的资料表）。不加 --apply 时只检查，不修改文件。",
     )
     parser.add_argument("--db", required=True, help="要升级的经历库 SQLite 文件的绝对路径")
     parser.add_argument("--apply", action="store_true", help="确认执行升级（请先停止网页应用并备份文件）")

@@ -299,17 +299,50 @@ DOCUMENT_EVENT_LABELS = {**EVENT_LABELS, "created": "第一次保存"}
 
 
 # The modules a record's reference status covers, as the deletion pages name them.
-MODULE_LABELS = {"analysis": "分析", "resume": "简历"}
+MODULE_LABELS = {"analysis": "岗位分析", "resume": "简历"}
 
 
-def reference_note(references) -> str:
-    """What a deletion page says about other modules: only what the library knows."""
+def reference_note(references, *, purge: bool = False) -> str:
+    """What a deletion page says about other modules: only what the library knows.
+
+    Saved direction explorations and direction decisions keep references (U3-C1): those resting on the
+    record are counted (nothing is said of them when there are none, as the pages do not offer them yet);
+    the modules that keep no references are said to be unknown, never "not used".
+    """
     if references.status != NOT_ESTABLISHED:
         raise ValueError(f"no wording for the reference status {references.status!r}")
 
     modules = "、".join(MODULE_LABELS[name] for name in references.modules)
 
-    return f"本经历库尚未建立与{modules}的关联，无法列出它们是否用过这些内容；这次删除只处理经历库里的内容。"
+    return (
+        f"{direction_note(references, purge=purge)}"
+        f"本经历库尚未建立与{modules}的关联，无法列出它们是否用过这些内容；这次删除只处理经历库里的内容。"
+    )
+
+
+def direction_note(references, *, purge: bool = False, version: bool = False) -> str:
+    """What deleting a record, or one version of it, does to the direction records resting on it (U3-C1).
+
+    Nothing of them is deleted along by default: they stay to be looked at, marked, and out of new use.
+    Purging the record does not remove the quotes a kept exploration holds, and the page says so. With
+    none resting on it, nothing is said.
+    """
+    what = "这个版本" if version else "它"
+    explorations, decisions = len(references.explorations), len(references.decisions)
+
+    if not explorations and not decisions:
+        return ""
+
+    counted = [f"{explorations} 次已保存的方向探索"] * bool(explorations) + [f"{decisions} 条方向决定"] * bool(decisions)
+    note = (
+        f"有 {'、'.join(counted)}以{what}为依据：默认不会一起删除，它们保留供回看，"
+        "并标为“依据已删除”，不再用于新的分析或找岗。"
+    )
+
+    if purge and explorations:
+        note += "这些探索里保存的引文不会随之清除；需要的话，请另外删除那些探索。"
+
+    return note
 
 
 def event_label(event, category: str = PROJECT) -> str:

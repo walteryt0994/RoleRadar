@@ -189,7 +189,7 @@ def test_a_saved_draft_outlives_its_seven_days_and_stays_in_use_without_writing_
     assert len(items(app, "project")) == 1 and len(items(app, "education")) == 1
     manifest, _, _ = exported(browser_a)
     (entry,) = manifest["imports"]
-    assert (entry["kept_as"], entry["kept_until"], manifest["format_version"]) == ("saved", None, 7)
+    assert (entry["kept_as"], entry["kept_until"], manifest["format_version"]) == ("saved", None, 8)
 
 
 def test_a_saved_file_draft_keeps_its_file_past_the_seven_days(app, browser_a, clock):

@@ -17,6 +17,16 @@ on their own before keep their own deadline. And a purge removes the files
 of the attachments it covers before their rows: a job is only done once the
 files are really gone, and a job that failed after removing some files finds
 them gone on its next try and finishes.
+
+Saved direction explorations and direction decisions (U3-C1) are records of
+their own with the same rules: each deletion has its own purge job, and
+changes name the record's revision. Deleting a record or one version of it
+deletes nothing that rests on it unless the caller names the explorations
+the user chose to delete along: those must be in use and rest on it, go to
+the bin under the same deletion, come back only with it and are purged with
+it. An exploration that went along with something else can be neither
+restored nor purged on its own. A decision is not restored next to a newer
+one of the same name.
 """
 import logging
 from dataclasses import dataclass, field
@@ -27,16 +37,27 @@ from sqlalchemy.orm import Session
 
 from app.library.content import DOCUMENT_KINDS, EXPERIENCE_CATEGORIES, PREFERENCES, PROFILE
 from app.library.db import Database
-from app.library.errors import AttachmentConflict, FileStoreError, NotAllowed, NotFound, VersionConflict
+from app.library.errors import (
+    AttachmentConflict,
+    FileStoreError,
+    NotAllowed,
+    NotFound,
+    RecordConflict,
+    VersionConflict,
+)
 from app.library.files import FileStore
 from app.library.models import (
     Attachment,
     AttachmentState,
+    DirectionDecision,
+    DirectionExploration,
+    DirectionSource,
     ExperienceItem,
     ExperienceVersion,
     JobStatus,
     PurgeJob,
     PurgeReason,
+    SourceHolder,
     TargetType,
 )
 from app.library.service import (
@@ -70,6 +91,21 @@ RESTORE_BLOCKED_REASONS = {
     ),
 }
 KINDS = tuple[str, ...]
+# Deleting along only what the user chose from what rests on the record (U3-C1).
+ALONG_REASON = "只能一并删除正在使用、并且确实以这份资料为依据的方向探索；这次什么都没有删除。"
+WENT_ALONG_REASON = "这次方向探索是和它依据的资料一起删除的，只能随那份资料一起恢复或永久删除。"
+SAME_NAME_REASON = (
+    "你现在已经有一条同名的方向决定。为了不覆盖它，这条旧的决定不能直接恢复；"
+    "如果想换回旧的，请先删除现在这条，再回来恢复。"
+)
+DIRECTION_TARGETS = {
+    DirectionExploration: TargetType.DIRECTION_EXPLORATION,
+    DirectionDecision: TargetType.DIRECTION_DECISION,
+}
+DIRECTION_HOLDERS = {
+    TargetType.DIRECTION_EXPLORATION: SourceHolder.EXPLORATION,
+    TargetType.DIRECTION_DECISION: SourceHolder.DECISION,
+}
 
 logger = logging.getLogger("roleradar.library")
 
@@ -104,7 +140,13 @@ def delete_experience(
     expected_revision: int,
     now: datetime,
     kinds: KINDS = EXPERIENCE_CATEGORIES,
+    also_explorations: tuple[str, ...] = (),
 ) -> ExperienceItem:
+    """Move a record to the bin.
+
+    also_explorations names the saved direction explorations the user chose to delete along (U3-C1); by
+    default none is, and those resting on the record stay, marked, out of new use.
+    """
     item = active_item(db, owner_id, item_id, kinds)
     check_revision(item, expected_revision)
     _start_deletion(db, owner_id, TargetType.EXPERIENCE, item, item, now)
@@ -118,6 +160,7 @@ def delete_experience(
         attachment.revision += 1
         attachment.updated_at = now
 
+    _take_explorations_along(db, owner_id, also_explorations, item, None, item, now)
     item.revision += 1
     record_event(db, owner_id, item.id, TargetType.EXPERIENCE, item.id, "deleted", now)
 
@@ -149,6 +192,7 @@ def restore_experience(
         attachment.revision += 1
         attachment.updated_at = now
 
+    _bring_explorations_back(db, owner_id, item.deletion_id, now)
     _cancel_deletion(db, item, now)
     item.revision += 1
     record_event(db, owner_id, item.id, TargetType.EXPERIENCE, item.id, "restored", now)
@@ -172,6 +216,14 @@ def request_experience_purge(
         attachment.purge_after = now
         attachment.revision += 1
         attachment.updated_at = now
+
+    _expire_explorations_now(db, owner_id, item.deletion_id, now)
+
+    # The record takes its versions with it, those waiting in the bin on their own included: what the user
+    # deleted along with one of them stops being available now too, not only once the clean-up gets to it
+    # (U3-C1 R1). Explorations kept, or deleted on their own, are not touched.
+    for deletion_id in _open_version_deletions(db, owner_id, item.id):
+        _expire_explorations_now(db, owner_id, deletion_id, now)
 
     job_id = _expire_now(db, item, now)
     item.revision += 1
@@ -258,10 +310,13 @@ def delete_version(
     expected_state: str,
     now: datetime,
     kinds: KINDS = EXPERIENCE_CATEGORIES,
+    also_explorations: tuple[str, ...] = (),
 ) -> ExperienceVersion:
+    """Move one history version to the bin; also_explorations as for delete_experience, resting on this version."""
     item, version = deletable_version(db, owner_id, item_id, version_id, kinds)
     check_version_state(db, version, expected_state)
     _start_deletion(db, owner_id, TargetType.VERSION, version, item, now)
+    _take_explorations_along(db, owner_id, also_explorations, item, version, version, now)
     record_event(db, owner_id, item.id, TargetType.VERSION, version.id, "version_deleted", now)
 
     return version
@@ -278,6 +333,7 @@ def restore_version(
 ) -> ExperienceVersion:
     item, version = trashed_version(db, owner_id, item_id, version_id, now, kinds)
     check_version_state(db, version, expected_state)
+    _bring_explorations_back(db, owner_id, version.deletion_id, now)
     _cancel_deletion(db, version, now)
     record_event(db, owner_id, item.id, TargetType.VERSION, version.id, "version_restored", now)
 
@@ -295,6 +351,7 @@ def request_version_purge(
 ) -> str:
     item, version = trashed_version(db, owner_id, item_id, version_id, now, kinds)
     check_version_state(db, version, expected_state)
+    _expire_explorations_now(db, owner_id, version.deletion_id, now)
     job_id = _expire_now(db, version, now)
     record_event(
         db, owner_id, item.id, TargetType.VERSION, version.id, "version_purge_requested", now
@@ -470,6 +527,223 @@ def _expire_now(db: Session, target, now: datetime) -> str:
     job.updated_at = now
 
     return job.id
+
+
+# --- direction explorations and decisions (U3-C1) -------------------------------------------------------------
+
+
+def _take_explorations_along(
+    db: Session,
+    owner_id: str,
+    exploration_ids: tuple[str, ...],
+    item: ExperienceItem,
+    version: ExperienceVersion | None,
+    deletion,
+    now: datetime,
+) -> None:
+    """Move the explorations the user chose into the bin under this deletion (the record's or the version's).
+
+    Each must be in use and rest on the record (on this version, when one is deleted); otherwise nothing is
+    deleted at all, the record included, since the error rolls the transaction back.
+    """
+    for exploration_id in dict.fromkeys(exploration_ids):
+        exploration = db.scalar(
+            select(DirectionExploration).where(
+                DirectionExploration.id == exploration_id,
+                DirectionExploration.owner_id == owner_id,
+                DirectionExploration.deleted_at.is_(None),
+            )
+        )
+        conditions = [
+            DirectionSource.owner_id == owner_id,
+            DirectionSource.holder_type == SourceHolder.EXPLORATION,
+            DirectionSource.holder_id == exploration_id,
+            DirectionSource.item_id == item.id,
+        ]
+
+        if version is not None:
+            conditions.append(DirectionSource.version_id == version.id)
+
+        if exploration is None or db.scalar(select(DirectionSource.id).where(*conditions).limit(1)) is None:
+            raise NotAllowed(ALONG_REASON)
+
+        exploration.deleted_at = now
+        exploration.purge_after = deletion.purge_after
+        exploration.deletion_id = deletion.deletion_id
+        exploration.revision += 1
+        exploration.updated_at = now
+        record_event(
+            db, owner_id, exploration.id, TargetType.DIRECTION_EXPLORATION, exploration.id, "direction_exploration_deleted", now
+        )
+
+
+def _went_along(db: Session, owner_id: str, deletion_id: str | None) -> list[DirectionExploration]:
+    """The explorations in the bin under this deletion of a record or a version."""
+    if deletion_id is None:
+        return []
+
+    return list(
+        db.scalars(
+            select(DirectionExploration).where(
+                DirectionExploration.owner_id == owner_id,
+                DirectionExploration.deletion_id == deletion_id,
+            )
+        )
+    )
+
+
+def _bring_explorations_back(db: Session, owner_id: str, deletion_id: str | None, now: datetime) -> None:
+    """Restoring a record or a version brings back exactly the explorations deleted along with it."""
+    for exploration in _went_along(db, owner_id, deletion_id):
+        exploration.deleted_at = None
+        exploration.purge_after = None
+        exploration.deletion_id = None
+        exploration.revision += 1
+        exploration.updated_at = now
+        record_event(
+            db, owner_id, exploration.id, TargetType.DIRECTION_EXPLORATION, exploration.id, "direction_exploration_restored", now
+        )
+
+
+def _expire_explorations_now(db: Session, owner_id: str, deletion_id: str | None, now: datetime) -> None:
+    """No restoring, reading or exporting of what went along with this deletion from this instant on."""
+    for exploration in _went_along(db, owner_id, deletion_id):
+        if not is_expired(exploration, now):
+            exploration.purge_after = now
+            exploration.revision += 1
+            exploration.updated_at = now
+
+
+def _open_version_deletions(db: Session, owner_id: str, item_id: str) -> list[str]:
+    """The deletions of this record's versions still waiting in the bin, by their purge jobs."""
+    return list(
+        db.scalars(
+            select(PurgeJob.deletion_id).where(
+                PurgeJob.owner_id == owner_id,
+                PurgeJob.item_id == item_id,
+                PurgeJob.target_type == TargetType.VERSION,
+                PurgeJob.status.in_(OPEN_STATUSES),
+            )
+        )
+    )
+
+
+def active_direction_record(db: Session, owner_id: str, model, record_id: str):
+    """A saved exploration or a decision of this owner, in use."""
+    row = db.scalar(select(model).where(model.id == record_id, model.owner_id == owner_id, model.deleted_at.is_(None)))
+
+    if row is None:
+        raise NotFound()
+
+    return row
+
+
+def trashed_direction_record(db: Session, owner_id: str, model, record_id: str, now: datetime):
+    """A saved exploration or a decision of this owner in the recycle bin, still restorable."""
+    row = db.scalar(select(model).where(model.id == record_id, model.owner_id == owner_id, model.deleted_at.is_not(None)))
+
+    if row is None or is_expired(row, now):
+        raise NotFound()
+
+    return row
+
+
+def check_record_revision(row, expected_revision: int) -> None:
+    if row.revision != expected_revision:
+        raise RecordConflict(row.id)
+
+
+def delete_direction_record(db: Session, owner_id: str, model, record_id: str, expected_revision: int, now: datetime):
+    row = active_direction_record(db, owner_id, model, record_id)
+    check_record_revision(row, expected_revision)
+    target_type = DIRECTION_TARGETS[model]
+    _start_deletion_of_own(db, owner_id, target_type, row, now)
+    row.revision += 1
+    row.updated_at = now
+    record_event(db, owner_id, row.id, target_type, row.id, f"{target_type}_deleted", now)
+
+    return row
+
+
+def restore_direction_record(db: Session, owner_id: str, model, record_id: str, expected_revision: int, now: datetime):
+    """Bring one back from the bin: never one that went along with a record, nor an old decision over a newer one."""
+    row = trashed_direction_record(db, owner_id, model, record_id, now)
+    check_record_revision(row, expected_revision)
+    target_type = DIRECTION_TARGETS[model]
+
+    if not _deleted_on_its_own(db, row, target_type):
+        raise NotAllowed(WENT_ALONG_REASON)
+
+    if model is DirectionDecision and decision_in_use(db, owner_id, row.name_key) is not None:
+        raise NotAllowed(SAME_NAME_REASON)
+
+    _cancel_deletion(db, row, now)
+    row.revision += 1
+    row.updated_at = now
+    record_event(db, owner_id, row.id, target_type, row.id, f"{target_type}_restored", now)
+
+    return row
+
+
+def request_direction_record_purge(
+    db: Session, owner_id: str, model, record_id: str, expected_revision: int, now: datetime
+) -> str:
+    """Make one in the bin unrestorable now; return its purge job id."""
+    row = trashed_direction_record(db, owner_id, model, record_id, now)
+    check_record_revision(row, expected_revision)
+    target_type = DIRECTION_TARGETS[model]
+
+    if not _deleted_on_its_own(db, row, target_type):
+        raise NotAllowed(WENT_ALONG_REASON)
+
+    job_id = _expire_now(db, row, now)
+    row.revision += 1
+    row.updated_at = now
+    record_event(db, owner_id, row.id, target_type, row.id, f"{target_type}_purge_requested", now)
+
+    return job_id
+
+
+def decision_in_use(db: Session, owner_id: str, name_key: str) -> DirectionDecision | None:
+    return db.scalar(
+        select(DirectionDecision).where(
+            DirectionDecision.owner_id == owner_id,
+            DirectionDecision.name_key == name_key,
+            DirectionDecision.deleted_at.is_(None),
+        )
+    )
+
+
+def _start_deletion_of_own(db: Session, owner_id: str, target_type: str, target, now: datetime) -> None:
+    """A record of its own: its purge job names the record itself as its item, and its kind as the category."""
+    target.deleted_at = now
+    target.purge_after = now + RESTORE_WINDOW
+    target.deletion_id = new_id()
+    db.add(
+        PurgeJob(
+            id=new_id(),
+            owner_id=owner_id,
+            deletion_id=target.deletion_id,
+            target_type=target_type,
+            target_id=target.id,
+            item_id=target.id,
+            category=target_type,
+            reason=PurgeReason.EXPIRED,
+            status=JobStatus.PENDING,
+            due_at=target.purge_after,
+            attempts=0,
+            last_error=None,
+            created_at=now,
+            updated_at=now,
+            completed_at=None,
+        )
+    )
+
+
+def _deleted_on_its_own(db: Session, row, target_type: str) -> bool:
+    job = _job_of(db, row)
+
+    return job is not None and job.target_type == target_type and job.target_id == row.id
 
 
 def binned_documents(
@@ -694,6 +968,8 @@ TARGET_MODELS = {
     TargetType.EXPERIENCE: ExperienceItem,
     TargetType.VERSION: ExperienceVersion,
     TargetType.ATTACHMENT: Attachment,
+    TargetType.DIRECTION_EXPLORATION: DirectionExploration,
+    TargetType.DIRECTION_DECISION: DirectionDecision,
 }
 
 
@@ -731,11 +1007,13 @@ def _remove(db: Session, job: PurgeJob, target, now: datetime) -> None:
     if job.target_type == TargetType.EXPERIENCE:
         # The experience takes all its versions and attachments with it,
         # including those that were waiting in the bin on their own.
-        own_jobs = db.scalars(
-            select(PurgeJob).where(
-                PurgeJob.item_id == target.id,
-                PurgeJob.target_type.in_((TargetType.VERSION, TargetType.ATTACHMENT)),
-                PurgeJob.status.in_(OPEN_STATUSES),
+        own_jobs = list(
+            db.scalars(
+                select(PurgeJob).where(
+                    PurgeJob.item_id == target.id,
+                    PurgeJob.target_type.in_((TargetType.VERSION, TargetType.ATTACHMENT)),
+                    PurgeJob.status.in_(OPEN_STATUSES),
+                )
             )
         )
 
@@ -743,12 +1021,37 @@ def _remove(db: Session, job: PurgeJob, target, now: datetime) -> None:
             own_job.status = JobStatus.DONE
             own_job.completed_at = now
             own_job.updated_at = now
+            # Explorations deleted along with one of its versions go now too, as that version does.
+            _remove_explorations_along(db, job.owner_id, own_job.deletion_id)
 
         db.execute(delete(ExperienceVersion).where(ExperienceVersion.item_id == target.id))
         db.execute(delete(Attachment).where(Attachment.item_id == target.id))
 
+    if job.target_type in (TargetType.EXPERIENCE, TargetType.VERSION):
+        _remove_explorations_along(db, job.owner_id, job.deletion_id)
+
+    if job.target_type in DIRECTION_HOLDERS:
+        _remove_sources(db, job.owner_id, DIRECTION_HOLDERS[job.target_type], target.id)
+
     db.delete(target)
     db.flush()
+
+
+def _remove_explorations_along(db: Session, owner_id: str, deletion_id: str) -> None:
+    """The explorations deleted along with a record or a version go with it, what they rest on included."""
+    for exploration in _went_along(db, owner_id, deletion_id):
+        _remove_sources(db, owner_id, SourceHolder.EXPLORATION, exploration.id)
+        db.delete(exploration)
+
+
+def _remove_sources(db: Session, owner_id: str, holder_type: str, holder_id: str) -> None:
+    db.execute(
+        delete(DirectionSource).where(
+            DirectionSource.owner_id == owner_id,
+            DirectionSource.holder_type == holder_type,
+            DirectionSource.holder_id == holder_id,
+        )
+    )
 
 
 def _record_failure(database: Database, job_id: str, now: datetime, error: Exception) -> None:
