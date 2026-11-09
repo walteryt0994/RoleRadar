@@ -67,6 +67,23 @@ NOT_FOR_DIRECTIONS = LEGACY_MODULES + (
     "app.experience_analysis",
     "app.web_main",
     "openai",
+    "app.directions.explore",
+    "app.directions.simulation",
+)
+# The direction workflow (U3-C2) and its simulated answers: one request to a provider it is handed, never a gate,
+# a search, a task store, a page or a saving entry of its own. It reuses U2's per-field plans and quote reading,
+# so the provider types and the SDK they import come along; none of its own code imports a network client.
+DIRECTION_WORKFLOW = ("explore", "simulation")
+NOT_FOR_THE_DIRECTION_WORKFLOW = LEGACY_MODULES + (
+    "app.live_gate",
+    "app.discovery",
+    "app.job_analysis.runner",
+    "app.job_analysis.tasks",
+    "app.job_analysis.service",
+    "app.job_analysis.live",
+    "app.job_analysis.web",
+    "app.web_main",
+    "app.directions.records",
 )
 
 
@@ -211,6 +228,50 @@ def test_the_direction_records_load_no_analysis_search_gate_page_or_network_clie
         imported |= {node.module.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
 
     assert not imported & NETWORK_CLIENTS
+
+
+def test_the_direction_workflow_loads_no_gate_search_task_page_or_saving_entry():
+    script = "\n".join(
+        [
+            "import importlib, json, sys",
+            f"for name in {DIRECTION_WORKFLOW!r}:",
+            "    importlib.import_module(f'app.directions.{name}')",
+            f"names = {NOT_FOR_THE_DIRECTION_WORKFLOW!r}",
+            "print(json.dumps([name for name in names if name in sys.modules]))",
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", script], cwd=BACKEND_DIR, env=os.environ.copy(), capture_output=True, text=True, timeout=60
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == []
+
+    imported = set()
+
+    for name in DIRECTION_WORKFLOW:
+        tree = ast.parse((BACKEND_DIR / "app" / "directions" / f"{name}.py").read_text(encoding="utf-8"))
+        imported |= {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
+        imported |= {node.module.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
+
+    assert not imported & NETWORK_CLIENTS
+
+
+def test_the_simulated_service_loads_the_direction_rules_only_when_asked_for_them():
+    """The job analysis's simulation answers direction explorations too, importing their rules lazily."""
+    script = "\n".join(
+        [
+            "import json, sys",
+            "import app.job_analysis.simulation",
+            "print(json.dumps(sorted(name for name in sys.modules if name.startswith('app.directions'))))",
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", script], cwd=BACKEND_DIR, env=os.environ.copy(), capture_output=True, text=True, timeout=60
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == []
 
 
 def test_building_the_app_builds_no_service_client(tmp_path, test_root):

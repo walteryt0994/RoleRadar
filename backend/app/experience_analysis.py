@@ -928,6 +928,13 @@ def _flags(context: tuple[str, ...]) -> tuple[str, ...]:
     )
 
 
+# The same reading of quotes, for another fixed workflow that quotes the
+# user's own fields (U3-C2, app.directions.explore): where a quote stands,
+# with what it is read with, and what that context says of it.
+quote_context = _context
+quote_flags = _flags
+
+
 def _denials(citations) -> list[EvidenceCitation]:
     """Citations saying a requirement is not met: a denial or conflict the
     model named, or a negation the rules found, whatever the basis."""

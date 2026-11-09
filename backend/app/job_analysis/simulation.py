@@ -63,7 +63,8 @@ RELATIONS = {
 
 
 class SimulatedProvider(AIProvider):
-    """Answers the two requests of a task from fixed rules.
+    """Answers the two requests of a task from fixed rules, and a direction
+    exploration's one request with the fixed rules of app.directions.simulation (U3-C2).
 
     delay_seconds: only for trying the pages locally (web_main
     --simulation-delay): each answer then waits that long, so the waiting,
@@ -88,7 +89,7 @@ class SimulatedProvider(AIProvider):
         elif name == ANALYSIS_SCHEMA_NAME:
             text = analyse(prompt)
         else:
-            raise AIProviderResponseError("The simulated service does not know this request.")
+            text = _elsewhere(name, prompt)
 
         return GenerationResult(
             text=text,
@@ -99,6 +100,18 @@ class SimulatedProvider(AIProvider):
             requested_max_output_tokens=max_output_tokens,
             requested_reasoning_effort=reasoning_effort,
         )
+
+
+def _elsewhere(name: str, prompt: str) -> str:
+    """A request of another workflow this service answers. Its rules are imported only here, when such a
+    request comes: the job analysis loads nothing of the directions package, and neither side imports the
+    other when it is loaded."""
+    from app.directions import simulation as directions
+
+    if name == directions.SCHEMA_NAME:
+        return directions.explore(prompt)
+
+    raise AIProviderResponseError("The simulated service does not know this request.")
 
 
 def _between(prompt: str, start: str, end: str) -> str:
