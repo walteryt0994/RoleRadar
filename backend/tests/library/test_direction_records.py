@@ -929,7 +929,8 @@ def test_a_versions_deletion_pages_add_a_line_only_when_something_rests_on_it(ap
     unreferenced = browser_a.get(f"/experiences/{item_id}/versions/{initial}/delete").text
 
     assert "有 1 次已保存的方向探索以这个版本为依据" in referenced
-    assert "方向探索" not in unreferenced
+    # The page itself says nothing of directions (方向探索 is in the top navigation of every page since U3-C3a).
+    assert "方向探索" not in unreferenced[unreferenced.index('<main id="main"'):]
 
 
 # --- R1: a stale change to a decision made again, and what a record's permanent deletion takes at once --------------

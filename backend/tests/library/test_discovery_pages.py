@@ -201,8 +201,10 @@ def test_finding_postings_sits_beside_job_analysis_and_only_for_a_clear_goal(bro
     assert subnav(discover) == [("/job-analysis", "", "岗位分析"), ("/discover", ' aria-current="page"', "找岗位")]
     assert subnav(analysis) == [("/job-analysis", ' aria-current="page"', "岗位分析"), ("/discover", "", "找岗位")]
     assert '<a href="/job-analysis" aria-current="true">岗位机会</a>' in discover
-    # Only a clear goal: no entry for an unsure direction, nor for later modules.
-    assert not any(words in discover for words in ("方向还不确定", "方向探索", "我的简历", "投递跟踪"))
+    # Only a clear goal: no entry for an unsure direction yet (U3-C3b), nor for later modules. 方向探索 is a part of
+    # the app of its own since U3-C3a, in the top navigation only.
+    assert not any(words in discover for words in ("方向还不确定", "我的简历", "投递跟踪"))
+    assert discover.count("方向探索") == 1 and '<a href="/directions">方向探索</a>' in discover
     assert PREVIEW in discover
 
 

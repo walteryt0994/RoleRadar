@@ -85,6 +85,21 @@ NOT_FOR_THE_DIRECTION_WORKFLOW = LEGACY_MODULES + (
     "app.web_main",
     "app.directions.records",
 )
+# Behind the direction pages (U3-C3a): the task store, its runner, the checked writes and the words. They build no
+# service and enter no gate: the pages hand the runner the local simulation (app.directions.web). They load no search,
+# no other task store or page, and none of their own code imports a network client.
+DIRECTION_PAGE_PARTS = ("tasks", "runner", "actions", "presentation")
+NOT_FOR_THE_DIRECTION_PAGE_PARTS = LEGACY_MODULES + (
+    "app.live_gate",
+    "app.discovery",
+    "app.job_analysis.runner",
+    "app.job_analysis.tasks",
+    "app.job_analysis.service",
+    "app.job_analysis.live",
+    "app.job_analysis.web",
+    "app.web_main",
+    "app.directions.web",
+)
 
 
 def test_launcher_points_every_database_variable_into_the_test_root(test_root):
@@ -250,6 +265,33 @@ def test_the_direction_workflow_loads_no_gate_search_task_page_or_saving_entry()
     imported = set()
 
     for name in DIRECTION_WORKFLOW:
+        tree = ast.parse((BACKEND_DIR / "app" / "directions" / f"{name}.py").read_text(encoding="utf-8"))
+        imported |= {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
+        imported |= {node.module.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
+
+    assert not imported & NETWORK_CLIENTS
+
+
+def test_behind_the_direction_pages_nothing_builds_a_service_or_enters_a_gate():
+    script = "\n".join(
+        [
+            "import importlib, json, sys",
+            f"for name in {DIRECTION_PAGE_PARTS!r}:",
+            "    importlib.import_module(f'app.directions.{name}')",
+            f"names = {NOT_FOR_THE_DIRECTION_PAGE_PARTS!r}",
+            "print(json.dumps([name for name in names if name in sys.modules]))",
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", script], cwd=BACKEND_DIR, env=os.environ.copy(), capture_output=True, text=True, timeout=60
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == []
+
+    imported = set()
+
+    for name in DIRECTION_PAGE_PARTS + ("web",):
         tree = ast.parse((BACKEND_DIR / "app" / "directions" / f"{name}.py").read_text(encoding="utf-8"))
         imported |= {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
         imported |= {node.module.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}

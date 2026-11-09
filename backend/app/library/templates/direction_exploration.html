@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% from "_direction_cards.html" import direction_cards with context %}
+{% set area = "directions" %}
+{% block title %}保存的探索{% endblock %}
+{% block layout %}
+<main id="main" class="job-page job-reading" tabindex="-1">
+  {% if notice %}
+  <p class="notice" role="status">{{ notice }}</p>
+  {% endif %}
+  <header class="job-head">
+    <h1>保存的探索</h1>
+    <p class="job-mode">保存于 {{ exploration.saved_at|shorttime }}</p>
+  </header>
+  {% if error %}
+  <p class="error" role="alert">{{ error }}</p>
+  {% endif %}
+  {% if not current %}
+  <p class="warning" role="alert">{{ state_label }}：这是当时的结果，不能再根据它做决定。</p>
+  {% endif %}
+  <dl class="facts" data-reveal>
+    <div><dt>依据</dt><dd>{{ state_label }}</dd></div>
+    <div><dt>生成</dt><dd>{% if generation.provider == "simulation" %}本机模拟服务（固定规则，不是 AI）{% else %}{{ generation.provider }} 的 {{ generation.model }}{% endif %}；提示词版本 {{ generation.prompt_version }}，处理说明版本 {{ generation.notice_version }}</dd></div>
+  </dl>
+  <p class="hint">下面都是一般性介绍，未经岗位来源核验；没有分数，也不排名。</p>
+  {{ direction_cards(cards, "/directions/explorations/" ~ exploration.id ~ "/decide", current, "/directions/explorations/" ~ exploration.id) }}
+  <div class="actions result-foot">
+    <a href="/directions/records">回到探索记录</a>
+    <a class="danger-link" href="/directions/explorations/{{ exploration.id }}/delete">删除这次探索…</a>
+  </div>
+</main>
+{% endblock %}

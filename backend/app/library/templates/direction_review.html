@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% set area = "directions" %}
+{% block title %}核对发送内容{% endblock %}
+{% block layout %}
+<main id="main" class="job-page job-reading" tabindex="-1">
+  {% if notice %}
+  <p class="notice" role="status">{{ notice }}</p>
+  {% endif %}
+  <header class="job-head">
+    <h1>核对发送内容</h1>
+  </header>
+  {% if error %}
+  <p class="error" role="alert">{{ error }}</p>
+  {% endif %}
+  <form method="post" action="/directions/tasks/{{ task.id }}/confirm" class="review">
+    {{ m.csrf() }}
+    <input type="hidden" name="fingerprint" value="{{ task.fingerprint }}">
+    <section class="review-section"{% if not error %} data-reveal{% endif %} aria-labelledby="who-title">
+      <h2 id="who-title">交给谁，怎样处理</h2>
+      <dl class="facts">
+        {% for label, text in NOTICE %}
+        <div><dt>{{ label }}</dt><dd>{{ text }}</dd></div>
+        {% endfor %}
+      </dl>
+    </section>
+
+    <section class="review-section"{% if not error %} data-reveal{% endif %} aria-labelledby="sources-title">
+      <h2 id="sources-title">会发送的经历</h2>
+      {% if plan.sources %}
+      <p class="hint">勾选的栏目会原样发送。去掉勾选后点“更新核对”。</p>
+      {% for source in plan.sources %}
+      <fieldset class="review-source">
+        <legend>{{ source.title }}</legend>
+        <p class="review-meta"><span>{{ CATEGORY_LABELS[source.entry.category] }}</span><span>确认版 {{ source.entry.version_number }}</span></p>
+        {% for field in source.fields %}
+        {% if field.status == BLOCKED %}
+        <div class="review-field is-blocked">
+          <p class="review-label">{{ field.label }}</p>
+          <p class="review-note">不会发送：含有疑似{{ found_labels(field.blocked) }}。需要使用这一栏时，请修改这段经历并重新确认。</p>
+        </div>
+        {% else %}
+        <div class="review-field">
+          <label class="check review-label"><input type="checkbox" name="send" value="{{ source.entry.item_id }}:{{ field.name }}"{% if field.status == SEND %} checked{% endif %}>{{ field.label }}</label>
+          <p class="text review-text{% if field.status == LEFT_OUT %} is-left-out{% endif %}">{{ field.text }}</p>
+        </div>
+        {% endif %}
+        {% endfor %}
+      </fieldset>
+      {% endfor %}
+      {% else %}
+      <p>这次没有选择经历：结果只是一般性介绍，没有个人依据。</p>
+      {% endif %}
+    </section>
+
+    <section class="review-section"{% if not error %} data-reveal{% endif %} aria-labelledby="preferences-title">
+      <h2 id="preferences-title">求职偏好</h2>
+      <p class="hint">勾选的偏好会原样发送。没填的标为“尚未想好”，没勾选或被拦下的标为“本次未提供”；这两种都不是你的话，结果不会引用。</p>
+      {% for group, items, unfilled in groups %}
+      <fieldset class="review-source">
+        <legend>{{ group }}</legend>
+        {% for item in items %}
+        {% if item.status == BLOCKED %}
+        <div class="review-field is-blocked">
+          <p class="review-label">{{ preference_label(item.field) }}</p>
+          <p class="review-note">不会发送：含有疑似{{ found_labels(item.blocked) }}。</p>
+        </div>
+        {% else %}
+        <div class="review-field">
+          <label class="check review-label"><input type="checkbox" name="send" value="{{ PREFERENCES_KEY }}:{{ item.field }}"{% if item.status == SEND %} checked{% endif %}>{{ preference_label(item.field) }}</label>
+          <p class="text review-text{% if item.status == LEFT_OUT %} is-left-out{% endif %}">{{ item.text }}</p>
+        </div>
+        {% endif %}
+        {% endfor %}
+        {% if unfilled %}
+        <p class="review-meta">尚未填写：{{ unfilled }}</p>
+        {% endif %}
+      </fieldset>
+      {% endfor %}
+    </section>
+
+    <section class="review-section"{% if not error %} data-reveal{% endif %} aria-labelledby="kept-title">
+      <h2 id="kept-title">不会发送</h2>
+      <ul class="points">
+        <li>基本资料：姓名、电话、邮箱、所在城市</li>
+        <li>私有备注、附件和原简历</li>
+        <li>没有选择的经历，以及上面没有勾选或被拦下的栏目</li>
+        <li>以前的探索和方向决定</li>
+      </ul>
+      <p class="hint">自动检查只认得出常见写法的邮箱、电话、证件号、地址和“保密”一类字样，可能漏掉别的敏感内容，也可能误拦。确认前请自己再看一遍上面的文字。</p>
+    </section>
+
+    <div class="form-actions review-actions">
+      <button type="submit" name="action" value="start" class="primary">确认并开始探索</button>
+      <button type="submit" name="action" value="update" class="secondary">更新核对</button>
+      <a href="/directions?from={{ task.id }}">返回修改</a>
+    </div>
+  </form>
+</main>
+{% endblock %}

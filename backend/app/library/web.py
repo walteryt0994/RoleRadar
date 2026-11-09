@@ -122,6 +122,7 @@ from app.library.lifecycle import (
     delete_experience,
     delete_version,
     deletion_scope,
+    direction_bin,
     purge_due,
     request_attachment_purge,
     request_experience_purge,
@@ -1228,6 +1229,8 @@ def experience_list(
         # Resume import drafts the user deleted (U2-B3a): restored or removed from here too.
         drafts = binned_drafts(db, user.id, now)
         drafts_waiting = drafts_clearing(db, user.id, now)
+        # Direction explorations and decisions deleted on their own (U3-C3a): restored or removed by app.directions.web.
+        directions = direction_bin(db, user.id, now)
 
     return render(
         request,
@@ -1237,6 +1240,7 @@ def experience_list(
             "trash": trash,
             "drafts": drafts,
             "drafts_waiting": drafts_waiting,
+            "directions": directions,
             "now": now,
             "notice": NOTICES.get(notice),
             **library_sidebar(request, user, items=items, focus=True),

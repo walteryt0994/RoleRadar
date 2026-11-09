@@ -1,0 +1,96 @@
+{# The directions of one result, each with its parts in the same order so they can be compared (U3-C3a).
+   action: where a decision posts; can_decide: whether the result may be decided on now; back: where an undo returns. #}
+{% import "_macros.html" as m with context %}
+{% macro direction_cards(cards, action, can_decide, back) %}
+<nav class="direction-overview" aria-label="这次的方向" data-reveal>
+  <ul>
+    {% for card in cards %}
+    <li><a href="#{{ card.anchor }}">{{ card.name }}</a><span class="value-note">{{ decision_text(card.decision) }}</span></li>
+    {% endfor %}
+  </ul>
+</nav>
+{% for card in cards %}
+<article class="discover-result direction-card" id="{{ card.anchor }}" aria-labelledby="{{ card.anchor }}-name" data-reveal>
+  <h2 id="{{ card.anchor }}-name" class="direction-name">{{ card.name }}</h2>
+  {% if card.excluded %}
+  <p class="review-meta">你之前排除过这个方向，可以随时改。</p>
+  {% endif %}
+  <p class="result-label">主要工作</p>
+  <p class="direction-text">{{ card.main_work }}</p>
+
+  <p class="result-label">经历依据</p>
+  {% if card.evidence %}
+  {% for quote in card.evidence %}
+  <blockquote class="quote">{{ quote.text }}</blockquote>
+  <p class="finding-context">{{ quote.place }}</p>
+  {% endfor %}
+  {% else %}
+  <p class="direction-text">暂无经历依据，不代表不适合。</p>
+  {% endif %}
+
+  <p class="result-label">和你写的偏好</p>
+  {% if card.relations %}
+  {% for label, links in card.relations %}
+  <p class="result-group">{{ label }}</p>
+  <ul class="relation-list">
+    {% for link in links %}
+    <li>
+      <p class="direction-text">“{{ link.text }}”<span class="value-note">{{ link.condition }}</span></p>
+      {% if link.conflict %}
+      <p class="result-alert">{{ link.conflict }}</p>
+      {% endif %}
+      {% if link.basis %}
+      <p class="finding-context">这个方向一侧的依据：{{ link.basis }}</p>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endfor %}
+  {% else %}
+  <p class="direction-text">没有可以对照的偏好。</p>
+  {% endif %}
+
+  {% if card.gaps %}
+  <p class="result-label">一般还要补的</p>
+  <ul class="plain-list">{% for line in card.gaps %}<li>{{ line }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if card.unknowns %}
+  <p class="result-label">还不能判断</p>
+  <ul class="plain-list">{% for line in card.unknowns %}<li>{{ line }}</li>{% endfor %}</ul>
+  {% endif %}
+  <p class="result-label">和其他方向的区别</p>
+  <p class="direction-text">{{ card.difference }}</p>
+  {% if card.next_steps %}
+  <p class="result-label">可以先做的</p>
+  <ul class="plain-list">{% for line in card.next_steps %}<li>{{ line }}</li>{% endfor %}</ul>
+  {% endif %}
+
+  <div class="direction-decision">
+    <p class="decision-state">你的决定：{{ decision_text(card.decision) }}</p>
+    {% if can_decide %}
+    <form method="post" action="{{ action }}" class="inline direction-choices">
+      {{ m.csrf() }}
+      <input type="hidden" name="name" value="{{ card.name }}">
+      {% if card.decision %}
+      <input type="hidden" name="decision_id" value="{{ card.decision.id }}">
+      <input type="hidden" name="revision" value="{{ card.decision.revision }}">
+      {% endif %}
+      {% for value, label in DECISIONS %}
+      {% if not card.decision or card.decision.state != value %}
+      <button type="submit" name="state" value="{{ value }}" class="secondary">{% if card.decision %}改为{% endif %}{{ label }}</button>
+      {% endif %}
+      {% endfor %}
+    </form>
+    {% endif %}
+    {% if card.decision %}
+    <form method="post" action="/directions/decisions/{{ card.decision.id }}/undo" class="inline">
+      {{ m.csrf() }}
+      <input type="hidden" name="expected_revision" value="{{ card.decision.revision }}">
+      <input type="hidden" name="next" value="{{ back }}">
+      <button type="submit" class="link-button">撤销决定</button>
+    </form>
+    {% endif %}
+  </div>
+</article>
+{% endfor %}
+{% endmacro %}

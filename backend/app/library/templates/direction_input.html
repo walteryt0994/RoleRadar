@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% set area = "directions" %}
+{% block title %}方向探索{% endblock %}
+{% block layout %}
+<main id="main" class="job-page" tabindex="-1">
+  {% if notice %}
+  <p class="notice" role="status">{{ notice }}</p>
+  {% endif %}
+  <header class="job-head">
+    <h1>方向探索</h1>
+    <p class="job-mode">使用本机模拟服务：由固定规则生成结果，不是 AI。</p>
+  </header>
+  {% if error %}
+  <p class="error" role="alert">{{ error }}</p>
+  {% endif %}
+  {% if dropped %}
+  <p class="warning" role="status">之前选择的 {{ dropped }} 段经历已经修改、重新确认或删除，没有自动选上；请按当前内容重新选择。</p>
+  {% endif %}
+  {# Nothing is sent from this page: the next step only works out and shows what would go out. #}
+  <form method="post" action="/directions/review" class="job-columns">
+    {{ m.csrf() }}
+    <section{% if not error %} data-reveal{% endif %} class="job-panel{% if problem and problem.where == 'sources' %} has-problem{% endif %}" aria-labelledby="pick-title">
+      <h2 id="pick-title">选择经历</h2>
+      {% if experiences %}
+      <p class="hint">可以不选；不选时只给一般性介绍。一次最多 {{ MAX_EXPERIENCES }} 段，只能选已确认的经历。</p>
+      <ul class="pick-list">
+        {% for entry in experiences %}
+        <li class="pick">
+          <div class="pick-choice">
+            <input type="checkbox" id="pick-{{ loop.index }}" name="source" value="{{ entry.item_id }}:{{ entry.version_id }}"{% if entry.item_id in ticked %} checked{% endif %}>
+            <label for="pick-{{ loop.index }}">
+              <span class="pick-title">{{ display_title(entry.content, entry.category) }}</span>
+              <span class="pick-meta"><span>{{ CATEGORY_LABELS[entry.category] }}</span><span>确认版 {{ entry.version_number }}</span></span>
+            </label>
+          </div>
+          <details class="fold pick-content">
+            {{ m.fold_summary("确认的内容") }}
+            <dl class="fields">
+              {% for field in CATEGORY_FIELDS[entry.category] %}
+              {% if entry.content.get(field.name) %}
+              <dt>{{ field_label(entry.category, field.name) }}</dt>
+              <dd><p class="text">{{ entry.content[field.name] }}</p></dd>
+              {% endif %}
+              {% endfor %}
+            </dl>
+          </details>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="empty-state">还没有已确认的经历。不选经历也可以探索，结果只是一般性介绍。</p>
+      {% endif %}
+      {% if unconfirmed > 0 %}
+      <p class="hint">另有 {{ unconfirmed }} 段经历还没有确认，确认后才能选。<a href="/experiences">去经历库</a></p>
+      {% endif %}
+    </section>
+    <section{% if not error %} data-reveal{% endif %} class="job-panel{% if problem and problem.where == 'preferences' %} has-problem{% endif %}" aria-labelledby="preferences-title">
+      <h2 id="preferences-title">求职偏好</h2>
+      {% if filled_groups %}
+      <p>已填写：{{ filled_groups|join("、") }}。核对时会逐项列出，可以去掉。</p>
+      {% else %}
+      <p>还没有填写求职偏好；不填也可以探索。</p>
+      {% endif %}
+      {% if problem and problem.where == "preferences" %}
+      <p class="hint">可以去<a href="/experiences?tab=trash">回收站</a>恢复所用的版本，或者勾选下面这一项，这次不参考偏好。</p>
+      {% endif %}
+      <div class="job-option">
+        <label class="check"><input type="checkbox" name="skip_preferences" value="yes"{% if skip_preferences %} checked{% endif %}>这次不参考求职偏好</label>
+      </div>
+      <p class="hint"><a href="/job-preferences">先补几句偏好</a>（可跳过）</p>
+      <div class="form-actions">
+        <button type="submit" class="primary">核对发送内容</button>
+      </div>
+      <p class="hint">下一步只列出会发送的内容，确认之前不会发送。</p>
+    </section>
+  </form>
+</main>
+{% endblock %}

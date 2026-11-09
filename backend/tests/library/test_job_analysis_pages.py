@@ -99,13 +99,13 @@ def test_job_opportunities_lead_to_job_analysis_and_mark_where_you_are(browser_a
     jobs = browser_a.get("/job-analysis").text
     library = browser_a.get("/experiences").text
 
-    assert top(jobs) == [("/experiences", "", "我的资料"), ("/job-analysis", ' aria-current="true"', "岗位机会")]
-    assert top(library) == [("/experiences", ' aria-current="true"', "我的资料"), ("/job-analysis", "", "岗位机会")]
+    assert top(jobs) == [("/experiences", "", "我的资料"), ("/directions", "", "方向探索"), ("/job-analysis", ' aria-current="true"', "岗位机会")]
+    assert top(library) == [("/experiences", ' aria-current="true"', "我的资料"), ("/directions", "", "方向探索"), ("/job-analysis", "", "岗位机会")]
     assert '<a href="/job-analysis" aria-current="page">岗位分析</a>' in region(jobs, '<nav class="subnav"', "</nav>")
     # 资料管理 and the parts of 我的资料 belong to 我的资料 only.
     assert 'class="manage"' not in jobs and 'href="/basic-profile"' not in jobs
-    # Later modules still get no entry.
-    assert not any(name in jobs for name in ("方向探索", "我的简历", "投递跟踪"))
+    # Later modules still get no entry (方向探索 has its own since U3-C3a).
+    assert not any(name in jobs for name in ("我的简历", "投递跟踪"))
 
 
 def test_the_input_page_names_the_service_its_tasks_would_go_to(browser_a):

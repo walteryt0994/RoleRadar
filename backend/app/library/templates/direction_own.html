@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% set area = "directions" %}
+{% block title %}重新定为我的选择{% endblock %}
+{% block content %}
+<h1>把“{{ decision.name }}”重新定为你自己的选择</h1>
+<ul class="points">
+  <li>现在：{{ basis }}。</li>
+  <li>改为你自己的选择以后，这条决定不再以那次探索为依据，以后可以直接修改；原来的依据留作历史，不会删除。</li>
+  <li>这只是你的决定，不会写进求职偏好。</li>
+</ul>
+<form method="post" action="/directions/decisions/{{ decision.id }}/own">
+  {{ m.csrf() }}
+  <input type="hidden" name="expected_revision" value="{{ decision.revision }}">
+  <fieldset class="choice-group">
+    <legend>定为</legend>
+    {% for value, label in DECISIONS %}
+    <label class="check"><input type="radio" name="state" value="{{ value }}"{% if value == decision.state %} checked{% endif %}>{{ label }}</label>
+    {% endfor %}
+  </fieldset>
+  <div class="form-actions">
+    <button type="submit" class="primary">定为我的选择</button>
+    <a href="/directions/records">取消</a>
+  </div>
+</form>
+{% endblock %}

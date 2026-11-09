@@ -252,6 +252,17 @@ def decisions_in_use(db: Session, owner_id: str) -> list[DirectionDecision]:
     )
 
 
+def exploration_for_result(db: Session, owner_id: str, result_id: str) -> DirectionExploration | None:
+    """The owner's exploration saved from this result, in use or in the bin; None when it was never saved or has
+    been removed. Read only (U3-C3a): the pages tell a saved result from an unsaved one by it."""
+    return db.scalar(
+        select(DirectionExploration).where(
+            DirectionExploration.owner_id == owner_id,
+            DirectionExploration.result_id == result_id,
+        )
+    )
+
+
 def exploration_basis(db: Session, owner_id: str, exploration_id: str, now: datetime) -> SourceState:
     """How what a saved exploration in use rests on stands now."""
     return exploration_state(db, owner_id, active_direction_record(db, owner_id, DirectionExploration, exploration_id), now)

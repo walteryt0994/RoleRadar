@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% set area = "directions" %}
+{% block title %}探索记录{% endblock %}
+{% block layout %}
+<main id="main" class="job-page job-reading" tabindex="-1">
+  {% if notice %}
+  <p class="notice" role="status">{{ notice }}</p>
+  {% endif %}
+  <header class="job-head">
+    <h1>探索记录</h1>
+  </header>
+  {% if error %}
+  <p class="error" role="alert">{{ error }}</p>
+  {% endif %}
+
+  <section class="review-section" aria-labelledby="decisions-title" data-reveal>
+    <h2 id="decisions-title">方向决定</h2>
+    {% if has_decisions %}
+    {% for label, entries in groups %}
+    {% if entries %}
+    <p class="result-group">{{ label }}<span>{{ entries|length }} 个</span></p>
+    <ul class="lead-list">
+      {% for decision, state, changeable in entries %}
+      <li class="lead decision-row">
+        <p class="pick-title">{{ decision.name }}</p>
+        <p class="pick-meta"><span>{{ basis_text(decision, state) }}</span><span>{{ decision.updated_at|shorttime }}</span></p>
+        <div class="row-actions">
+          {% if changeable %}
+          <form method="post" action="/directions/decisions/{{ decision.id }}/state" class="inline">
+            {{ m.csrf() }}
+            <input type="hidden" name="expected_revision" value="{{ decision.revision }}">
+            {% for value, choice in DECISIONS %}
+            {% if value != decision.state %}
+            <button type="submit" name="state" value="{{ value }}" class="secondary">改为{{ choice }}</button>
+            {% endif %}
+            {% endfor %}
+          </form>
+          {% else %}
+          <a href="/directions/decisions/{{ decision.id }}/own">重新定为我的选择…</a>
+          {% endif %}
+          <form method="post" action="/directions/decisions/{{ decision.id }}/undo" class="inline">
+            {{ m.csrf() }}
+            <input type="hidden" name="expected_revision" value="{{ decision.revision }}">
+            <button type="submit" class="link-button">撤销</button>
+          </form>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% endfor %}
+    {% else %}
+    <p class="empty-state">还没有方向决定。在探索结果里点“保留”“暂缓”或“排除”，就会记在这里。</p>
+    {% endif %}
+  </section>
+
+  <section class="review-section" aria-labelledby="saved-title" data-reveal>
+    <h2 id="saved-title">保存的探索</h2>
+    {% if explorations %}
+    <ul class="lead-list">
+      {% for exploration, names, state in explorations %}
+      <li class="lead">
+        <p class="pick-title"><a href="/directions/explorations/{{ exploration.id }}">{{ names|join("、") }}</a></p>
+        <p class="pick-meta"><span>保存于 {{ exploration.saved_at|shorttime }}</span><span>{{ SOURCE_STATE_LABELS[state] }}</span></p>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="empty-state">还没有保存的探索。探索结果只有点了“保存这次探索”才会留下。</p>
+    {% endif %}
+  </section>
+
+  <p class="hint">删除的探索和决定在<a href="/experiences?tab=trash">回收站</a>里，7 天内可以恢复。<a href="/export/all.zip" download>导出全部资料</a>时会包含方向探索和决定。</p>
+</main>
+{% endblock %}

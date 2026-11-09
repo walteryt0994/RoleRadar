@@ -79,7 +79,7 @@
   </li>
   {% endfor %}
 </ul>
-{% elif not drafts %}
+{% elif not drafts and not directions %}
 <p class="empty-state">回收站里没有可以恢复的内容。</p>
 {% endif %}
 {% if drafts %}
@@ -102,20 +102,63 @@
   {% endfor %}
 </ul>
 {% endif %}
-{% if trash.waiting_cleanups or drafts_waiting %}
+{% if directions %}
+<h2>删除的方向探索和决定</h2>
+<ul class="item-list">
+  {% for exploration in directions.explorations %}
+  <li>
+    <strong>{{ exploration.content.directions|map(attribute="name")|join("、") }}</strong>
+    <span class="trash-category">方向探索</span>
+    <span class="muted small">删除于 {{ exploration.deleted_at|localtime }}；在 {{ exploration.purge_after|localtime }} 之前可以恢复（{{ format_remaining(exploration.purge_after, now) }}）</span>
+    <div class="row-actions">
+      <form method="post" action="/directions/explorations/{{ exploration.id }}/restore" class="inline">
+        {{ m.csrf() }}
+        <input type="hidden" name="expected_revision" value="{{ exploration.revision }}">
+        <input type="hidden" name="next" value="/experiences?tab=trash">
+        <button type="submit">恢复</button>
+      </form>
+      <a class="danger-link" href="/directions/explorations/{{ exploration.id }}/purge">永久删除…</a>
+    </div>
+  </li>
+  {% endfor %}
+  {% for decision in directions.decisions %}
+  <li>
+    <strong>{{ decision.name }}</strong>
+    <span class="trash-category">方向决定：{{ {"keep": "保留", "defer": "暂缓", "exclude": "排除"}[decision.state] }}</span>
+    <span class="muted small">删除于 {{ decision.deleted_at|localtime }}；在 {{ decision.purge_after|localtime }} 之前可以恢复（{{ format_remaining(decision.purge_after, now) }}）</span>
+    <div class="row-actions">
+      <form method="post" action="/directions/decisions/{{ decision.id }}/restore" class="inline">
+        {{ m.csrf() }}
+        <input type="hidden" name="expected_revision" value="{{ decision.revision }}">
+        <input type="hidden" name="next" value="/experiences?tab=trash">
+        <button type="submit">恢复</button>
+      </form>
+      <a class="danger-link" href="/directions/decisions/{{ decision.id }}/purge">永久删除…</a>
+    </div>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% if trash.waiting_cleanups or drafts_waiting or directions.waiting_cleanups %}
 <h2>等待清理</h2>
 <ul class="status-list">
   {% for job in trash.waiting_cleanups %}
   <li>{{ CLEANUP_NOUNS[job.category] }}：{% if job.reason == "user_request" %}你已于 {{ job.due_at|localtime }} 申请永久删除{% else %}已于 {{ job.due_at|localtime }} 超过恢复期限{% endif %}。内容已经不能访问或恢复，正在等待清理{% if job.status == "failed" %}；上次清理失败（已尝试 {{ job.attempts }} 次），系统会自动重试{% endif %}。</li>
+  {% endfor %}
+  {% for job in directions.waiting_cleanups %}
+  <li>{% if job.target_type == "direction_exploration" %}一次方向探索{% else %}一条方向决定{% endif %}：{% if job.reason == "user_request" %}你已于 {{ job.due_at|localtime }} 申请永久删除{% else %}已于 {{ job.due_at|localtime }} 超过恢复期限{% endif %}。内容已经不能访问或恢复，正在等待清理{% if job.status == "failed" %}；上次清理失败（已尝试 {{ job.attempts }} 次），系统会自动重试{% endif %}。</li>
   {% endfor %}
   {% if drafts_waiting %}
   <li>导入草稿：{{ drafts_waiting }} 份已经永久删除或超过恢复期限，内容已经不能访问或恢复，正在等待清理，系统会自动重试。</li>
   {% endif %}
 </ul>
 {% endif %}
-{% if trash.finished_cleanups %}
+{% if trash.finished_cleanups or directions.finished_cleanups %}
 <h2>最近完成的清理</h2>
 <ul class="status-list">
+  {% for job in directions.finished_cleanups %}
+  <li>{% if job.target_type == "direction_exploration" %}一次方向探索{% else %}一条方向决定{% endif %}（{% if job.reason == "user_request" %}你申请的永久删除{% else %}超过恢复期限{% endif %}）已于 {{ job.completed_at|localtime }} 清理完成，内容已经删除。</li>
+  {% endfor %}
   {% for job in trash.finished_cleanups %}
   <li>{{ CLEANUP_NOUNS[job.category] }}（{% if job.reason == "user_request" %}你申请的永久删除{% else %}超过恢复期限{% endif %}）已于 {{ job.completed_at|localtime }} 清理完成：它的内容、全部历史版本，以及附件文件（如有），都已经删除。</li>
   {% endfor %}

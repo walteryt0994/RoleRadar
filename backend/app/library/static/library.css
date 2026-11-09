@@ -704,6 +704,27 @@ dialog h2 { margin-top: 0; }
   .discover-result { padding: 14px 14px 4px; }
 }
 
+/* --- 方向探索 (U3-C3a): the same sheets; one card per direction, its parts in one order --- */
+
+/* The directions of a result at a glance: their names and the user's decision on each. */
+.direction-overview ul { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 0 0 6px; padding: 0; list-style: none; }
+.direction-overview li { display: inline-flex; align-items: baseline; min-height: 32px; }
+.direction-overview a { font-weight: 500; }
+.direction-card h2.direction-name { margin: 0 0 2px; font-size: 18px; overflow-wrap: anywhere; }
+.direction-text { margin: 0 0 4px; overflow-wrap: anywhere; }
+.direction-card .quote { margin-top: 4px; }
+.relation-list { margin: 0; padding: 0; list-style: none; }
+.relation-list li { padding: 6px 0; border-bottom: 1px solid var(--line); }
+.relation-list li:last-child { border-bottom: 0; }
+.relation-list .result-alert { margin: 6px 0 0; font-size: 14px; }
+.direction-decision { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin: 18px 0 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.decision-state { margin: 0; font-weight: 500; }
+.direction-choices { display: inline-flex; flex-wrap: wrap; gap: 8px; }
+.direction-save { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin: 0 0 12px; }
+.direction-save .hint { margin: 0; }
+.decision-row .row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 6px; }
+.decision-row .row-actions form { display: inline-flex; flex-wrap: wrap; gap: 8px; }
+
 /* --- resume imports (U2-B1): one form, then what was read as it was found --- */
 
 .import-form { margin-top: 8px; }

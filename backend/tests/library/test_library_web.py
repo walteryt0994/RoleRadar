@@ -84,6 +84,33 @@ DISCOVERY_ROUTES = {
     ("POST", "/discover/tasks/{task_id}/confirm"),
     ("POST", "/discover/tasks/{task_id}/cancel"),
 }
+# The direction exploration pages (U3-C3a); test_direction_pages.py checks their access rules.
+DIRECTION_ROUTES = {
+    ("GET", "/directions"),
+    ("POST", "/directions/review"),
+    ("GET", "/directions/tasks/{task_id}"),
+    ("GET", "/directions/tasks/{task_id}/status"),
+    ("POST", "/directions/tasks/{task_id}/confirm"),
+    ("POST", "/directions/tasks/{task_id}/cancel"),
+    ("POST", "/directions/tasks/{task_id}/again"),
+    ("POST", "/directions/tasks/{task_id}/save"),
+    ("POST", "/directions/tasks/{task_id}/decide"),
+    ("GET", "/directions/records"),
+    ("GET", "/directions/explorations/{exploration_id}"),
+    ("POST", "/directions/explorations/{exploration_id}/decide"),
+    ("GET", "/directions/explorations/{exploration_id}/delete"),
+    ("POST", "/directions/explorations/{exploration_id}/delete"),
+    ("POST", "/directions/explorations/{exploration_id}/restore"),
+    ("GET", "/directions/explorations/{exploration_id}/purge"),
+    ("POST", "/directions/explorations/{exploration_id}/purge"),
+    ("POST", "/directions/decisions/{decision_id}/state"),
+    ("GET", "/directions/decisions/{decision_id}/own"),
+    ("POST", "/directions/decisions/{decision_id}/own"),
+    ("POST", "/directions/decisions/{decision_id}/undo"),
+    ("POST", "/directions/decisions/{decision_id}/restore"),
+    ("GET", "/directions/decisions/{decision_id}/purge"),
+    ("POST", "/directions/decisions/{decision_id}/purge"),
+}
 # The resume import pages (U2-B1); test_library_imports.py checks their access rules.
 IMPORT_ROUTES = {
     ("GET", "/imports"),
@@ -258,6 +285,7 @@ def test_every_route_is_either_public_or_listed_as_protected(app):
         | {("POST", path) for path in UPLOAD_ROUTES}
         | JOB_ROUTES
         | DISCOVERY_ROUTES
+        | DIRECTION_ROUTES
         | IMPORT_ROUTES
         | REVIEW_ROUTES
         | STRUCTURING_ROUTES

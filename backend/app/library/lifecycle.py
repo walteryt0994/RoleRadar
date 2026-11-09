@@ -842,6 +842,39 @@ def trash_view(db: Session, owner_id: str, now: datetime) -> TrashView:
     )
 
 
+@dataclass
+class DirectionBin:
+    """The direction records in the recycle bin that the user deleted on their own and can still restore, and the
+    clean-ups of those past restoring (U3-C3a). Explorations that went with a record or a version come back with
+    it and are not listed here."""
+
+    explorations: list[DirectionExploration] = field(default_factory=list)
+    decisions: list[DirectionDecision] = field(default_factory=list)
+    waiting_cleanups: list[PurgeJob] = field(default_factory=list)
+    finished_cleanups: list[PurgeJob] = field(default_factory=list)
+
+    def __bool__(self) -> bool:
+        return bool(self.explorations or self.decisions)
+
+
+def direction_bin(db: Session, owner_id: str, now: datetime) -> DirectionBin:
+    binned = {}
+
+    for model in (DirectionExploration, DirectionDecision):
+        rows = db.scalars(
+            select(model)
+            .where(model.owner_id == owner_id, model.deleted_at.is_not(None))
+            .order_by(model.deleted_at.desc(), model.id)
+        )
+        binned[model] = [
+            row for row in rows if not is_expired(row, now) and _deleted_on_its_own(db, row, DIRECTION_TARGETS[model])
+        ]
+
+    waiting, finished = _cleanups(db, owner_id, now, PurgeJob.target_type.in_(tuple(DIRECTION_TARGETS.values())))
+
+    return DirectionBin(binned[DirectionExploration], binned[DirectionDecision], waiting, finished)
+
+
 def version_cleanups(
     db: Session,
     owner_id: str,

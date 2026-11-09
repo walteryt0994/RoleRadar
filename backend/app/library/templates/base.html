@@ -26,6 +26,7 @@
     {% if user %}
     <nav class="nav" aria-label="主要导航">
       <a href="/experiences"{% if area == "profile" %} aria-current="true"{% endif %}>我的资料</a>
+      <a href="/directions"{% if area == "directions" %} aria-current="true"{% endif %}>方向探索</a>
       <a href="/job-analysis"{% if area == "jobs" %} aria-current="true"{% endif %}>岗位机会</a>
     </nav>
     <div class="who">
@@ -43,6 +44,14 @@
     <nav class="subnav" aria-label="岗位机会">
       <a href="/job-analysis"{% if section != "discover" %} aria-current="page"{% endif %}>岗位分析</a>
       <a href="/discover"{% if section == "discover" %} aria-current="page"{% endif %}>找岗位</a>
+    </nav>
+  </div>
+  {% elif user and area == "directions" %}
+  {# The parts of 方向探索 (U3-C3a): a new exploration, and what the user kept. #}
+  <div class="subbar">
+    <nav class="subnav" aria-label="方向探索">
+      <a href="/directions"{% if section != "records" %} aria-current="page"{% endif %}>探索方向</a>
+      <a href="/directions/records"{% if section == "records" %} aria-current="page"{% endif %}>探索记录</a>
     </nav>
   </div>
   {% elif user %}

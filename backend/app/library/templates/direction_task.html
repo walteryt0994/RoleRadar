@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% from "_direction_cards.html" import direction_cards with context %}
+{% set area = "directions" %}
+{% block title %}{% if task.stage == "running" %}正在探索方向{% elif task.stage == "cancelled" %}探索已取消{% else %}方向探索结果{% endif %}{% endblock %}
+{% block layout %}
+<main id="main" class="job-page job-reading" tabindex="-1"{% if task.stage == "running" %} data-task-running data-task-status="/directions/tasks/{{ task.id }}/status"{% endif %}>
+  {% if notice %}
+  <p class="notice" role="status">{{ notice }}</p>
+  {% endif %}
+
+  {% if task.stage == "running" %}
+  <header class="job-head">
+    <h1>正在探索方向</h1>
+    <p class="job-mode">本机模拟服务：由固定规则生成结果，不是 AI。</p>
+  </header>
+  <p class="task-status" role="status" data-task-step>正在{{ STEP }}。已交给服务的请求：{{ sends_text(task.handed) }}。</p>
+  <p class="hint">完成后这一页会自动更新；没有更新时可以<a href="/directions/tasks/{{ task.id }}" data-skip-leave-guard>刷新状态</a>。</p>
+  <form method="post" action="/directions/tasks/{{ task.id }}/cancel" data-task-cancel>
+    {{ m.csrf() }}
+    <input type="hidden" name="next" value="">
+    <button type="submit">取消探索</button>
+  </form>
+  <p class="hint">取消会停止之后的发送；已经交给服务的请求无法撤回，它的回答不会采用。</p>
+  <dialog id="task-leave-dialog" aria-labelledby="task-leave-title">
+    <h2 id="task-leave-title">探索还在进行</h2>
+    <div class="dialog-actions">
+      <button type="button" data-task-choice="stay" class="secondary">继续查看</button>
+      <button type="button" data-task-choice="cancel" class="danger">取消探索并离开</button>
+    </div>
+  </dialog>
+
+  {% elif task.stage == "cancelled" %}
+  <header class="job-head">
+    <h1>探索已取消</h1>
+  </header>
+  <p>{{ cancelled_by }}已交给服务的请求：{{ sends_text(task.handed) }}；它的回答不会采用。</p>
+  <div class="actions">
+    <form method="post" action="/directions/tasks/{{ task.id }}/again" class="inline">
+      {{ m.csrf() }}
+      <button type="submit" class="primary">重新核对</button>
+    </form>
+    <a href="/directions?from={{ task.id }}">修改选择</a>
+  </div>
+
+  {% else %}
+  <header class="job-head">
+    <h1>方向探索结果</h1>
+    <p class="job-mode">本机模拟服务：由固定规则生成结果，不是 AI。</p>
+  </header>
+  {% if error %}
+  <p class="error" role="alert">{{ error }}</p>
+  {% endif %}
+  {% if message %}
+  <p class="{% if outcome.status in ('failed', 'rejected') %}error{% else %}warning{% endif %}" role="alert">{{ message }}</p>
+  {% endif %}
+  {% if changed_since %}
+  <p class="warning" role="alert">{{ CHANGED_SINCE }}</p>
+  {% endif %}
+  {% if cards %}
+  <p class="hint">这次发出 {{ outcome.experiences_sent }} 段经历、{{ outcome.preferences_sent }} 条偏好{% if not outcome.experiences_sent %}，没有经历依据{% endif %}。下面都是一般性介绍，未经岗位来源核验；没有分数，也不排名。</p>
+  <div class="direction-save" data-reveal>
+    {% if can_save %}
+    <form method="post" action="/directions/tasks/{{ task.id }}/save" class="inline">
+      {{ m.csrf() }}
+      <button type="submit" class="primary">保存这次探索</button>
+    </form>
+    <p class="hint">不保存的话，这次结果在 {{ expires_at|shorttime }} 之后清除。</p>
+    {% elif saved %}
+    <p>已保存。<a href="/directions/explorations/{{ saved.id }}">查看保存的探索</a></p>
+    {% elif saved_in_bin %}
+    <p>这次探索保存过，现在在<a href="/experiences?tab=trash">回收站</a>里。</p>
+    {% elif saved_gone %}
+    <p>{{ SAVED_GONE }}</p>
+    {% endif %}
+  </div>
+  {{ direction_cards(cards, "/directions/tasks/" ~ task.id ~ "/decide", can_decide, "/directions/tasks/" ~ task.id) }}
+  {% endif %}
+  <p class="hint result-foot">已交给服务的请求：{{ sends_text(task.handed) }}（本机模拟，没有联网，不产生费用）。</p>
+  <div class="actions">
+    <form method="post" action="/directions/tasks/{{ task.id }}/again" class="inline">
+      {{ m.csrf() }}
+      <button type="submit">重新核对</button>
+    </form>
+    <a href="/directions?from={{ task.id }}">修改选择</a>
+    <a href="/directions/records">探索记录</a>
+  </div>
+  {% endif %}
+</main>
+{% endblock %}
+{% block scripts %}
+{% if task.stage == "running" %}
+<script src="/static/job_analysis.js"></script>
+{% endif %}
+{% endblock %}
