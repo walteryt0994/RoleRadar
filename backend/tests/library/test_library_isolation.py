@@ -78,6 +78,8 @@ NOT_FOR_DIRECTIONS = LEGACY_MODULES + (
     "openai",
     "app.directions.explore",
     "app.directions.simulation",
+    "app.directions.live_cases",
+    "app.directions.live_check",
 )
 # The direction workflow (U3-C2) and its simulated answers: one request to a provider it is handed, never a gate,
 # a search, a task store, a page or a saving entry of its own. It reuses U2's per-field plans and quote reading,
@@ -93,6 +95,8 @@ NOT_FOR_THE_DIRECTION_WORKFLOW = LEGACY_MODULES + (
     "app.job_analysis.web",
     "app.web_main",
     "app.directions.records",
+    "app.directions.live_cases",
+    "app.directions.live_check",
 )
 # Behind the direction pages (U3-C3a): the task store, its runner, the checked writes and the words. They build no
 # service and enter no gate: the pages hand the runner the local simulation (app.directions.web). They load no search,
@@ -108,6 +112,23 @@ NOT_FOR_THE_DIRECTION_PAGE_PARTS = LEGACY_MODULES + (
     "app.job_analysis.web",
     "app.web_main",
     "app.directions.web",
+    "app.directions.live_cases",
+    "app.directions.live_check",
+)
+# The validation command of the direction workflow (U3-C4-0) and its frozen cases: the workflow, the gate and the
+# approval's parser, never a page, a search or the pages' task store; none of their own code imports a network
+# client, and nothing of the app imports them.
+DIRECTION_CHECK = ("live_cases", "live_check")
+NOT_FOR_THE_DIRECTION_CHECK = LEGACY_MODULES + (
+    "app.discovery",
+    "app.web_main",
+    "app.directions.web",
+    "app.directions.tasks",
+    "app.directions.runner",
+    "app.directions.actions",
+    "app.job_analysis.web",
+    "app.job_analysis.runner",
+    "app.job_analysis.tasks",
 )
 
 
@@ -306,6 +327,42 @@ def test_behind_the_direction_pages_nothing_builds_a_service_or_enters_a_gate():
         imported |= {node.module.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
 
     assert not imported & NETWORK_CLIENTS
+
+
+def test_the_direction_check_loads_no_page_search_or_task_store_and_nothing_of_the_app_loads_it():
+    script = "\n".join(
+        [
+            "import importlib, json, sys",
+            f"for name in {DIRECTION_CHECK!r}:",
+            "    importlib.import_module(f'app.directions.{name}')",
+            f"names = {NOT_FOR_THE_DIRECTION_CHECK!r}",
+            "print(json.dumps([name for name in names if name in sys.modules]))",
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", script], cwd=BACKEND_DIR, env=os.environ.copy(), capture_output=True, text=True, timeout=60
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == []
+
+    imported = set()
+
+    for name in DIRECTION_CHECK:
+        tree = ast.parse((BACKEND_DIR / "app" / "directions" / f"{name}.py").read_text(encoding="utf-8"))
+        imported |= {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
+        imported |= {node.module.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
+
+    assert not imported & NETWORK_CLIENTS
+
+    # The pages, the app and the workflow never import the command or its cases (U3-C pre-check 22.3).
+    for path in ("directions/web.py", "directions/explore.py", "directions/runner.py", "directions/tasks.py", "web_main.py"):
+        tree = ast.parse((BACKEND_DIR / "app" / path).read_text(encoding="utf-8"))
+        modules = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
+        modules |= {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
+        modules |= {f"{node.module}.{alias.name}" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module for alias in node.names}
+
+        assert not {module for module in modules if "live_check" in module or "live_cases" in module}, path
 
 
 def test_the_simulated_service_loads_the_direction_rules_only_when_asked_for_them():

@@ -1,7 +1,11 @@
 """The fixed workflow that explores career directions with a user's own material (U3-C2).
 
-It is not an agent: no tools, no loop, no retry. One task makes one request, to the local simulation only (C4
-will add a real service behind the gate, separately approved), and everything about it is decided here:
+It is not an agent: no tools, no loop, no retry. One task makes one request, and everything about it is decided
+here. By default it goes to the local simulation only, as the pages use it. A caller holding a real service behind
+the gate asks for live=True (U3-C4: only the validation command, app.directions.live_check, under an approval for
+the direction purpose): then only that service is answered from, never the simulation, and only when its name,
+model and address are exactly the request's. live is where a request may go, never a permission: the approval, the
+gate and the confirmation of the task still decide whether anything goes at all, and nothing here reads them.
 
 1. build_plan works out, field by field, what may go out (the per-field plans of app.job_analysis.scope, never
    its build_plan, which needs a job posting and at least one experience). Four kinds of material, each marked
@@ -16,7 +20,7 @@ will add a real service behind the gate, separately approved), and everything ab
    their fields and the preferences always go out in one stable order, so the same fingerprint always means
    the same aliases (S1, F1, ...) and the same prompt.
 3. run_exploration refuses before anything is sent when the task is not one it runs, is not confirmed as it
-   is, or would go elsewhere than the local simulation. It then reads everything again from the library,
+   is, or would go elsewhere than its mode allows. It then reads everything again from the library,
    filtered by the owner: what a request carries is never taken as the text to send. A chosen experience
    must still be the confirmed version chosen, each field one of its category's own and filled in; the
    preferences must still be the record reviewed, at the revision reviewed, every field reading as it did,
@@ -492,8 +496,10 @@ class Problem(StrEnum):
     PREFERENCES_INVALID = "preferences_invalid"
     APPROVAL_MISSING = "approval_missing"
     APPROVAL_MISMATCH = "approval_mismatch"
-    # C2 runs on the local simulation only.
+    # By default (the pages, C2/C3) the local simulation only.
     SIMULATION_ONLY = "simulation_only"
+    # live=True (U3-C4): a real service only, named with its address; never the simulation.
+    LIVE_ONLY = "live_only"
     RECIPIENT_UNVERIFIED = "recipient_unverified"
     RECIPIENT_MISMATCH = "recipient_mismatch"
     SELECTION_INVALID = "selection_invalid"
@@ -509,7 +515,8 @@ class Problem(StrEnum):
 class ExplorationOutcome:
     status: ExplorationStatus
     task_fingerprint: str
-    # Requests that went out to the local simulation, whatever came back: 0 or 1.
+    # Requests handed to the provider, whatever came back: 0 or 1. Behind the gate a request it stopped before
+    # sending counts here too: what really went out is the gate's own count and ledger (U3-C pre-check 22.2).
     requests_sent: int
     problem: str | None = None
     selection_problems: tuple[SelectionProblem, ...] = ()
@@ -593,10 +600,12 @@ def run_exploration(
     *,
     clock,
     cancel=None,
+    live: bool = False,
 ) -> ExplorationOutcome:
     """Run one exploration as the module docstring says; never raises for its outcomes. cancel: anything with
-    is_set(), such as a threading.Event. clock: anything with now(), giving an aware time."""
-    task = _Task(request, provider, cancel)
+    is_set(), such as a threading.Event. clock: anything with now(), giving an aware time. live: the recipient is a
+    real service (see the module docstring); False, the default, keeps to the local simulation."""
+    task = _Task(request, provider, cancel, live)
 
     try:
         task.check(approval)
@@ -663,10 +672,11 @@ def run_exploration(
 class _Task:
     """The bookkeeping of one exploration: its fingerprint, the request that went out, and the checks."""
 
-    def __init__(self, request: ExplorationRequest, provider: AIProvider, cancel):
+    def __init__(self, request: ExplorationRequest, provider: AIProvider, cancel, live: bool = False):
         self.request = request
         self.provider = provider
         self.cancel = cancel
+        self.live = live
         self.fingerprint = fingerprint(request)
         self.requests_sent = 0
         self.material: _Material | None = None
@@ -700,10 +710,14 @@ class _Task:
         self.check_recipient()
 
     def check_recipient(self) -> None:
-        """Only the local simulation, as the provider's own configuration says, before anything is sent."""
+        """Before anything is sent, as the provider's own configuration says: by default only the local simulation;
+        live, only the real service the request names, its address included, and never the simulation."""
         recipient = self.request.recipient
 
-        if recipient.provider != SIMULATION_PROVIDER or recipient.endpoint is not None:
+        if self.live:
+            if recipient.provider == SIMULATION_PROVIDER or not recipient.endpoint:
+                raise _Refused(Problem.LIVE_ONLY)
+        elif recipient.provider != SIMULATION_PROVIDER or recipient.endpoint is not None:
             raise _Refused(Problem.SIMULATION_ONLY)
 
         identity = self.provider.identity()
@@ -711,7 +725,7 @@ class _Task:
         if identity is None:
             raise _Refused(Problem.RECIPIENT_UNVERIFIED)
 
-        if (identity.provider, identity.requested_model, identity.endpoint) != (recipient.provider, recipient.model, None):
+        if (identity.provider, identity.requested_model, identity.endpoint) != (recipient.provider, recipient.model, recipient.endpoint):
             raise _Refused(Problem.RECIPIENT_MISMATCH)
 
     def cancelled(self) -> bool:

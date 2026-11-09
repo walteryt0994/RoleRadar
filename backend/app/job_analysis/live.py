@@ -41,6 +41,14 @@ request_cap): at most MAX_REQUESTS, except an approval for discovery alone,
 fully checked, which may allow MAX_DISCOVERY_REQUESTS. The policy read on
 its own keeps the lower cap, and load_live_approval refuses any policy that
 allows more than its purposes may, however it was read.
+
+The output limit follows them the same way (U3-C4, output_cap): at most
+MAX_OUTPUT_TOKENS, except an approval for direction alone, fully checked,
+whose one request per exploration answers at length (three to five
+directions with their quotes and conditions) and may have up to
+MAX_DIRECTION_OUTPUT_TOKENS. Other purposes, a mix with direction among
+them, and the policy read on its own keep the lower cap; the structuring
+limit keeps its own.
 """
 import os
 import re
@@ -95,6 +103,10 @@ MAX_REQUESTS = 20
 # other purposes, a mix with discovery among them, and the policy read on its own keep MAX_REQUESTS (request_cap).
 MAX_DISCOVERY_REQUESTS = 32
 MAX_OUTPUT_TOKENS = 4000
+# The one exception (U3-C4): an approval whose purposes, fully checked, are direction alone may set this output
+# limit, for the validation of the direction workflow (app.directions.live_check); anything else keeps
+# MAX_OUTPUT_TOKENS (output_cap).
+MAX_DIRECTION_OUTPUT_TOKENS = 8_000
 MAX_TIMEOUT_SECONDS = 120
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 # What an approval names besides the policy above (U2-C1). Prices are US
@@ -176,12 +188,18 @@ def request_cap(purposes: frozenset[str] | None) -> int:
     return MAX_DISCOVERY_REQUESTS if purposes == frozenset({Purpose.DISCOVERY.value}) else MAX_REQUESTS
 
 
+def output_cap(purposes: frozenset[str] | None) -> int:
+    """The largest output limit an approval may set: MAX_DIRECTION_OUTPUT_TOKENS when its checked purposes are
+    direction alone, MAX_OUTPUT_TOKENS for any other purposes, and for none (missing or not valid)."""
+    return MAX_DIRECTION_OUTPUT_TOKENS if purposes == frozenset({Purpose.DIRECTION.value}) else MAX_OUTPUT_TOKENS
+
+
 def _checked_purposes(raw: str) -> frozenset[str]:
     """The purposes an approval names, comma-separated, each a Purpose and each once; else LiveRefused."""
     purposes = [purpose.strip() for purpose in raw.split(",")]
 
     if len(set(purposes)) != len(purposes) or not set(purposes) <= set(Purpose):
-        raise LiveRefused("批准的用途只能是 analysis、structuring、discovery，用逗号分开，各写一次。")
+        raise LiveRefused("批准的用途只能是 analysis、structuring、discovery、direction，用逗号分开，各写一次。")
 
     return frozenset(purposes)
 
@@ -201,7 +219,8 @@ def _purposes_or_none(environ: Mapping[str, str]) -> frozenset[str] | None:
 
 
 def _policy(environ, purposes: frozenset[str] | None) -> LivePolicy:
-    """The policy, its requests capped by request_cap(purposes): an approval's purposes as checked, or None."""
+    """The policy, its requests capped by request_cap(purposes) and its output by output_cap(purposes): an approval's
+    purposes as checked, or None."""
     environ = os.environ if environ is None else environ
 
     if environ.get(MODE_VARIABLE) != LIVE:
@@ -233,7 +252,7 @@ def _policy(environ, purposes: frozenset[str] | None) -> LivePolicy:
         raise LiveRefused("处理规则的核对日期要写成 YYYY-MM-DD。")
 
     max_requests = _whole(values["max_requests"], 1, request_cap(purposes), "请求次数上限")
-    max_output_tokens = _whole(values["max_output_tokens"], 1, MAX_OUTPUT_TOKENS, "输出上限")
+    max_output_tokens = _whole(values["max_output_tokens"], 1, output_cap(purposes), "输出上限")
     timeout = _whole(values["timeout_seconds"], 1, MAX_TIMEOUT_SECONDS, "超时秒数")
 
     return LivePolicy(
@@ -262,7 +281,8 @@ def load_live_approval(policy: LivePolicy, environ=None) -> ApprovalTerms:
     (RESERVE_POLICIES) with its very terms; none other is taken. The
     policy's requests must be within what these purposes may allow
     (request_cap): more than MAX_REQUESTS only for discovery alone, however
-    the policy was read.
+    the policy was read; and its output limit within output_cap: more than
+    MAX_OUTPUT_TOKENS only for direction alone.
     """
     environ = os.environ if environ is None else environ
     missing = [variable for variable in APPROVAL_SETTINGS.values() if not environ.get(variable, "").strip()]
@@ -280,6 +300,12 @@ def load_live_approval(policy: LivePolicy, environ=None) -> ApprovalTerms:
 
     if policy.max_requests > cap:
         raise LiveRefused(f"这份批准的用途最多放行 {cap} 次请求；只写 discovery 的批准才能到 {MAX_DISCOVERY_REQUESTS} 次。")
+
+    # The same for the output limit (U3-C4): however the policy was read, the approval's own purposes decide.
+    if policy.max_output_tokens > output_cap(purposes):
+        raise LiveRefused(
+            f"这份批准的用途最多允许 {output_cap(purposes)} 的输出上限；只写 direction 的批准才能到 {MAX_DIRECTION_OUTPUT_TOKENS}。"
+        )
 
     if not SERVICE_TIER.fullmatch(values["service_tier"]):
         raise LiveRefused("服务档要写成一个小写名称，例如服务商文档里的那个档位名。")

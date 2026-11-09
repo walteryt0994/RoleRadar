@@ -967,6 +967,91 @@ def test_an_approval_refuses_a_policy_that_allows_more_than_its_purposes_may(mon
         live.load_live_approval(replace(widened, max_requests=33), asking("discovery", 20))
 
 
+# --- the output limit an approval may set, by its purposes (U3-C4) --------------------------------------------------
+
+
+def outputting(purposes, tokens) -> dict:
+    """APPROVED for these purposes (None: not written at all), with this output limit."""
+    return {**asking(purposes, 6), "ROLERADAR_LIVE_MAX_OUTPUT_TOKENS": str(tokens)}
+
+
+@pytest.mark.parametrize(
+    "purposes, cap",
+    [
+        ("direction", 8_000),
+        (" direction ", 8_000),
+        ("analysis", 4_000),
+        ("discovery", 4_000),
+        ("structuring", 4_000),
+        ("direction, analysis", 4_000),
+        ("structuring,direction", 4_000),
+        ("analysis, structuring, discovery, direction", 4_000),
+    ],
+    ids=["direction", "direction-spaced", "analysis", "discovery", "structuring", "direction-analysis", "structuring-direction", "all-four"],
+)
+def test_only_an_approval_for_direction_alone_may_set_an_output_limit_above_4000(monkeypatch, purposes, cap):
+    monkeypatch.setitem(live_gate.RESERVE_POLICIES, ("openai", "synthetic-model", "default"), live_gate.FIXED_RESERVE_V1)
+
+    assert live.analysis_setup(outputting(purposes, cap)).terms.max_output_tokens == cap
+
+    with pytest.raises(ConfigError, match=f"输出上限要写成 1 到 {cap} 之间的整数"):
+        live.analysis_setup(outputting(purposes, cap + 1))
+
+
+@pytest.mark.parametrize(
+    "purposes",
+    [None, "", "direction,direction", "Direction", "direction;analysis"],
+    ids=["missing", "empty", "repeated", "capitalised", "wrong-separator"],
+)
+def test_purposes_missing_unknown_or_repeated_never_open_the_higher_output_limit(monkeypatch, purposes):
+    monkeypatch.setitem(live_gate.RESERVE_POLICIES, ("openai", "synthetic-model", "default"), live_gate.FIXED_RESERVE_V1)
+
+    with pytest.raises(ConfigError, match="输出上限要写成 1 到 4000 之间的整数"):
+        live.analysis_setup(outputting(purposes, 4_001))
+
+
+def test_the_policy_read_on_its_own_keeps_4000_and_an_approval_refuses_a_policy_widened_by_hand(monkeypatch):
+    """However a policy came to set more (here made by hand), the approval's own purposes decide (U3-C pre-check 22.3)."""
+    monkeypatch.setitem(live_gate.RESERVE_POLICIES, ("openai", "synthetic-model", "default"), live_gate.FIXED_RESERVE_V1)
+
+    with pytest.raises(LiveRefused, match="输出上限要写成 1 到 4000 之间的整数"):
+        live.load_live_policy(outputting("direction", 8_000))
+
+    widened = replace(live.load_live_policy(outputting("analysis", 4_000)), max_output_tokens=8_000)
+
+    with pytest.raises(LiveRefused, match="这份批准的用途最多允许 4000 的输出上限"):
+        live.load_live_approval(widened, outputting("analysis", 4_000))
+
+    with pytest.raises(LiveRefused, match="这份批准的用途最多允许 4000 的输出上限"):
+        live.load_live_approval(widened, outputting("direction, analysis", 4_000))
+
+    assert live.load_live_approval(widened, outputting("direction", 4_000)).max_output_tokens == 8_000
+
+    with pytest.raises(LiveRefused, match="这份批准的用途最多允许 8000 的输出上限"):
+        live.load_live_approval(replace(widened, max_output_tokens=8_001), outputting("direction", 4_000))
+
+
+def test_a_direction_exploration_is_one_task_of_its_own_purpose_with_its_approvals_output_limit(gates, ledger):
+    """U3-C4: a direction approval lets direction tasks through and nothing else, each request at its own limit."""
+    database, _ = ledger
+    gate = gates(budget_terms(purposes=frozenset({"direction"}), max_output_tokens=8_000), FIXED_RESERVE_V1)
+    provider = SyntheticProvider()
+
+    with pytest.raises(LiveBlocked) as other:
+        with gate.task("analysis", "owner-a", provider):
+            pass
+
+    assert other.value.reason is Blocked.PURPOSE
+
+    with gate.task("direction", "owner-a", provider) as gated:
+        gated.generate_text(PROMPT)
+        gated.generate_text(PROMPT, max_output_tokens=20_000)
+
+    # Reserved at 16,000 input tokens at 10 and 8,000 output tokens at 20: $0.32 each.
+    assert [call["max_output_tokens"] for call in provider.calls] == [8_000, 8_000]
+    assert [(row.purpose, row.reserved_micro_usd) for row in requests_of(database)] == [("direction", 320_000)] * 2
+
+
 def test_a_synthetic_policy_or_a_certified_bound_never_stands_in_for_the_budget_policy(monkeypatch):
     key = ("openai", "synthetic-model", "default")
     monkeypatch.setitem(live_gate.RESERVE_POLICIES, key, replace(live_gate.FIXED_RESERVE_V1, synthetic=True))

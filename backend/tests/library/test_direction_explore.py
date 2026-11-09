@@ -451,6 +451,63 @@ def test_only_the_local_simulation_ever_answers(database, clock, material, recip
     assert (outcome.status, outcome.problem, provider.prompts) == (ExplorationStatus.REJECTED, problem, [])
 
 
+# --- a real service, where the caller asks for one (U3-C4: the validation command only) -------------------------------
+
+REAL = Recipient("openai", "gpt-real", "https://api.openai.invalid/v1")
+
+
+class RealStandIn(RecordingProvider):
+    """Made up: a real service's identity, answering by the local simulation's rules; nothing goes anywhere."""
+
+    def __init__(self, identity=ProviderIdentity("openai", "gpt-real", "https://api.openai.invalid/v1")):
+        super().__init__()
+        self.configured = identity
+
+    def identity(self):
+        return self.configured
+
+    def generate_text(self, prompt, **options):
+        result = super().generate_text(prompt, **options)
+
+        return replace(result, provider=self.configured.provider, requested_model=self.configured.requested_model)
+
+
+def live_run(database, clock, request, provider):
+    return run_exploration(database, request, TaskApproval(fingerprint(request)), provider, clock=clock, live=True)
+
+
+@pytest.mark.parametrize(
+    "recipient, identity, problem",
+    [
+        (RECIPIENT, ProviderIdentity("simulation", SIMULATION_MODEL), Problem.LIVE_ONLY),
+        (Recipient("openai", "gpt-real"), ProviderIdentity("openai", "gpt-real"), Problem.LIVE_ONLY),
+        (REAL, ProviderIdentity("openai", "gpt-real", "https://elsewhere.invalid/v1"), Problem.RECIPIENT_MISMATCH),
+        (REAL, ProviderIdentity("openai", "gpt-other", "https://api.openai.invalid/v1"), Problem.RECIPIENT_MISMATCH),
+        (REAL, None, Problem.RECIPIENT_UNVERIFIED),
+    ],
+    ids=["simulation", "no-address", "other-address", "other-model", "unverified"],
+)
+def test_live_answers_only_from_the_real_service_the_request_names_never_from_the_simulation(
+    database, clock, material, recipient, identity, problem
+):
+    request = replace(full(material, database, clock), recipient=recipient)
+    provider = Configured(identity)
+    outcome = live_run(database, clock, request, provider)
+
+    assert (outcome.status, outcome.problem, provider.prompts) == (ExplorationStatus.REJECTED, problem, [])
+
+
+def test_live_runs_the_same_workflow_and_only_where_it_is_asked_for(database, clock, material):
+    request = replace(full(material, database, clock), recipient=REAL)
+    outcome = live_run(database, clock, request, RealStandIn())
+    default, provider = run(database, clock, request, RealStandIn())
+
+    assert outcome.status is ExplorationStatus.COMPLETE and outcome.requests_sent == 1
+    assert (outcome.trusted.generation.provider, outcome.trusted.generation.endpoint) == ("openai", REAL.endpoint)
+    # Without live the very same request is refused before anything goes out: the pages keep the simulation.
+    assert (default.status, default.problem, provider.prompts) == (ExplorationStatus.REJECTED, Problem.SIMULATION_ONLY, [])
+
+
 def forged(case, request, material, database, clock):
     """A request built otherwise than from a review, of something the owner may not send as it says."""
     first, second = request.sources

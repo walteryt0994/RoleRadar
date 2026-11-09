@@ -159,6 +159,10 @@ class Purpose(StrEnum):
     # A whole search for postings (U3-A2): its decisions and the analyses within it, under one task and one
     # ledger. Its requests take the analysis output limit; a decision asks for less (app.discovery.agent).
     DISCOVERY = "discovery"
+    # One direction exploration (U3-C4): a single request of the fixed workflow (app.directions.explore), from the
+    # validation command only (app.directions.live_check); the pages stay on the simulation. Its requests take the
+    # analysis output limit, which an approval for direction alone may set higher (app.job_analysis.live.output_cap).
+    DIRECTION = "direction"
 
 
 class Blocked(StrEnum):
