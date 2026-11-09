@@ -28,6 +28,7 @@ from app.library.direction_export import (
 )
 from app.library.models import DecisionState
 from app.library.presentation import field_label
+from app.library.references import BasisState
 
 STEP = "探索方向"
 # The processing notice of NOTICE_VERSION "direction-1": the local simulation only.
@@ -209,6 +210,16 @@ def _place(places: dict, quote) -> str:
 
 def decision_text(decision) -> str:
     return DECISION_STATE_LABELS[decision.state] if decision is not None else "未决定"
+
+
+def held_text(basis) -> str:
+    """Why a kept direction may not be searched for now, and what would let it be (U3-C3b)."""
+    if basis in (BasisState.VERSION_IN_BIN, BasisState.RECORD_IN_BIN, BasisState.EXPLORATION_IN_BIN):
+        then = "恢复它依据的内容，或者在上面把它“重新定为我的选择”之后，才能用于找岗。"
+    else:
+        then = "在上面把它“重新定为我的选择”之后，才能用于找岗。"
+
+    return f"{BASIS_STATE_LABELS[basis]}。{then}"
 
 
 def basis_text(decision, state) -> str:

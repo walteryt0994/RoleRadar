@@ -36,6 +36,7 @@ from app.directions.actions import (
     saved_of,
 )
 from app.directions.contracts import ExplorationResult, name_key
+from app.directions.handoff import held_back, kept_for_search
 from app.directions.explore import FIELD_GROUPS, FIELD_ORDER, ExplorationInputs, build_plan, build_request, fingerprint
 from app.directions.records import (
     SeenDecision,
@@ -671,6 +672,8 @@ def records_view(request: Request, user: CurrentUser, *, notice=None, error=None
             )
             for exploration in explorations_in_use(db, user.id)
         ]
+        # For a search (U3-C3b): C1's rule of each decision's own basis, not whether it may be decided on again.
+        handoff, held = kept_for_search(db, user.id, now), held_back(db, user.id, now)
 
     groups = [
         (label, [entry for entry in decisions if entry[0].state == state]) for state, label in presentation.DECISIONS
@@ -685,6 +688,8 @@ def records_view(request: Request, user: CurrentUser, *, notice=None, error=None
             "groups": groups,
             "has_decisions": bool(decisions),
             "explorations": explorations,
+            "handoff": handoff,
+            "held": [(entry.decision.name, presentation.held_text(entry.basis)) for entry in held],
             "notice": notice,
             "error": error,
             "DECISIONS": presentation.DECISIONS,

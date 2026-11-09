@@ -67,6 +67,9 @@
     {% if trash.attachments_with.get(item.id) %}
     <span class="trash-category">连同 {{ trash.attachments_with[item.id] }} 个附件</span>
     {% endif %}
+    {% if trash.explorations_with.get(item.id) %}
+    <span class="trash-category">连同 {{ trash.explorations_with[item.id] }} 次方向探索</span>
+    {% endif %}
     <span class="muted small">删除于 {{ item.deleted_at|localtime }}；在 {{ item.purge_after|localtime }} 之前可以恢复（{{ format_remaining(item.purge_after, now) }}）</span>
     <div class="row-actions">
       <form method="post" action="/experiences/{{ item.id }}/restore" class="inline">

@@ -55,6 +55,36 @@
     {% endif %}
   </section>
 
+  {% if handoff or held %}
+  {# U3-C3b: only the decisions' ids and revisions go to the search page; it reads each again. Nothing starts here. #}
+  <section class="review-section" aria-labelledby="handoff-title" data-reveal>
+    <h2 id="handoff-title">用保留的方向找岗位</h2>
+    {% if handoff %}
+    <form method="get" action="/discover">
+      <ul class="value-list">
+        {% for entry in handoff %}
+        <li><label class="check"><input type="checkbox" name="kept" value="{{ entry.ref }}" checked>{{ entry.name }}</label></li>
+        {% endfor %}
+      </ul>
+      <div class="form-actions">
+        <button type="submit" class="secondary">用这些方向找岗位</button>
+      </div>
+      <p class="hint">只把选中的方向带到找岗页，不会开始查找，也不会修改求职偏好；在找岗页核对并确认后才会开始。暂缓和排除的方向不会带过去。</p>
+    </form>
+    {% else %}
+    <p class="empty-state">现在没有可以用于找岗的保留方向。</p>
+    {% endif %}
+    {% if held %}
+    <p class="hint">这些保留的方向现在不能用于找岗：</p>
+    <ul class="points">
+      {% for name, why in held %}
+      <li>“{{ name }}”：{{ why }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+  {% endif %}
+
   <section class="review-section" aria-labelledby="saved-title" data-reveal>
     <h2 id="saved-title">保存的探索</h2>
     {% if explorations %}

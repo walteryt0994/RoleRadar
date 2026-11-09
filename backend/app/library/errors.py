@@ -40,6 +40,13 @@ class RecordConflict(LibraryError):
         self.record_id = record_id
 
 
+class AlongChanged(LibraryError):
+    """The explorations a deletion page listed to delete along are no longer as it showed them (U3-C3b)."""
+
+    def __init__(self):
+        super().__init__("explorations to delete along changed")
+
+
 class VersionConflict(LibraryError):
     """A history-version page was prepared for an earlier delete/restore state."""
 

@@ -53,6 +53,21 @@
         {% if offer.excluded %}
         <p class="hint">不能接受：{{ offer.excluded|join("、") }}。不会检索，也不能选。</p>
         {% endif %}
+        {% if dimension.value == "direction" %}
+        {# U3-C3b: each kept direction is named by its decision and revision; its name is the library's, taken whole. #}
+        {% if kept_candidates %}
+        <p class="hint">保留的方向（来自探索记录，只用于这次查找，不改求职偏好）：</p>
+        <ul class="value-list">
+          {% for entry, chosen in kept_candidates %}
+          <li><label class="check"><input type="checkbox" name="kept" value="{{ entry.ref }}"{% if chosen %} checked{% endif %}>{{ entry.name }}<span class="value-note">保留</span></label></li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        {% for line in kept_lines %}
+        <p class="warning" role="status">{{ line }}</p>
+        {% endfor %}
+        <p class="hint"><a href="/directions">方向还不确定？先去探索方向</a></p>
+        {% endif %}
         <div class="field">
           <label for="f-{{ dimension.value }}-added">也查</label>
           <input type="text" id="f-{{ dimension.value }}-added" name="{{ dimension.value }}_added" value="{{ given.added }}" maxlength="200" aria-describedby="h-added">

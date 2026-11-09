@@ -78,6 +78,7 @@ from app.library.content import (
 )
 from app.library.db import Database
 from app.library.errors import (
+    AlongChanged,
     AttachmentConflict,
     ChangedFile,
     Conflict,
@@ -119,10 +120,12 @@ from app.library.lifecycle import (
     check_version_state,
     deletable_version,
     delete_attachment,
-    delete_experience,
-    delete_version,
+    delete_experience_and_chosen,
+    delete_version_and_chosen,
     deletion_scope,
     direction_bin,
+    explorations_along,
+    explorations_purged_with,
     purge_due,
     request_attachment_purge,
     request_experience_purge,
@@ -165,6 +168,7 @@ from app.library.presentation import (
     version_label,
 )
 from app.library.projection import list_references, list_version_references
+from app.library.references import read_record_refs, record_ref, resting_explorations
 from app.library.sends import sends_text
 from app.library.service import (
     active_item,
@@ -715,6 +719,7 @@ def confirm_page(
     error: str | None = None,
     status_code: int = 200,
     section: str = "library",
+    along: "AlongChoice | None" = None,
 ) -> Response:
     return render(
         request,
@@ -729,6 +734,7 @@ def confirm_page(
             "acknowledge": acknowledge,
             "error": error,
             "section": section,
+            "along": along,
         },
         user=user,
         status_code=status_code,
@@ -1500,6 +1506,12 @@ def history_page(
             for version in history.versions
             if version.deleted_at is not None
         }
+        # The explorations the user deleted along with a version come back with it (U3-C3b).
+        along = {
+            version.id: len(explorations_along(db, user.id, version.deletion_id, now))
+            for version in history.versions
+            if version.deleted_at is not None
+        }
 
     return render(
         request,
@@ -1514,6 +1526,7 @@ def history_page(
             "notice": NOTICES.get(notice),
             "is_current_confirmed": is_current_confirmed,
             "version_states": states,
+            "along": along,
         },
         user=user,
     )
@@ -1550,6 +1563,10 @@ def version_delete_page(
     request: Request,
     user: CurrentUser = Depends(current_user),
 ):
+    return _version_delete_confirm(request, user, item_id, version_id)
+
+
+def _version_delete_confirm(request, user, item_id, version_id, error=None, status_code=200):
     rt = runtime(request)
     now = rt.now()
 
@@ -1557,6 +1574,7 @@ def version_delete_page(
         item, version = deletable_version(db, user.id, item_id, version_id, ALL_KINDS)
         state = version_state(db, version)
         references = list_version_references(db, user.id, item.id, version.id, now, ALL_KINDS)
+        resting = resting_explorations(db, user.id, item.id, version.id)
 
     return confirm_page(
         request,
@@ -1575,6 +1593,9 @@ def version_delete_page(
         cancel=f"/experiences/{item.id}/history",
         hidden={"expected_state": state},
         section=section_of(item),
+        error=error,
+        status_code=status_code,
+        along=_along_choice(resting, "这个版本"),
     )
 
 
@@ -1587,9 +1608,15 @@ def version_delete(
     form: dict[str, str] = Depends(checked_form),
 ):
     rt = runtime(request)
+    chosen = _chosen_along(form)
 
-    with rt.database.transaction() as db:
-        delete_version(db, user.id, item_id, version_id, _expected_state(form), rt.now(), ALL_KINDS)
+    try:
+        with rt.database.transaction() as db:
+            delete_version_and_chosen(
+                db, user.id, item_id, version_id, _expected_state(form), rt.now(), ALL_KINDS, chosen
+            )
+    except AlongChanged:
+        return _version_delete_confirm(request, user, item_id, version_id, error=ALONG_CHANGED, status_code=409)
 
     return see_other(f"/experiences/{item_id}/history?notice=version_deleted")
 
@@ -1623,8 +1650,63 @@ def version_purge_page(
         item, version = trashed_version(db, user.id, item_id, version_id, rt.now(), ALL_KINDS)
         state = version_state(db, version)
         references = list_version_references(db, user.id, item.id, version.id, rt.now(), ALL_KINDS)
+        along = len(explorations_along(db, user.id, version.deletion_id, rt.now()))
 
-    return _version_purge_confirm(request, user, item, version, state, references)
+    return _version_purge_confirm(request, user, item, version, state, references, along)
+
+
+# Deleting along the explorations resting on what is deleted (U3-C3b): offered only when some do, never ticked,
+# and taken only as the page listed them (lifecycle.check_chosen_along).
+ALONG_CHANGED = (
+    "你打开这个页面之后，下面列出的方向探索有了变化（删除过、恢复过，或者不再以它为依据），所以这次什么都没有删除。"
+    "下面是现在的情况；要一并删除的话，请重新勾选。"
+)
+
+
+@dataclass(frozen=True)
+class AlongChoice:
+    """The explorations a deletion page lists, frozen as "<id>.<revision>" pieces, and the choice to delete them along."""
+
+    legend: str
+    lines: tuple[str, ...]
+    value: str
+    label: str
+
+
+def _along_choice(explorations, what: str) -> AlongChoice | None:
+    if not explorations:
+        return None
+
+    return AlongChoice(
+        legend=f"以{what}为依据的方向探索",
+        lines=tuple(
+            "、".join(f"“{direction['name']}”" for direction in exploration.content["directions"])
+            + f"，保存于 {format_short(exploration.saved_at)}"
+            for exploration in explorations
+        ),
+        value=",".join(record_ref(exploration.id, exploration.revision) for exploration in explorations),
+        label=f"同时把这 {len(explorations)} 次方向探索移到回收站（恢复{what}时一起恢复；方向决定不会删除）",
+    )
+
+
+def _purged_along_points(count: int) -> list[str]:
+    """The line a purge page adds for the explorations the user deleted along, which go now too (U3-C3b)."""
+    return [f"一起删除的 {count} 次方向探索也会永久删除。"] if count else []
+
+
+def _chosen_along(form: dict[str, str]) -> tuple[tuple[str, int], ...]:
+    """The explorations the user chose to delete along, as the page froze them; none unless the choice is ticked."""
+    choice = form.get("delete_along")
+
+    if choice is None:
+        return ()
+
+    chosen = read_record_refs(form.get("along", "").split(",")) if choice == "yes" else None
+
+    if not chosen:
+        raise HTTPException(status_code=400)
+
+    return chosen
 
 
 def _version_direction_points(references, *, purge: bool = False) -> list[str]:
@@ -1634,7 +1716,7 @@ def _version_direction_points(references, *, purge: bool = False) -> list[str]:
     return [note] if note else []
 
 
-def _version_purge_confirm(request, user, item, version, state, references, error=None, status_code=200):
+def _version_purge_confirm(request, user, item, version, state, references, along=0, error=None, status_code=200):
     return confirm_page(
         request,
         user,
@@ -1642,6 +1724,7 @@ def _version_purge_confirm(request, user, item, version, state, references, erro
         points=[
             "永久删除后无法恢复。",
             f"只删除这一个历史版本，{_owner_noun(item)}的当前内容和其他版本不受影响。",
+            *_purged_along_points(along),
             "清理会立即开始；如果暂时没有完成，这个版本也已经不能访问或恢复，系统会自动重试。",
             "已经下载到本机的导出文件不受影响。",
             *_version_direction_points(references, purge=True),
@@ -1673,6 +1756,7 @@ def version_purge(
             item, version = trashed_version(db, user.id, item_id, version_id, rt.now(), ALL_KINDS)
             check_version_state(db, version, expected)
             references = list_version_references(db, user.id, item.id, version.id, rt.now(), ALL_KINDS)
+            along = len(explorations_along(db, user.id, version.deletion_id, rt.now()))
 
         return _version_purge_confirm(
             request,
@@ -1681,6 +1765,7 @@ def version_purge(
             version,
             expected,
             references,
+            along,
             error="请先勾选“我了解永久删除后无法恢复”。",
             status_code=422,
         )
@@ -1717,11 +1802,16 @@ def _delete_title(item) -> str:
 
 @router.get("/experiences/{item_id}/delete")
 def delete_page(item_id: str, request: Request, user: CurrentUser = Depends(current_user)):
+    return _delete_confirm(request, user, item_id)
+
+
+def _delete_confirm(request, user, item_id, error=None, status_code=200):
     rt = runtime(request)
 
     with rt.database.transaction() as db:
         scope = deletion_scope(db, user.id, item_id, rt.now(), ALL_KINDS)
         references = list_references(db, user.id, item_id, rt.now(), ALL_KINDS)
+        resting = resting_explorations(db, user.id, item_id)
 
     item = scope.item
     noun = KIND_NOUNS[item.category]
@@ -1774,6 +1864,9 @@ def delete_page(item_id: str, request: Request, user: CurrentUser = Depends(curr
         cancel=record_page(item),
         hidden={"expected_revision": str(item.revision)},
         section=section_of(item),
+        error=error,
+        status_code=status_code,
+        along=_along_choice(resting, KIND_NOUNS[item.category]),
     )
 
 
@@ -1785,10 +1878,16 @@ def delete_item(
     form: dict[str, str] = Depends(checked_form),
 ):
     rt = runtime(request)
+    chosen = _chosen_along(form)
 
-    with rt.database.transaction() as db:
-        item = delete_experience(db, user.id, item_id, _expected_revision(form), rt.now(), ALL_KINDS)
-        category = item.category
+    try:
+        with rt.database.transaction() as db:
+            item = delete_experience_and_chosen(
+                db, user.id, item_id, _expected_revision(form), rt.now(), ALL_KINDS, chosen
+            )
+            category = item.category
+    except AlongChanged:
+        return _delete_confirm(request, user, item_id, error=ALONG_CHANGED, status_code=409)
 
     if category in DOCUMENT_KINDS:
         return see_other(f"{DOCUMENT_PAGES[category]}?notice={category}_deleted")
@@ -1820,11 +1919,12 @@ def purge_page(item_id: str, request: Request, user: CurrentUser = Depends(curre
         item = trashed_item(db, user.id, item_id, rt.now(), ALL_KINDS)
         attachments = attachment_count(db, item)
         references = list_references(db, user.id, item_id, rt.now(), ALL_KINDS)
+        along = explorations_purged_with(db, user.id, item, rt.now())
 
-    return _purge_confirm(request, user, item, attachments, references)
+    return _purge_confirm(request, user, item, attachments, references, along)
 
 
-def _purge_confirm(request, user, item, attachments, references, error=None, status_code=200):
+def _purge_confirm(request, user, item, attachments, references, along=0, error=None, status_code=200):
     if item.category in DOCUMENT_KINDS:
         what = f"会删除{KIND_NOUNS[item.category]}的全部内容和全部历史版本。"
     elif attachments:
@@ -1842,6 +1942,7 @@ def _purge_confirm(request, user, item, attachments, references, error=None, sta
         points=[
             "永久删除后无法恢复。",
             what,
+            *_purged_along_points(along),
             "清理会立即开始；如果暂时没有完成，内容也已经不能访问或恢复，系统会自动重试，并在回收站显示进度。",
             "已经下载到本机的导出文件不受影响。",
             reference_note(references, purge=True),
@@ -1873,6 +1974,7 @@ def purge_item(
             check_revision(item, expected)
             attachments = attachment_count(db, item)
             references = list_references(db, user.id, item_id, rt.now(), ALL_KINDS)
+            along = explorations_purged_with(db, user.id, item, rt.now())
 
         return _purge_confirm(
             request,
@@ -1880,6 +1982,7 @@ def purge_item(
             item,
             attachments,
             references,
+            along,
             error="请先勾选“我了解永久删除后无法恢复”。",
             status_code=422,
         )

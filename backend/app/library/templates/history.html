@@ -26,6 +26,9 @@
     {% if version.deleted_at %}
     <span class="deleted">{{ version_label(version) }}</span>
     <span class="muted small">已删除；在 {{ version.purge_after|localtime }} 之前可以恢复（{{ format_remaining(version.purge_after, now) }}）</span>
+    {% if along.get(version.id) %}
+    <span class="muted small">连同 {{ along[version.id] }} 次方向探索，恢复这个版本时一起恢复</span>
+    {% endif %}
     <div class="row-actions">
       <form method="post" action="/experiences/{{ item.id }}/versions/{{ version.id }}/restore" class="inline">
         {{ m.csrf() }}

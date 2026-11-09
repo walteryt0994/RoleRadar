@@ -21,6 +21,11 @@ id alone opens nothing. Only confirming a reviewed search starts it, once, with 
 confirmation reviewed (DiscoveryTaskStore.begin), and start() checks it all again before the first step. Nothing a
 search finds is kept: tasks, their steps and results live in memory for TASK_TTL_SECONDS and are gone with a restart,
 nothing is saved to the library and nothing is applied for.
+
+Kept directions (U3-C3b) come in by decision id and revision only (app.directions.handoff), from the records page or a
+draft: their names are the library's, read again on the input page, on the review and right before a start, and each
+goes into the scope whole. A change in between voids the confirmation before anything else, so an older form can
+never start a search, and nothing here writes a decision or the preferences.
 """
 import os
 import time
@@ -35,6 +40,7 @@ from fastapi.responses import JSONResponse, Response
 from starlette.datastructures import FormData
 
 from app.analysis_contracts import RequirementGroup, SelectedPreference, SelectedSource
+from app.directions.handoff import check_kept, kept_for_search
 from app.discovery import presentation, rules, synthetic
 from app.discovery.agent import MAX_DECISIONS, SimulatedDecider
 from app.discovery.contracts import (
@@ -75,6 +81,7 @@ from app.library.content import CATEGORY_LABELS
 from app.library.errors import NotFound
 from app.library.identity import CurrentUser
 from app.library.projection import current_preferences, project_confirmed_library, read_selected_confirmations
+from app.library.references import read_record_refs
 from app.library.service import list_experiences
 from app.library.web import current_user, message_page, render, runtime, safe_next, see_other
 
@@ -92,6 +99,7 @@ NOTICES = {
     "already": "这次确认已经开始过，没有重复执行。",
     "scope_updated": "已按你的选择更新核对内容，请再看一遍后确认。",
     "scope_changed": "你改动了发送范围，所以还没有开始。下面已按新的范围更新，请再看一遍后确认。",
+    "kept_changed": "你选择的保留方向在核对之后有变化，原来的确认已经作废，没有开始。下面已按现在的情况重新核对，请再看一遍后确认。",
 }
 
 router = APIRouter()
@@ -192,6 +200,8 @@ class SearchInputs:
     use_preferences: bool = False
     # "<experience id>:<field>" or "preferences:<field>" the user chose to leave out on the review.
     left_out: frozenset[str] = field(default_factory=frozenset)
+    # (decision id, revision) of the kept directions chosen (U3-C3b); their names are read from the library each time.
+    kept: tuple[tuple[str, int], ...] = ()
 
     def of(self, dimension: Dimension) -> Wanted:
         return getattr(self, dimension.value)
@@ -240,6 +250,19 @@ def _chosen(values: list[str]) -> tuple[tuple[str, str], ...]:
     return tuple(chosen)
 
 
+def kept_refs(values: list[str]) -> tuple[tuple[str, int], ...]:
+    """The kept directions a page names, as "<decision id>.<revision>"; anything else is a bad request."""
+    if not values:
+        return ()
+
+    refs = read_record_refs(values)
+
+    if refs is None:
+        raise HTTPException(status_code=400)
+
+    return refs
+
+
 def inputs_from(form: FormData) -> SearchInputs:
     return SearchInputs(
         targets=form.get("targets", ""),
@@ -253,12 +276,17 @@ def inputs_from(form: FormData) -> SearchInputs:
         },
         chosen=_chosen(form.getlist("source")),
         use_preferences=form.get("use_preferences") == "yes",
+        kept=kept_refs(form.getlist("kept")),
     )
 
 
-def build_scope(inputs: SearchInputs, saved: Mapping[str, str]) -> SearchScope:
+def build_scope(inputs: SearchInputs, saved: Mapping[str, str], kept: tuple[str, ...] = ()) -> SearchScope:
     """The scope as entered: offered values ticked and values added; what the user cannot accept comes from the
-    saved preferences only, never from the page, and nothing the user did not choose is decided for them."""
+    saved preferences only, never from the page, and nothing the user did not choose is decided for them.
+
+    kept are the names of the kept directions chosen, as the library stores them (U3-C3b): each joins the directions
+    whole, never split as values typed in are, and none becomes ideal (kept is not ideal).
+    """
     offered = rules.prefill(saved)
     parts = {}
 
@@ -266,6 +294,13 @@ def build_scope(inputs: SearchInputs, saved: Mapping[str, str]) -> SearchScope:
         given, draft = inputs.of(dimension), offered[dimension]
         ticked = tuple(value for value in draft.values if value in given.ticked)
         seen = {rules.normalized(dimension, value) for value in ticked}
+        handed = []
+
+        for value in kept if dimension is Dimension.DIRECTION else ():
+            if rules.normalized(dimension, value) not in seen:
+                seen.add(rules.normalized(dimension, value))
+                handed.append(value)
+
         added = []
 
         for value in rules.values_of(given.added):
@@ -275,7 +310,7 @@ def build_scope(inputs: SearchInputs, saved: Mapping[str, str]) -> SearchScope:
 
         others = Others(given.others) if given.others in (Others.INCLUDED.value, Others.EXCLUDED.value) else Others.UNDECIDED
         parts[dimension] = DimensionScope(
-            values=(*ticked, *added),
+            values=(*ticked, *handed, *added),
             others=others,
             ideal=tuple(value for value in draft.ideal if value in ticked),
             excluded=draft.excluded,
@@ -305,6 +340,15 @@ def text_problems(inputs: SearchInputs) -> list[str]:
             problems.append(f"{label}：每一项最多 {VALUE_CHARS} 字")
 
     return problems
+
+
+def kept_name_problems(names: tuple[str, ...]) -> list[str]:
+    """A kept direction's name is the library's, yet held to what a value typed in may be."""
+    return [
+        f"保留的方向“{name}”超过 {VALUE_CHARS} 字或含有无法处理的控制字符，不能用于找岗"
+        for name in names
+        if len(name) > VALUE_CHARS or any(unicodedata.category(char) == "Cc" for char in name)
+    ]
 
 
 def build_material(db, owner_id: str, inputs: SearchInputs) -> Material:
@@ -381,6 +425,8 @@ def confirmation_of(owner_id: str, scope: SearchScope, material: Material) -> Pa
 def input_page(request: Request, user: CurrentUser = Depends(current_user)):
     rt = runtime(request)
     origin = request.query_params.get("from", "")
+    # Kept directions handed over from the records page (U3-C3b): ids and revisions only, read again below.
+    handed = kept_refs(request.query_params.getlist("kept"))
     inputs = None
 
     if origin:
@@ -391,7 +437,7 @@ def input_page(request: Request, user: CurrentUser = Depends(current_user)):
 
     if inputs is None:
         with rt.database.transaction() as db:
-            inputs = fresh_inputs(current_preferences(db, user.id))
+            inputs = replace(fresh_inputs(current_preferences(db, user.id)), kept=handed)
 
     return input_form(request, user, inputs)
 
@@ -404,6 +450,9 @@ def input_form(request: Request, user: CurrentUser, inputs: SearchInputs, proble
         snapshot = project_confirmed_library(db, user.id, rt.now())
         unconfirmed = len(list_experiences(db, user.id)) - len(snapshot.experiences)
         saved = current_preferences(db, user.id)
+        # Every kept direction a search may take now is offered; only those chosen, as they were chosen, are ticked.
+        candidates = kept_for_search(db, user.id, rt.now())
+        kept = check_kept(db, user.id, inputs.kept, rt.now())
 
     offered = {(entry.item_id, entry.version_id) for entry in snapshot.experiences}
     ticked = {item_id for item_id, version_id in inputs.chosen if (item_id, version_id) in offered}
@@ -423,6 +472,9 @@ def input_form(request: Request, user: CurrentUser, inputs: SearchInputs, proble
             "unconfirmed": unconfirmed,
             "ticked": ticked,
             "dropped": len(inputs.chosen) - len(ticked) if not problems else 0,
+            "kept_candidates": [(entry, entry in kept.kept) for entry in candidates],
+            # What a review said already is not said twice.
+            "kept_lines": presentation.kept_lines(kept) if where != "kept" else [],
             "analysed_preferences": [name for name in saved if name not in rules.SCOPE_FIELDS and saved.get(name)],
             "problems": problems,
             "where": where,
@@ -455,8 +507,13 @@ def new_review(request: Request, user: CurrentUser, inputs: SearchInputs, *, rep
     material, problems, where = None, (), ""
 
     with rt.database.transaction() as db:
-        scope = build_scope(inputs, current_preferences(db, user.id))
-        problems, where = text_problems(inputs) or list(scope_check(scope)), "scope"
+        kept = check_kept(db, user.id, inputs.kept, rt.now())
+        names = tuple(entry.name for entry in kept.kept)
+        scope = build_scope(inputs, current_preferences(db, user.id), names)
+        problems, where = presentation.kept_problems(kept), "kept"
+
+        if not problems:
+            problems, where = text_problems(inputs) or kept_name_problems(names) or list(scope_check(scope)), "scope"
 
         if not problems:
             try:
@@ -601,7 +658,9 @@ def confirm(task_id: str, request: Request, user: CurrentUser = Depends(current_
     """Update what each analysis sends, or confirm and start: the only post that starts a search.
 
     The form carries no source, recipient or address: those are the server's. Fields unticked since the review are
-    never sent: a start whose ticks differ from the reviewed ones becomes a new review instead.
+    never sent: a start whose ticks differ from the reviewed ones becomes a new review instead. A kept direction chosen
+    that changed since the review voids this confirmation first (_voided), and the last check of them and the start
+    happen under one write lock (_start).
     """
     searches = searches_of(request)
 
@@ -618,9 +677,15 @@ def confirm(task_id: str, request: Request, user: CurrentUser = Depends(current_
     material = task.draft.material
     sendable = _sendable(material)
     ticked = set(form.getlist("send")) & sendable
+    inputs = task.draft.inputs
 
     if ticked != _sent(material):
-        inputs = replace(task.draft.inputs, left_out=frozenset(sendable - ticked))
+        inputs = replace(inputs, left_out=frozenset(sendable - ticked))
+
+    if not _kept_stand(request, user, inputs):
+        return _voided(request, user, task, inputs)
+
+    if ticked != _sent(material):
         notice = "scope_changed" if form.get("action") == "start" else "scope_updated"
 
         return new_review(request, user, inputs, replaces=task.id, notice=notice)
@@ -637,7 +702,12 @@ def confirm(task_id: str, request: Request, user: CurrentUser = Depends(current_
             status_code=409,
         )
 
-    outcome, started = searches.store.begin(task.id, user.id, user.token_hash, form.get("fingerprint", ""))
+    begun = _start(request, user, task, inputs, form.get("fingerprint", ""))
+
+    if begun is None:
+        return _voided(request, user, task, inputs)
+
+    outcome, started = begun
 
     if outcome is Start.STARTED:
         searches.executor.submit(
@@ -674,6 +744,40 @@ def confirm(task_id: str, request: Request, user: CurrentUser = Depends(current_
         )
 
     return gone_page(request, user)
+
+
+def _kept_stand(request: Request, user: CurrentUser, inputs: SearchInputs) -> bool:
+    """Whether every kept direction the search was reviewed with is still the user's, as chosen, and usable."""
+    if not inputs.kept:
+        return True
+
+    rt = runtime(request)
+
+    with rt.database.transaction() as db:
+        return check_kept(db, user.id, inputs.kept, rt.now()).stands
+
+
+def _voided(request: Request, user: CurrentUser, task, inputs: SearchInputs) -> Response:
+    """A kept direction changed since the review: the confirmation goes before anything else is tried, so no form of
+    it can start a search again, whatever the review made again from what was entered says (U3-C3b)."""
+    searches_of(request).store.discard(task.id, user.id, user.token_hash)
+
+    return new_review(request, user, inputs, notice="kept_changed")
+
+
+def _start(request: Request, user: CurrentUser, task, inputs: SearchInputs, fingerprint: str):
+    """Begin the search once; None, beginning nothing, when a kept direction changed. Checked and begun under the
+    library's write lock, so no decision changes between the last check and the start."""
+    searches, rt = searches_of(request), runtime(request)
+
+    if not inputs.kept:
+        return searches.store.begin(task.id, user.id, user.token_hash, fingerprint)
+
+    with rt.database.transaction() as db:
+        if not check_kept(db, user.id, inputs.kept, rt.now()).stands:
+            return None
+
+        return searches.store.begin(task.id, user.id, user.token_hash, fingerprint)
 
 
 @router.post(f"{BASE}/tasks/{{task_id}}/cancel")

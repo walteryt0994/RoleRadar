@@ -537,6 +537,11 @@ input[type=text]:focus, textarea:focus { border-color: var(--ink); outline: 2px 
 }
 .dirty-status { margin: 0; font-size: 14px; font-weight: 500; color: var(--ink); }
 .ack { display: flex; align-items: flex-start; gap: 8px; margin: 16px 0; }
+/* What may be deleted along with a record or a version (U3-C3b): listed, never ticked when shown. */
+.along-choice { min-width: 0; margin: 20px 0 0; padding: 14px 0 0; border: 0; border-top: 1px solid var(--line); }
+.along-choice > legend { float: left; width: 100%; margin: 0 0 6px; padding: 0; font-size: 15px; font-weight: 600; }
+.along-choice > legend + * { clear: both; }
+.along-choice .check { margin: 12px 0 0; }
 
 /* --- grouped fields on the version and confirmation pages ---------------- */
 

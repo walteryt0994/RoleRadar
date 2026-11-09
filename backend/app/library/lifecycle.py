@@ -26,7 +26,9 @@ the user chose to delete along: those must be in use and rest on it, go to
 the bin under the same deletion, come back only with it and are purged with
 it. An exploration that went along with something else can be neither
 restored nor purged on its own. A decision is not restored next to a newer
-one of the same name.
+one of the same name. The deletion pages (U3-C3b) name the explorations
+as they listed them, with their revisions, and nothing is taken unless
+each still stands as listed (check_chosen_along).
 """
 import logging
 from dataclasses import dataclass, field
@@ -38,6 +40,7 @@ from sqlalchemy.orm import Session
 from app.library.content import DOCUMENT_KINDS, EXPERIENCE_CATEGORIES, PREFERENCES, PROFILE
 from app.library.db import Database
 from app.library.errors import (
+    AlongChanged,
     AttachmentConflict,
     FileStoreError,
     NotAllowed,
@@ -614,6 +617,114 @@ def _expire_explorations_now(db: Session, owner_id: str, deletion_id: str | None
             exploration.updated_at = now
 
 
+# --- what a deletion page offers to delete along (U3-C3b) -----------------------------------------------------
+
+
+def check_chosen_along(
+    db: Session,
+    owner_id: str,
+    item_id: str,
+    version_id: str | None,
+    chosen: tuple[tuple[str, int], ...],
+) -> None:
+    """Each exploration a deletion page listed and the user chose to delete along, as the page showed it.
+
+    chosen holds (exploration id, revision) as the page froze them. Each must still be the owner's, in use, at that
+    revision (one deleted and restored since is not as shown) and resting on the record, or on this version of it;
+    otherwise AlongChanged, and as it rolls the transaction back nothing at all is deleted. Run in the deletion's
+    own transaction: what came to rest on the record after the page was shown is not among them and is never taken.
+    """
+    for exploration_id, revision in chosen:
+        exploration = db.scalar(
+            select(DirectionExploration).where(
+                DirectionExploration.id == exploration_id,
+                DirectionExploration.owner_id == owner_id,
+                DirectionExploration.deleted_at.is_(None),
+            )
+        )
+        conditions = [
+            DirectionSource.owner_id == owner_id,
+            DirectionSource.holder_type == SourceHolder.EXPLORATION,
+            DirectionSource.holder_id == exploration_id,
+            DirectionSource.item_id == item_id,
+        ]
+
+        if version_id is not None:
+            conditions.append(DirectionSource.version_id == version_id)
+
+        if (
+            exploration is None
+            or exploration.revision != revision
+            or db.scalar(select(DirectionSource.id).where(*conditions).limit(1)) is None
+        ):
+            raise AlongChanged()
+
+
+def delete_experience_and_chosen(
+    db: Session,
+    owner_id: str,
+    item_id: str,
+    expected_revision: int,
+    now: datetime,
+    kinds: KINDS = EXPERIENCE_CATEGORIES,
+    chosen: tuple[tuple[str, int], ...] = (),
+) -> ExperienceItem:
+    """delete_experience, with the explorations its page listed and the user chose to delete along.
+
+    The record is checked first, as delete_experience checks it, so a page older than the record is answered as it
+    always was; then each chosen exploration (check_chosen_along); then all of it is deleted in this transaction,
+    or none of it. Nothing chosen: only the record, as before.
+    """
+    if chosen:
+        check_revision(active_item(db, owner_id, item_id, kinds), expected_revision)
+        check_chosen_along(db, owner_id, item_id, None, chosen)
+
+    return delete_experience(
+        db, owner_id, item_id, expected_revision, now, kinds, tuple(exploration_id for exploration_id, _ in chosen)
+    )
+
+
+def delete_version_and_chosen(
+    db: Session,
+    owner_id: str,
+    item_id: str,
+    version_id: str,
+    expected_state: str,
+    now: datetime,
+    kinds: KINDS = EXPERIENCE_CATEGORIES,
+    chosen: tuple[tuple[str, int], ...] = (),
+) -> ExperienceVersion:
+    """delete_version, with the explorations resting on this version that its page listed and the user chose."""
+    if chosen:
+        _, version = deletable_version(db, owner_id, item_id, version_id, kinds)
+        check_version_state(db, version, expected_state)
+        check_chosen_along(db, owner_id, item_id, version_id, chosen)
+
+    return delete_version(
+        db,
+        owner_id,
+        item_id,
+        version_id,
+        expected_state,
+        now,
+        kinds,
+        tuple(exploration_id for exploration_id, _ in chosen),
+    )
+
+
+def explorations_along(db: Session, owner_id: str, deletion_id: str | None, now: datetime) -> list[DirectionExploration]:
+    """The explorations deleted along with this deletion of a record or a version, still restorable with it."""
+    return [exploration for exploration in _went_along(db, owner_id, deletion_id) if not is_expired(exploration, now)]
+
+
+def explorations_purged_with(db: Session, owner_id: str, item: ExperienceItem, now: datetime) -> int:
+    """How many explorations purging this binned record makes unrestorable at once: those deleted along with it
+    and with its versions still in the bin, as request_experience_purge expires them."""
+    deletions = (item.deletion_id, *_open_version_deletions(db, owner_id, item.id))
+
+    return sum(len(explorations_along(db, owner_id, deletion_id, now)) for deletion_id in deletions)
+
+
 def _open_version_deletions(db: Session, owner_id: str, item_id: str) -> list[str]:
     """The deletions of this record's versions still waiting in the bin, by their purge jobs."""
     return list(
@@ -815,6 +926,8 @@ class TrashView:
     finished_cleanups: list[PurgeJob]
     # How many attachments went to the bin with each record (restored with it).
     attachments_with: dict[str, int] = field(default_factory=dict)
+    # How many saved direction explorations the user deleted along with each record (restored with it; U3-C3b).
+    explorations_with: dict[str, int] = field(default_factory=dict)
 
 
 def trash_view(db: Session, owner_id: str, now: datetime) -> TrashView:
@@ -839,6 +952,7 @@ def trash_view(db: Session, owner_id: str, now: datetime) -> TrashView:
             item.id: len(_attachments(db, item, Attachment.deletion_id == item.deletion_id))
             for item in items
         },
+        explorations_with={item.id: len(explorations_along(db, owner_id, item.deletion_id, now)) for item in items},
     )
 
 

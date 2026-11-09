@@ -306,8 +306,9 @@ def reference_note(references, *, purge: bool = False) -> str:
     """What a deletion page says about other modules: only what the library knows.
 
     Saved direction explorations and direction decisions keep references (U3-C1): those resting on the
-    record are counted (nothing is said of them when there are none, as the pages do not offer them yet);
-    the modules that keep no references are said to be unknown, never "not used".
+    record are counted (nothing is said of them when there are none; the deletion pages list the
+    explorations and offer to delete them along, U3-C3b); the modules that keep no references are said to
+    be unknown, never "not used".
     """
     if references.status != NOT_ESTABLISHED:
         raise ValueError(f"no wording for the reference status {references.status!r}")

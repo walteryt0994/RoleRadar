@@ -44,6 +44,8 @@ SHARED_CONTRACTS = ("app.schemas", "app.experience_analysis", "app.job_analysis"
 # network: they load none of these modules, and their own code imports no network client.
 SEARCH_TOOLS = ("contracts", "rules", "sources", "synthetic", "tools")
 NOT_FOR_SEARCH_TOOLS = LEGACY_MODULES + (
+    # Kept directions reach a search through its pages only (U3-C3b): the tools know nothing of them.
+    "app.directions",
     "app.job_analysis.runner",
     "app.job_analysis.tasks",
     "app.job_analysis.service",
@@ -55,10 +57,17 @@ NETWORK_CLIENTS = {"socket", "ssl", "http", "urllib", "requests", "httpx", "http
 # The search agent (U3-A2): its loop, the fixed flow and its task store start no analysis task and have no page;
 # only its runner gets a service, through app.job_analysis.service. None of its own code imports a network client.
 AGENT_MODULES = ("agent", "baseline", "tasks")
-NOT_FOR_THE_AGENT = LEGACY_MODULES + ("app.job_analysis.runner", "app.job_analysis.tasks", "app.job_analysis.web", "app.web_main")
+NOT_FOR_THE_AGENT = LEGACY_MODULES + (
+    "app.directions",
+    "app.job_analysis.runner",
+    "app.job_analysis.tasks",
+    "app.job_analysis.web",
+    "app.web_main",
+)
 # The direction records (U3-C1) are contracts and internal entries over the library: no analysis, search, gate,
-# service client or page, and none of their own code imports a network client.
-DIRECTION_MODULES = ("contracts", "records")
+# service client or page, and none of their own code imports a network client. The hand-off to a search (U3-C3b)
+# only reads them: it loads no search, page or gate either.
+DIRECTION_MODULES = ("contracts", "records", "handoff")
 NOT_FOR_DIRECTIONS = LEGACY_MODULES + (
     "app.job_analysis",
     "app.discovery",

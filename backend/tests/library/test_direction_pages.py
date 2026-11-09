@@ -211,8 +211,10 @@ def test_direction_exploration_sits_between_my_material_and_job_opportunities(br
     assert top(explore)[1] == ("/directions", ' aria-current="true"', "方向探索")
     assert sub(explore) == [("/directions", ' aria-current="page"', "探索方向"), ("/directions/records", "", "探索记录")]
     assert sub(records) == [("/directions", "", "探索方向"), ("/directions/records", ' aria-current="page"', "探索记录")]
-    # C3b is not here: no hand-off to 找岗位, and 找岗位 has no entry for an unsure direction yet.
-    assert "用这些方向找岗位" not in explore + records and "方向还不确定" not in browser_a.get("/discover").text
+    # Since U3-C3b, 找岗位 has an entry for an unsure direction; the hand-off shows only once a direction is kept
+    # (test_direction_handoff.py), so a user with no decision sees none.
+    assert "用这些方向找岗位" not in explore + records
+    assert '<a href="/directions">方向还不确定？先去探索方向</a>' in browser_a.get("/discover").text
 
 
 # --- choose, review, run, compare --------------------------------------------------------------------------------------

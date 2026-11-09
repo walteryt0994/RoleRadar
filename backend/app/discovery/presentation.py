@@ -111,16 +111,55 @@ def problem_text(problem: str) -> str:
     return PROBLEMS.get(problem, PROBLEMS[INTERNAL_ERROR])
 
 
+def shown_value(value: str) -> str:
+    """One value of a scope: whole, quoted when it holds what a list is split at (a kept direction's name may), so
+    "数据分析/商业分析" reads as one value next to the others (U3-C3b)."""
+    return f"“{value}”" if rules.SEPARATORS.search(value) else value
+
+
 def dimension_text(part, dimension: Dimension) -> str:
     """One dimension of a confirmed scope, as the review and the result say it."""
     ideal = set(part.ideal)
-    values = "、".join(f"{value}（理想）" if value in ideal else value for value in part.values) or "没有列出"
+    values = "、".join(
+        f"{shown_value(value)}（理想）" if value in ideal else shown_value(value) for value in part.values
+    ) or "没有列出"
     text = f"{values}；{OTHERS_LABELS[part.others]}"
 
     if part.excluded:
-        text += f"；不能接受：{'、'.join(part.excluded)}（不会检索）"
+        text += f"；不能接受：{'、'.join(shown_value(value) for value in part.excluded)}（不会检索）"
 
     return text
+
+
+def kept_lines(check) -> list[str]:
+    """What the input page says of kept directions chosen that it did not take as chosen (handoff.KeptCheck)."""
+    lines = []
+
+    if check.changed:
+        names = "、".join(f"“{name}”" for name in check.changed)
+        lines.append(f"{names}在你选择之后有变化，或者现在不能用于找岗，没有带入。可以在探索记录里查看它们现在的情况。")
+
+    if check.missing:
+        lines.append(f"另有 {check.missing} 个方向已经撤销或找不到，没有带入。")
+
+    return lines
+
+
+def kept_problems(check) -> list[str]:
+    """Why a review was not made: a kept direction chosen is no longer as it was chosen."""
+    problems = []
+
+    if check.changed:
+        names = "、".join(f"“{name}”" for name in check.changed)
+        problems.append(f"保留的方向{names}在你选择之后有变化，或者现在不能用于找岗。")
+
+    if check.missing:
+        problems.append(f"有 {check.missing} 个保留的方向已经撤销或找不到。")
+
+    if problems:
+        problems.append("下面已按现在的情况列出保留的方向，请重新选择后再核对。")
+
+    return problems
 
 
 def scope_lines(scope) -> list[tuple[str, str]]:

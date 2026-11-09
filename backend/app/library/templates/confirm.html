@@ -15,6 +15,20 @@
   {% for name, value in hidden.items() %}
   <input type="hidden" name="{{ name }}" value="{{ value }}">
   {% endfor %}
+  {% if along is defined and along %}
+  {# U3-C3b: never ticked when shown; only the explorations listed here, as listed, can go along. Pages that pass
+     nothing for it (other modules' confirmations) show no such block. #}
+  <fieldset class="along-choice">
+    <legend>{{ along.legend }}</legend>
+    <ul class="points">
+      {% for line in along.lines %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+    <input type="hidden" name="along" value="{{ along.value }}">
+    <label class="check"><input type="checkbox" name="delete_along" value="yes"> {{ along.label }}</label>
+  </fieldset>
+  {% endif %}
   {% if acknowledge %}
   <label class="ack"><input type="checkbox" name="acknowledge" value="yes" required> {{ acknowledge }}</label>
   {% endif %}

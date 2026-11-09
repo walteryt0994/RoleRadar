@@ -21,6 +21,7 @@ rested on before, and one made on a saved exploration also stands as that explor
 
 Every lookup is filtered by the owner, so another user's ids are simply not found.
 """
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -266,3 +267,50 @@ def referencing(
     )
 
     return DirectionReferences(explorations=tuple(explorations), decisions=tuple(decisions))
+
+
+def resting_explorations(
+    db: Session, owner_id: str, item_id: str, version_id: str | None = None
+) -> list[DirectionExploration]:
+    """The saved explorations in use resting on a record, or on this version of it, oldest first (U3-C3b: what a
+    deletion page lists and offers to delete along)."""
+    wanted = referencing(db, owner_id, item_id, version_id).explorations
+    rows = {
+        row.id: row
+        for row in db.scalars(
+            select(DirectionExploration).where(DirectionExploration.owner_id == owner_id, DirectionExploration.id.in_(wanted))
+        )
+    }
+
+    return [rows[exploration_id] for exploration_id in wanted if exploration_id in rows]
+
+
+# A direction record as a page names it (U3-C3b): "<id>.<revision>", the id as the library makes them.
+RECORD_REF = re.compile(r"(?P<id>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.(?P<revision>0|[1-9][0-9]{0,8})")
+
+
+def record_ref(record_id: str, revision: int) -> str:
+    return f"{record_id}.{revision}"
+
+
+def read_record_ref(text: str) -> tuple[str, int] | None:
+    """(id, revision) from "<id>.<revision>", or None for anything else."""
+    match = RECORD_REF.fullmatch(text)
+
+    return (match["id"], int(match["revision"])) if match else None
+
+
+def read_record_refs(texts) -> tuple[tuple[str, int], ...] | None:
+    """Every piece read as a record ref, the same one given twice taken once; None if any piece is not one, or if
+    one id comes with two revisions: a page that says two things of one record is not read either way."""
+    refs = {}
+
+    for text in texts:
+        ref = read_record_ref(text)
+
+        if ref is None or refs.get(ref[0], ref[1]) != ref[1]:
+            return None
+
+        refs[ref[0]] = ref[1]
+
+    return tuple(refs.items())
