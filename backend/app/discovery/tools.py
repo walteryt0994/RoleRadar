@@ -36,6 +36,14 @@ analyze_posting and finish.
   material changing, a cancellation, the time running out or a gate
   stopping a request ends the search, so no analysis starts after it. With
   no experience chosen nothing is analysed at all.
+- analyze_postings analyses several such postings with one step (U3-Q1):
+  the whole list is checked first, and one posting it may not analyse, a
+  posting named twice, more than one step takes or more than the analyses
+  left, refuses the step with nothing sent. Then each goes through
+  analyze_posting in turn, with its own outbound check, approval, gate and
+  count: one stopped by the outbound check leaves the rest to go on, while
+  a stop of the search (the material changed, the gate, a cancellation,
+  the time running out) leaves the rest undone, and the result says which.
 - A result stands only while its facts do: a later check without an
   answer, or chosen material that has changed, withdraws its analysis.
 - finish ends the search for a reason it may give itself; the rules have
@@ -44,7 +52,9 @@ analyze_posting and finish.
   every posting found has a conclusion and no source gave back postings
   that could not be verified or that were another source's. With
   combinations left unsearched it is said as "nothing suitable in what was
-  searched, the rest unchecked".
+  searched, the rest unchecked". A search with experiences chosen may say
+  "enough" only with a result that stands now (U3-Q2): never with none,
+  nor with analyses since withdrawn. An end the rules impose comes first.
 
 Each result's summary is short, and it may go to a model (U3 proposal, 5.4
 and 5.5): a posting's own words reach it only cut down, inside a marked
@@ -139,6 +149,11 @@ TOO_LONG = "too_long"
 OVER_LIMIT = "outbound_limit"
 # A read or check that failed, as a later step of the same search is told.
 NOT_AGAIN = {Tool.READ: "上次没有读到", Tool.CHECK: "上次核对没有得到回答"}
+# Why "enough" is refused to a search with experiences chosen and no result standing (U3-Q2).
+NOTHING_STANDS = (
+    "还没有现在仍然成立的完整分析结果，不能说“够了”：可以先分析核对过、仍在招聘的岗位，"
+    "或者如实以“范围内查完了”“没有合适结果”结束"
+)
 # What stops a posting, as a summary names it: not in the outbound rules' own labels ("详细地址",
 # "保密或内部内容"), which those rules stop as well.
 STOPPING = {ADDRESS: "疑似地址", CONFIDENTIAL: "标明不公开的内容"}
@@ -912,6 +927,88 @@ def analyze_posting(run: SearchRun, ref: PostingRef) -> ToolResult:
     return _analysed(run, found, result)
 
 
+def analyze_postings(run: SearchRun, refs: Iterable[PostingRef]) -> ToolResult:
+    """Analyse several postings with one step (U3-Q1): all of them checked before anything is sent, then each in
+    turn through analyze_posting, exactly as one at a time; see the module docstring for when the rest go undone."""
+    halted = run.halted(Tool.ANALYZE)
+
+    if halted is not None:
+        return halted
+
+    refs = tuple(refs)
+    reason = _refs_problem(run, refs, run.found, Tool.ANALYZE)
+
+    if reason is None:
+        # Each posting as analyze_posting checks it, so a list of one is refused exactly as before.
+        reason = next((problem for problem in (_analysis_problem(run, ref) for ref in refs) if problem is not None), None)
+
+    if reason is None and len(refs) > run.limits.analyses - run.analyses:
+        reason = f"分析次数不够：这一步要分析 {len(refs)} 个岗位，只剩 {run.limits.analyses - run.analyses} 个"
+
+    if reason is not None:
+        # Nothing of the list is sent, the postings that could be analysed included: one refusal for the step.
+        return run.refuse(Tool.ANALYZE, reason)
+
+    lines, outcomes = [], []
+
+    for index, ref in enumerate(refs):
+        undone = [f"- [{_ref(left)}] 没有执行" for left in refs[index:]]
+
+        if run.stopping():
+            # Stopped between two of them (a cancellation, the time running out): the rest are not sent.
+            return _batch_stopped(run, refs, outcomes, [*lines, *undone])
+
+        # Checked again right before it is sent; the whole list passed a moment ago, so this is a safeguard only.
+        problem = _analysis_problem(run, ref)
+
+        if problem is not None:
+            lines += [f"- [{_ref(ref)}] 没有执行：{problem}", *undone[1:]]
+            break
+
+        result = analyze_posting(run, ref)
+        lines.append(f"- {result.summary}")
+        outcomes.append(result.outcome)
+
+        if result.outcome is Outcome.STOPPED:
+            # The search ended with it (the material changed, the gate, a cancellation): the rest are not sent.
+            return _batch_stopped(run, refs, outcomes, [*lines, *undone[1:]], result.reason)
+
+    if Outcome.DONE in outcomes:
+        outcome = Outcome.DONE
+    elif outcomes and set(outcomes) == {Outcome.BLOCKED} and len(outcomes) == len(refs):
+        outcome = Outcome.BLOCKED
+    else:
+        outcome = Outcome.FAILED
+
+    return ToolResult(Tool.ANALYZE, outcome, _batch_summary(refs, outcomes, lines))
+
+
+def _batch_stopped(run: SearchRun, refs, outcomes: list[Outcome], lines: list[str], reason: str | None = None) -> ToolResult:
+    stop = f"查找已经结束（{END_LABELS[run.ended]}），之后的没有执行；已经发出的请求照常计数。"
+
+    return ToolResult(Tool.ANALYZE, Outcome.STOPPED, f"{_batch_summary(refs, outcomes, lines)}\n{stop}", reason or run.ended.value)
+
+
+def _batch_summary(refs: tuple[PostingRef, ...], outcomes: list[Outcome], lines: list[str]) -> str:
+    """What a step of several analyses came to: how many of each, never one word for all of them, then each."""
+    counted = [
+        f"{label} {outcomes.count(outcome)} 个"
+        for outcome, label in (
+            (Outcome.DONE, "完成"),
+            (Outcome.BLOCKED, "外发检查拦下"),
+            (Outcome.FAILED, "没有完成"),
+            (Outcome.STOPPED, "查找就此结束"),
+        )
+        if outcome in outcomes
+    ]
+    undone = len(refs) - len(outcomes)
+
+    if undone:
+        counted.append(f"没有执行 {undone} 个")
+
+    return "\n".join([f"这一步分析 {len(refs)} 个岗位：{'，'.join(counted)}。", *lines])
+
+
 def finish(run: SearchRun, claim: EndReason) -> ToolResult:
     """End the search as enough, the scope covered, or nothing suitable found; the rules may say otherwise."""
     halted = run.halted(Tool.FINISH)
@@ -947,6 +1044,10 @@ def finish(run: SearchRun, claim: EndReason) -> ToolResult:
     elif left and claim is EndReason.NO_RESULTS:
         # Nothing suitable in what was searched, and nobody knows of the rest: said as it is, nothing more sent.
         end = EndReason.PARTLY_NO_RESULTS
+    elif claim is EndReason.ENOUGH and run.personalised and not any(isinstance(standing, Category) for standing in standings):
+        # Experiences chosen and no result stands now (none, or analyses since withdrawn): "enough" would say there
+        # is one (U3-Q2). Refused as it is, never turned into another end.
+        return run.refuse(Tool.FINISH, NOTHING_STANDS)
     else:
         end = claim
 

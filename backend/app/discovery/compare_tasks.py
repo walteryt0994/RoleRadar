@@ -43,8 +43,9 @@ from app.library.service import active_item, confirm_experience, create_document
 TASKSET_VERSION = "1"
 # What the comparison holds runs to (app.discovery.compare): a change of the criteria is a new version. 2 (U3-B0 R1):
 # a result must show the frozen provenance of its posting and the run's own read and check of it, and "nothing
-# suitable" is held to every posting found having a conclusion, as A1's finish has it.
-JUDGE_VERSION = "2"
+# suitable" is held to every posting found having a conclusion, as A1's finish has it. 3 (U3-Q2): with experiences
+# chosen, "enough" is held to a result that stands, as A1's finish has it since. Judge 2 stays what B1 was judged by.
+JUDGE_VERSION = "3"
 NOTICE_VERSION = "discovery-eval-1"
 LIMITS = Limits()
 # The decision settings of an evaluation run (U3-B pre-check, 7.3.1): this decider's own, never the product's
@@ -231,9 +232,11 @@ TASKS = (
 )
 TASK_IDS = tuple(task.id for task in TASKS)
 # taskset_digest() of everything above, the synthetic sources, the rules' version and the decision instructions and
-# settings, as frozen for B-0 R1 (2026-11-08: judge 2, the sources' grants and addresses added; the tasks unchanged).
-# The first B-0 digest, a02cade6…, is void. Any change to them makes another digest: a new freeze, under review.
-FROZEN_DIGEST = "9aee3ffa569bf83ff8567ca6d0369761ef94a9253868d1d6c4cfa2baf65d5b44"
+# settings, as frozen for U3-Q (2026-11-08: judge 3; the instructions say an analysis may name several postings and
+# when "enough" is refused; the tasks, rules, limits and settings unchanged). For runs from now on only: B1 ran and
+# was judged under 9aee3ffa… (judge 2, B-0 R1), which stays as it was; the first B-0 digest, a02cade6…, is void. Any
+# change to them makes another digest: a new freeze, under review.
+FROZEN_DIGEST = "6c1ccdba2b4dc021cfd098c6f2788b5296ca751a00ae933431756eb3c1e3deaf"
 
 
 # --- the material, and what a run of a task is confirmed for ------------------------------------------

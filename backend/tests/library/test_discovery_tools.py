@@ -22,6 +22,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 
 from app.ai_provider import AIProvider, ProviderIdentity
 from app.analysis_contracts import Recipient, SelectedPreference, SelectedSource, TaskApproval, task_fingerprint
@@ -47,8 +48,10 @@ from app.discovery.contracts import (
 from app.discovery.sources import Access, Permission, Query, Register, SourceEntry, SourceError, SourceTimeout
 from app.discovery.synthetic import CAREERS, LEADS, SyntheticSource
 from app.discovery.tools import (
+    NOTHING_STANDS,
     StartRefused,
     analyze_posting,
+    analyze_postings,
     check_posting,
     child_request,
     derive_approval,
@@ -59,6 +62,7 @@ from app.discovery.tools import (
 )
 from app.job_analysis.simulation import RECIPIENT, SIMULATION_MODEL, SimulatedProvider
 from app.library.content import PREFERENCES, parse_experience_form
+from app.library.models import LiveRequest
 from app.library.service import active_item, save_draft
 from app.live_gate import ApprovalTerms, Blocked, InputBound, LiveBlocked, PriceBasis, open_gate
 from app.outbound_review import review
@@ -134,6 +138,13 @@ def begin(database, clock, confirmation, provider=None, *, register=None, cancel
         cancel=cancel,
         monotonic=monotonic,
     )
+
+
+def at_the_limit(run):
+    """What the agent loop does once its last decision is handled and nothing ended the search (A2): it ends at its
+    limit. Since U3-Q2 a search with experiences chosen and no result standing may not say "enough", so a tools-level
+    test that only wants to read the outcome ends it this way."""
+    run.end(EndReason.LIMIT)
 
 
 def ready(run, *posting_ids, city="北京"):
@@ -445,7 +456,12 @@ def test_a_closed_posting_is_never_analysed_or_shown(database, library, clock):
     run.register.adapter(CAREERS).closed.add("c-bj-analyst")
 
     assert check_posting(run, [ref("c-bj-analyst")]).outcome is Outcome.DONE
-    assert finish(run, EndReason.ENOUGH).outcome is Outcome.DONE
+
+    # Its analysis no longer stands: "enough" is refused, never turned into another end (U3-Q2). The analysis of the
+    # closed posting was refused before, so this second refusal ends the search.
+    refused = finish(run, EndReason.ENOUGH)
+
+    assert (refused.outcome, refused.reason, run.ended) == (Outcome.REFUSED, NOTHING_STANDS, EndReason.REFUSED)
 
     outcome = run.outcome()
 
@@ -1098,7 +1114,9 @@ def test_a_request_that_failed_is_not_sent_again_but_one_with_other_conditions_i
 
     assert (retried.outcome, retried.reason) == (Outcome.REFUSED, "[synthetic-careers/c-bj-analyst] 上次没有读到，这次查找不再重试")
     assert [call for call in careers.calls if call[0] == "read"] == [("read", "c-bj-analyst")]
-    assert finish(run, EndReason.ENOUGH).outcome is Outcome.DONE
+    # Nothing analysed: "enough" is refused (U3-Q2); the search ends at its limit, as the agent loop would end it.
+    assert finish(run, EndReason.ENOUGH).reason == NOTHING_STANDS
+    at_the_limit(run)
     assert {lead.ref: lead.why for lead in run.outcome().leads}[ref("c-bj-analyst")] == "读取没有成功，这次查找不再重试"
 
 
@@ -1116,8 +1134,12 @@ def test_a_result_whose_recheck_gets_no_answer_is_withdrawn_and_keeps_the_time_l
     run.register.adapter(CAREERS).faults[("check", "c-bj-analyst")] = SourceTimeout("synthetic")
 
     assert check_posting(run, [ref("c-bj-analyst")]).outcome is Outcome.FAILED
-    assert finish(run, EndReason.ENOUGH).outcome is Outcome.DONE
+    # Analysed once, its re-check unanswered: the analysis is withdrawn, so "enough" is refused (U3-Q2).
+    refused = finish(run, EndReason.ENOUGH)
 
+    assert (refused.outcome, refused.reason, run.ended) == (Outcome.REFUSED, NOTHING_STANDS, None)
+
+    at_the_limit(run)
     outcome = run.outcome()
     lead = {lead.ref: lead for lead in outcome.leads}[ref("c-bj-analyst")]
 
@@ -1460,8 +1482,9 @@ def test_postings_given_back_that_cannot_be_verified_are_counted_and_never_make_
         )
 
         assert (claimed.outcome, claimed.reason, run.ended) == (Outcome.REFUSED, reason, None)
-        # Nothing more is sent for them: the search may still end as enough, with them counted.
-        assert finish(run, EndReason.ENOUGH).outcome is Outcome.DONE
+        # Nothing more is sent for them. Nothing analysed either, so "enough" is refused too (U3-Q2): the second
+        # refusal ends the search, with them counted.
+        assert (finish(run, EndReason.ENOUGH).reason, run.ended) == (NOTHING_STANDS, EndReason.REFUSED)
 
     outcome = run.outcome()
     [record] = outcome.searches
@@ -1547,8 +1570,9 @@ def test_records_of_another_source_are_a_counted_anomaly_and_never_make_nothing_
 
         # Neither kind of "nothing" was said, whether or not part of the scope is left.
         assert (claimed.outcome, claimed.reason, run.ended) == (Outcome.REFUSED, reason, None)
-        # Nothing more is sent for them: the search may still end as enough, with them counted.
-        assert finish(run, EndReason.ENOUGH).outcome is Outcome.DONE and run.ended is EndReason.ENOUGH
+        # Nothing more is sent for them. Nothing analysed either, so "enough" is refused too (U3-Q2): the second
+        # refusal ends the search, with them counted.
+        assert (finish(run, EndReason.ENOUGH).reason, run.ended) == (NOTHING_STANDS, EndReason.REFUSED)
 
     outcome = run.outcome()
     [record] = outcome.searches
@@ -1629,8 +1653,251 @@ def test_a_lead_naming_its_official_posting_is_no_anomaly(database, library, clo
     steps = [get_posting(run, [official]), check_posting(run, [official])]
 
     assert [step.outcome for step in steps] == [Outcome.DONE, Outcome.DONE]
-    assert finish(run, EndReason.ENOUGH).outcome is Outcome.DONE
+    # Read and checked, not analysed: "enough" is refused (U3-Q2); the search ends at its limit.
+    assert finish(run, EndReason.ENOUGH).reason == NOTHING_STANDS
+    at_the_limit(run)
 
     outcome = run.outcome()
 
     assert ([record.foreign for record in outcome.searches], outcome.foreign) == ([0], 0)
+
+
+# --- U3-Q1: several postings analysed with one step ---------------------------------------------
+
+
+def analysed_one_at_a_time(database, library, clock, *posting_ids) -> list[str]:
+    """What these postings send analysed one at a time, in a search of their own."""
+    provider = RecordingProvider()
+    run = begin(database, clock, confirmation_for(library), provider)
+    ready(run, *posting_ids)
+
+    for posting_id in posting_ids:
+        assert analyze_posting(run, ref(posting_id)).outcome is Outcome.DONE
+
+    return provider.prompts
+
+
+def ledger_lines(database) -> int:
+    with database.transaction() as db:
+        return len(list(db.scalars(select(LiveRequest))))
+
+
+def test_postings_analysed_with_one_step_go_one_at_a_time_in_order_each_counted_on_its_own(database, library, clock):
+    """U3-Q1: each posting of the step goes through the one analysis there is, in the order given, exactly as if
+    analysed alone. The one the outbound rules hold back sends nothing, uses no analysis and stops nothing."""
+    provider = RecordingProvider()
+    run = begin(database, clock, confirmation_for(library), provider)
+    ready(run, "c-bj-analyst", "c-address", "c-choice")
+    result = analyze_postings(run, [ref("c-bj-analyst"), ref("c-address"), ref("c-choice")])
+    head, *lines = result.summary.splitlines()
+
+    assert (result.outcome, head) == (Outcome.DONE, "这一步分析 3 个岗位：完成 2 个，外发检查拦下 1 个。")
+    assert [line.split("] ")[0] for line in lines] == [f"- [{CAREERS}/{posting_id}" for posting_id in ("c-bj-analyst", "c-address", "c-choice")]
+    assert ("已分析" in lines[0], "外发检查拦下了它" in lines[1], "已分析" in lines[2]) == (True, True, True)
+    # The two analysed send exactly what each sends alone, in the order given; the one held back nothing.
+    assert provider.prompts == analysed_one_at_a_time(database, library, clock, "c-bj-analyst", "c-choice")
+    assert (len(provider.prompts), run.analyses, run.refusals) == (4, 2, [])
+    assert run.found[ref("c-address")].blocked == ("address",)
+    assert review(result.summary) == ()
+
+
+def test_each_posting_of_one_step_passes_the_gate_on_its_own_and_none_is_sent_once_the_gate_stops_one(database, library, clock, tmp_path):
+    """U3-Q1 behind a gate of three requests: the first posting takes two, the second is stopped at its second and
+    the search ends there; the third is never sent. One ledger line for each request that went out."""
+    gate = open_gate(database, tmp_path / "service.db", gate_terms(), BOUND, clock)
+    provider = GatedSimulation()
+
+    try:
+        with gate.task("analysis", library.owner, provider) as gated:
+            run = begin(database, clock, confirmation_for(library, recipient=SYNTHETIC_RECIPIENT), gated)
+            ready(run, "c-bj-analyst", "c-bj-sales", "c-choice")
+            stopped = analyze_postings(run, [ref("c-bj-analyst"), ref("c-bj-sales"), ref("c-choice")])
+            head, *lines, end = stopped.summary.splitlines()
+
+            assert (stopped.outcome, stopped.reason, run.ended) == (Outcome.STOPPED, "requests", EndReason.GATE)
+            # Never one word for all of them: one done, one where the search ended, one not done.
+            assert head == "这一步分析 3 个岗位：完成 1 个，查找就此结束 1 个，没有执行 1 个。"
+            assert lines[2] == f"- [{CAREERS}/c-choice] 没有执行"
+            assert end == "查找已经结束（闸门拦下），之后的没有执行；已经发出的请求照常计数。"
+            assert (gated.attempts, gated.blocked, len(provider.prompts), run.analyses) == (4, 1, 3, 2)
+
+        assert gate.status().requests_used == ledger_lines(database) == 3
+        assert run.found[ref("c-choice")].analysis is None and not run.found[ref("c-choice")].blocked
+        assert [result.ref for result in run.outcome().results] == [ref("c-bj-analyst")]
+    finally:
+        gate.close()
+
+
+@pytest.mark.parametrize("stop", ["cancelled", "timeout"])
+def test_a_search_stopped_during_one_posting_of_a_step_sends_none_of_the_rest(database, library, clock, stop):
+    """U3-Q1: cancelled, or out of time, while the second posting is analysed: the first stays analysed, the
+    second's request counts and its answer is not taken, and the third is never sent."""
+    cancel, now = threading.Event(), [0.0]
+
+    class Stopping(RecordingProvider):
+        def generate_text(self, prompt, **options):
+            answer = super().generate_text(prompt, **options)
+
+            if len(self.prompts) == 3 and stop == "cancelled":
+                cancel.set()
+            elif len(self.prompts) == 3:
+                now[0] = Limits().seconds
+
+            return answer
+
+    provider = Stopping()
+    run = begin(database, clock, confirmation_for(library), provider, cancel=cancel, monotonic=lambda: now[0])
+    ready(run, "c-bj-analyst", "c-choice", "c-bj-sales")
+    stopped = analyze_postings(run, [ref("c-bj-analyst"), ref("c-choice"), ref("c-bj-sales")])
+    head, *lines, end = stopped.summary.splitlines()
+
+    assert (stopped.outcome, stopped.reason, run.ended) == (Outcome.STOPPED, stop, EndReason(stop))
+    assert head == "这一步分析 3 个岗位：完成 1 个，查找就此结束 1 个，没有执行 1 个。"
+    assert lines[2] == f"- [{CAREERS}/c-bj-sales] 没有执行"
+    assert (len(provider.prompts), run.analyses) == (3, 2)
+
+    outcome = run.outcome()
+
+    assert [result.ref for result in outcome.results] == [ref("c-bj-analyst")]
+    assert dict(outcome.unlisted)[Unlisted.INCOMPLETE] == (ref("c-choice"),)
+
+
+def test_material_changed_during_one_posting_of_a_step_ends_the_search_and_sends_none_of_the_rest(database, library, clock):
+    """U3-Q1: the chosen experience is edited while the second posting is analysed. The search ends, the third is
+    never sent, and nothing analysed on the old material is kept, the first posting's analysis included."""
+
+    class Editing(RecordingProvider):
+        def generate_text(self, prompt, **options):
+            answer = super().generate_text(prompt, **options)
+
+            if len(self.prompts) == 3:
+                edit(database, library.owner, library.project[0], clock, actions="换了一种说法。")
+
+            return answer
+
+    provider = Editing()
+    run = begin(database, clock, confirmation_for(library), provider)
+    ready(run, "c-bj-analyst", "c-choice", "c-bj-sales")
+    stopped = analyze_postings(run, [ref("c-bj-analyst"), ref("c-choice"), ref("c-bj-sales")])
+    head, *lines, end = stopped.summary.splitlines()
+
+    assert (stopped.outcome, run.ended) == (Outcome.STOPPED, EndReason.SOURCES_CHANGED)
+    assert head == "这一步分析 3 个岗位：完成 1 个，查找就此结束 1 个，没有执行 1 个。"
+    assert lines[2] == f"- [{CAREERS}/c-bj-sales] 没有执行"
+    assert (len(provider.prompts), run.analyses) == (3, 2)
+    assert run.outcome().results == ()
+
+
+# Each case: the limits, whether experiences are chosen, the postings of the step, and why it is refused.
+REFUSED_STEPS = {
+    "empty": (Limits(), True, (), "没有指定岗位"),
+    "repeated": (Limits(), True, ("c-bj-analyst", "c-choice", "c-bj-analyst"), "同一个岗位列了不止一次"),
+    "same_posting": (
+        Limits(),
+        True,
+        ("c-choice", "c-bj-analyst", "c-bj-analyst-repost"),
+        "和 [synthetic-careers/c-bj-analyst] 是同一个岗位，只分析那一个",
+    ),
+    "over_one_step": (
+        Limits(analyses=10),
+        True,
+        ("c-bj-analyst", "c-choice", "c-two-cities", "c-bj-sales", "c-early-start", "c-no-requirements"),
+        "一次最多处理 5 个岗位",
+    ),
+    "over_what_is_left": (Limits(analyses=2), True, ("c-bj-analyst", "c-choice", "c-bj-sales"), "分析次数不够：这一步要分析 3 个岗位，只剩 2 个"),
+    "unchecked_last": (Limits(), True, ("c-bj-analyst", "c-choice", "c-two-cities"), "还没有核对岗位状态"),
+    "closed_last": (Limits(), True, ("c-bj-analyst", "c-closed"), "岗位已关闭，不分析"),
+    "lead_last": (Limits(), True, ("c-bj-analyst", "lead"), "待核验线索不能直接分析：先读取它指向的官方岗位 [synthetic-careers/c-sh-analyst]"),
+    "not_found_last": (Limits(), True, ("c-bj-analyst", "c-nowhere"), "[synthetic-careers/c-nowhere] 不是这次检索得到的岗位"),
+    "no_experiences": (Limits(), False, ("c-bj-analyst", "c-choice"), "没有选择经历：这次查找不做个性化分析"),
+}
+
+
+@pytest.mark.parametrize("case", list(REFUSED_STEPS))
+def test_a_step_naming_any_posting_that_may_not_be_analysed_is_refused_whole_before_anything_is_sent(database, library, clock, case):
+    """U3-Q1: the whole list is checked first. Any posting that may not be analysed, wherever it stands, and nothing
+    is sent, not even for the postings before it that could be analysed; nothing is dropped or cut short, and the
+    step is one refusal."""
+    limits, personal, posting_ids, problem = REFUSED_STEPS[case]
+    chosen = {} if personal else dict(selection=(), preferences=())
+    provider = RecordingProvider()
+    run = begin(database, clock, confirmation_for(library, limits=limits, **chosen), provider)
+    ready(run, "c-bj-analyst", "c-bj-analyst-repost", "c-choice", "c-bj-sales", "c-closed")
+    assert get_posting(run, [ref("c-two-cities")]).outcome is Outcome.DONE
+    assert search_postings(run, LEADS, "数据分析", city="上海", **WITHIN).outcome is Outcome.DONE
+    refs = [ref("l-sh-analyst", LEADS) if posting_id == "lead" else ref(posting_id) for posting_id in posting_ids]
+
+    refused = analyze_postings(run, refs)
+
+    assert (refused.outcome, refused.reason, refused.summary) == (Outcome.REFUSED, problem, f"没有执行：{problem}")
+    assert (provider.prompts, run.analyses, run.refusals, run.ended) == ([], 0, [problem], None)
+    assert all(found.analysis is None and not found.blocked for found in run.found.values())
+
+
+def test_a_step_once_the_search_has_ended_sends_nothing_and_is_no_refusal(database, library, clock):
+    provider = RecordingProvider()
+    run = begin(database, clock, confirmation_for(library), provider)
+    ready(run, "c-bj-analyst", "c-choice")
+    run.end(EndReason.CANCELLED)
+
+    stopped = analyze_postings(run, [ref("c-bj-analyst"), ref("c-choice")])
+
+    assert (stopped.outcome, stopped.reason, provider.prompts, run.refusals) == (Outcome.STOPPED, "cancelled", [], [])
+
+
+# --- U3-Q2: "enough" with experiences chosen needs a result that stands --------------------------
+
+
+def test_enough_with_experiences_chosen_needs_a_result_standing_and_is_never_turned_into_another_end(database, library, clock):
+    run = begin(database, clock, confirmation_for(library))
+    ready(run, "c-bj-analyst", "c-choice")
+
+    # Read and checked, nothing analysed: refused, counted once, the search going on; no other end is put in.
+    refused = finish(run, EndReason.ENOUGH)
+
+    assert (refused.outcome, refused.reason, refused.summary) == (Outcome.REFUSED, NOTHING_STANDS, f"没有执行：{NOTHING_STANDS}")
+    assert (run.refusals, run.ended) == ([NOTHING_STANDS], None)
+    # It says what it may do instead, and no more than that.
+    assert all(words in NOTHING_STANDS for words in ("先分析", "范围内查完了", "没有合适结果"))
+
+    # One result standing, and the same claim is taken.
+    assert analyze_postings(run, [ref("c-bj-analyst")]).outcome is Outcome.DONE
+    assert finish(run, EndReason.ENOUGH).outcome is Outcome.DONE
+    assert (run.ended, [result.ref for result in run.outcome().results]) == (EndReason.ENOUGH, [ref("c-bj-analyst")])
+
+
+def test_a_second_refused_enough_ends_the_search_by_the_refusals_rule(database, library, clock):
+    run = begin(database, clock, confirmation_for(library))
+    ready(run, "c-bj-analyst")
+
+    assert finish(run, EndReason.ENOUGH).reason == NOTHING_STANDS and run.ended is None
+    assert finish(run, EndReason.ENOUGH).reason == NOTHING_STANDS
+    assert (run.ended, run.outcome().results) == (EndReason.REFUSED, ())
+
+
+@pytest.mark.parametrize("imposed", ["material_changed", "sources_unavailable", "searches_used_up"])
+def test_an_end_the_rules_impose_comes_before_the_check_of_enough(database, library, clock, imposed):
+    """U3-Q2 leaves the ends the rules impose as they were: with nothing analysed, "enough" still ends the search
+    as the rules say, never refused instead."""
+    register = synthetic.register()
+
+    if imposed == "sources_unavailable":
+        register.adapter(CAREERS).faults[("search", None)] = SourceTimeout("synthetic")
+
+    limits = Limits(searches=1) if imposed == "searches_used_up" else Limits()
+    run = begin(database, clock, confirmation_for(library, limits=limits), register=register)
+    searched = search_postings(run, CAREERS, "数据分析 实习生", city="北京", **WITHIN)
+
+    if imposed == "material_changed":
+        edit(database, library.owner, library.project[0], clock, actions="换了一种说法。")
+
+    ended = finish(run, EndReason.ENOUGH)
+    expected = {
+        "material_changed": EndReason.SOURCES_CHANGED,
+        "sources_unavailable": EndReason.SOURCES_UNAVAILABLE,
+        "searches_used_up": EndReason.LIMIT,
+    }[imposed]
+
+    assert searched.outcome is (Outcome.FAILED if imposed == "sources_unavailable" else Outcome.DONE)
+    assert (ended.outcome, run.ended, run.refusals) == (Outcome.DONE, expected, [])
+

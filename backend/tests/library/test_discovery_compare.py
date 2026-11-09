@@ -27,7 +27,8 @@ from app.discovery.compare import BatchStop, EvalSending, FixedClock, Settings, 
 from app.discovery.compare_tasks import FROZEN_DIGEST, TASKS, derive_truth, seed_material, taskset_digest
 from app.discovery.contracts import EndReason, Tool
 from app.discovery.runner import ParentStopped
-from app.discovery.synthetic import ADDRESSES, CAREERS, LEADS
+from app.discovery.synthetic import ADDRESSES, CAREERS, LEADS, PAGED
+from app.discovery.tools import NOTHING_STANDS
 from app.job_analysis import live as live_config
 from app.job_analysis.simulation import SimulatedProvider
 from app.live_gate import FIXED_RESERVE_V1, LiveRefused, LiveSetup
@@ -298,7 +299,8 @@ class StandIn(ReplayService):
 def test_a_discovery_approval_for_32_requests_reaches_the_comparison_through_the_real_parser(monkeypatch, offline, new_folder):
     """The terms are read by the app's own parser and taken by the command as they are; only the service is a
     stand-in, made where the real one would be (live_config.make_live_provider)."""
-    service = StandIn(replayed(offline[0]))
+    answers = replayed(offline[0])
+    service = StandIn(answers)
     made = []
 
     def make(policy, environ=None, **settings):
@@ -315,8 +317,10 @@ def test_a_discovery_approval_for_32_requests_reaches_the_comparison_through_the
     # The approval as parsed, nothing swapped after: 32 requests, discovery alone, the proposed recipient and budget.
     assert (approval["max_requests"], approval["purposes"], approval["model"], approval["max_cost_micro_usd"]) == (32, ["discovery"], "gpt-5.6-sol", 2_000_000)
     assert made == [{"service_tier": "default", "max_output_tokens": 2_000}]
-    # More than 20 requests went through the gate: the higher cap is the one in force.
-    assert len(service.calls) == summary["gate"]["requests_used"] == 25 and summary["gate"]["requests_left"] == 7
+    # More than 20 requests went through the gate: the higher cap is the one in force. (22 since U3-Q1: the
+    # simulated decider analyses checked postings together, so the offline run takes fewer decisions than 25.)
+    assert len(service.calls) == summary["gate"]["requests_used"] == len(answers) > 20
+    assert summary["gate"]["requests_left"] == 32 - len(answers)
     assert (summary["mode"], summary["stopped"], summary["failed"], summary["not_run"]) == ("send", None, [], [])
     assert {call["max_output_tokens"] for call in service.calls} == {2_000}
     assert {call["reasoning_effort"] for call in service.calls} == {"low"}
@@ -536,10 +540,14 @@ def search(source, city="上海", note="检索"):
 
 
 def test_reading_the_official_posting_a_lead_points_to_counts_only_when_the_lead_showed_it(new_folder):
-    lead_first = [search(LEADS), make_action(Tool.READ, postings=[ref("c-sh-analyst")], note="读线索指向的官方岗位"), make_action(Tool.FINISH, claim=EndReason.ENOUGH, note="结束")]
+    # T2's one combination searched, nothing analysed: "scope done" ends it ("enough" needs a result, U3-Q2).
+    done = make_action(Tool.FINISH, claim=EndReason.SCOPE_DONE, note="结束")
+    lead_first = [search(LEADS), make_action(Tool.READ, postings=[ref("c-sh-analyst")], note="读线索指向的官方岗位"), done]
     folder = new_folder()
     run_batch(folder, decider_for=lambda: ScriptedDecider(lead_first), tasks=(T2,))
     (evidence,) = compare.adjustments(record(folder, "T2", "agent"))
+
+    assert (record(folder, "T2", "agent")["status"], record(folder, "T2", "agent")["end"]) == ("finished", "scope_done")
 
     assert evidence == {
         "kind": "线索到官方岗位",
@@ -549,16 +557,18 @@ def test_reading_the_official_posting_a_lead_points_to_counts_only_when_the_lead
     }
 
     # Found by a search of its own first, the official posting's reading owes nothing to the lead.
-    official_first = [search(CAREERS), search(LEADS), make_action(Tool.READ, postings=[ref("c-sh-analyst")], note="读"), make_action(Tool.FINISH, claim=EndReason.ENOUGH, note="结束")]
+    official_first = [search(CAREERS), search(LEADS), make_action(Tool.READ, postings=[ref("c-sh-analyst")], note="读"), done]
     folder = new_folder()
     run_batch(folder, decider_for=lambda: ScriptedDecider(official_first), tasks=(T2,))
 
     assert compare.adjustments(record(folder, "T2", "agent")) == []
+    assert record(folder, "T2", "agent")["status"] == "finished"
 
 
 def test_an_attempt_outside_the_scope_is_counted_as_the_models_and_as_blocked_never_as_done(new_folder):
     """A scripted probe: the decider asks for Shenzhen, which the user cannot accept (its premise is set by the test)."""
-    probe = [search(CAREERS, city="深圳", note="脚本探针：查深圳"), make_action(Tool.FINISH, claim=EndReason.ENOUGH, note="结束")]
+    # It ends on a claim the rules take: with experiences chosen and no result, "enough" is refused since U3-Q2.
+    probe = [search(CAREERS, city="深圳", note="脚本探针：查深圳"), make_action(Tool.FINISH, claim=EndReason.NO_RESULTS, note="结束")]
     folder = new_folder()
     summary = run_batch(folder, decider_for=lambda: ScriptedDecider(probe), tasks=(T1,))
     probed = record(folder, "T1", "agent")
@@ -626,9 +636,11 @@ def test_the_four_tasks_share_one_allowance_a_task_never_gets_a_fresh_one(offlin
     service = ReplayService(replayed(offline[0]))
     folder, summary = stopped_batch(new_folder, service, max_requests=10)
     first, second = record(folder, "T1", "agent"), record(folder, "T2", "agent")
+    used = len(record(offline[0], "T1", "agent")["actions"])
 
-    # T1 used 8 of the 10; T2 had what was left, 2, and its third decision was kept out.
-    assert (len(first["ledger"]), len(second["ledger"]), len(service.calls)) == (8, 2, 10)
+    # T1 used its decisions of the 10 (7 since U3-Q1); T2 had only what was left, and its next decision was kept out.
+    assert used < 10 and len(record(offline[0], "T2", "agent")["actions"]) > 10 - used
+    assert (len(first["ledger"]), len(second["ledger"]), len(service.calls)) == (used, 10 - used, 10)
     assert summary["gate"]["requests_used"] == 10 and second["end"] == EndReason.GATE.value
     assert summary["stopped"] == "闸门拦下了决策请求（requests）"
     assert summary["not_run"] == ["T3", "T4"]
@@ -640,8 +652,10 @@ def test_the_budget_is_one_for_the_whole_batch(offline, new_folder):
     service = ReplayService(replayed(offline[0]))
     folder, summary = stopped_batch(new_folder, service, max_cost_micro_usd=200_000 + 946 * 9)
 
+    used = len(record(offline[0], "T1", "agent")["actions"])
+
     assert len(service.calls) == 10 and summary["stopped"] == "闸门拦下了决策请求（cost）"
-    assert (len(record(folder, "T1", "agent")["ledger"]), len(record(folder, "T2", "agent")["ledger"])) == (8, 2)
+    assert (len(record(folder, "T1", "agent")["ledger"]), len(record(folder, "T2", "agent")["ledger"])) == (used, 10 - used)
     assert summary["not_run"] == ["T3", "T4"]
 
 
@@ -852,3 +866,109 @@ def _imports(name: str) -> set[str]:
     found = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
 
     return found | {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
+
+
+# --- U3-Q: judge 3, and two scripts on the order of B1's actions ---------------------------------------------------
+
+
+def test_judge_3_holds_enough_with_experiences_chosen_to_a_complete_result(offline):
+    folder, _ = offline
+    good = record(folder, "T1", "agent")
+    claim = "写了“够了”，但没有完整的分析结果"
+
+    assert compare_tasks.JUDGE_VERSION == "3"
+    assert (good["personalised"], good["end"], bool(good["results"])) == (True, "enough", True)
+    assert claim not in hard_checks(T1, good)
+    assert claim in hard_checks(T1, {**good, "results": []})
+    # With no experience chosen nothing is analysed: "enough" with no result is what such a search may say.
+    assert claim not in hard_checks(T1, {**good, "results": [], "personalised": False})
+    # And only "enough" is held to it.
+    assert claim not in hard_checks(T1, {**good, "results": [], "end": "limit"})
+
+
+def test_the_simulated_decider_never_says_enough_without_a_result_on_any_frozen_task(offline):
+    folder, _ = offline
+
+    for task in TASKS:
+        run = record(folder, task.id, "agent")
+        claims = [entry["action"]["claim"] for entry in run["actions"] if entry["action"] and entry["action"]["tool"] == "finish"]
+
+        assert run["personalised"] is True and NOTHING_STANDS not in run["refusals"], task.id
+        assert "enough" not in claims or run["results"], task.id
+
+
+def b1_t1_shaped(analysed: tuple[str, ...]) -> list[dict]:
+    """The order of B1 T1's agent actions (none of its answers): four searches, one read and one check of the same
+    five postings, an analysis and "enough"."""
+
+    def searched(city, direction):
+        return make_action(Tool.SEARCH, source_id=CAREERS, keywords="数据分析实习生", city=city, job_type="实习", direction=direction, note="检索")
+
+    five = [ref(posting_id) for posting_id in ("c-bj-analyst", "c-bj-sales", "c-choice", "c-closed", "c-sh-analyst")]
+
+    return [
+        searched("北京", "数据分析"),
+        searched("上海", "数据分析"),
+        searched("北京", None),
+        searched("上海", None),
+        make_action(Tool.READ, postings=five, note="读取"),
+        make_action(Tool.CHECK, postings=five, note="核对"),
+        make_action(Tool.ANALYZE, postings=[ref(posting_id) for posting_id in analysed], note="分析"),
+        make_action(Tool.FINISH, claim=EndReason.ENOUGH, note="结束"),
+    ]
+
+
+def test_b1_t1_shaped_steps_analysing_three_with_one_decision_give_three_results_in_eight_decisions(new_folder):
+    """U3-Q1, scripted on the order of B1 T1's actions. Two of its four searches took nothing new, and the decisions
+    after them are told so; analysing three with one decision gives three results in the same eight decisions, where
+    B1 had one. It shows the path can be taken, not that a model would take it."""
+    folder = new_folder()
+    once = ScriptedDecider(b1_t1_shaped(("c-bj-analyst",)))
+    run_batch(folder, decider_for=lambda: once, tasks=(T1,))
+    as_b1 = record(folder, "T1", "agent")
+
+    folder = new_folder()
+    three = ScriptedDecider(b1_t1_shaped(("c-bj-analyst", "c-choice", "c-sh-analyst")))
+    run_batch(folder, decider_for=lambda: three, tasks=(T1,))
+    with_q1 = record(folder, "T1", "agent")
+
+    for run in (as_b1, with_q1):
+        assert (run["status"], run["end"], len(run["actions"]), run["hard_problems"]) == ("finished", "enough", 8, [])
+
+    assert [result["posting_id"] for result in as_b1["results"]] == ["c-bj-analyst"]
+    assert sorted(result["posting_id"] for result in with_q1["results"]) == ["c-bj-analyst", "c-choice", "c-sh-analyst"]
+    assert [line.endswith("，新增 0 个岗位") for line in three.observations[4].history] == [False, False, True, True]
+    assert "其中已核对仍在招聘、还没有分析的：4 个；分析次数还剩 3 个。" in three.observations[6].text
+
+
+def test_b1_t3_shaped_steps_end_refused_without_a_result_and_analysing_at_once_gives_results(new_folder):
+    """U3-Q2 and Q1, scripted on the order of B1 T3's actions. As B1 had it, four searches, an answer the tool does not
+    take, a read and a check, then "enough" with nothing analysed: refused now, the second refusal, so the search ends
+    there with no result and never as "enough". The same eight decisions with one analysis of the three in place of
+    the answer not taken give three results."""
+    interns = [ref(posting_id, PAGED) for posting_id in ("p-bj-intern-1", "p-bj-intern-2", "p-bj-intern-3")]
+    searched = [
+        make_action(Tool.SEARCH, source_id=PAGED, keywords="数据分析实习生", city=city, job_type=job_type, direction="数据分析", note="检索")
+        for city in ("北京", "上海")
+        for job_type in ("实习", "校招")
+    ]
+    read = make_action(Tool.READ, postings=interns, note="读取")
+    checked = make_action(Tool.CHECK, postings=interns, note="核对")
+    enough = make_action(Tool.FINISH, claim=EndReason.ENOUGH, note="结束")
+
+    folder = new_folder()
+    run_batch(folder, decider_for=lambda: ScriptedDecider([*searched, {**read, "source_id": PAGED}, read, checked, enough]), tasks=(T3,))
+    as_b1 = record(folder, "T3", "agent")
+
+    assert (as_b1["status"], as_b1["end"], as_b1["results"], len(as_b1["actions"])) == ("finished", "refused", [], 8)
+    assert as_b1["refusals"][-1] == NOTHING_STANDS and len(as_b1["refusals"]) == 2
+    assert as_b1["hard_problems"] == []
+
+    folder = new_folder()
+    analysed = make_action(Tool.ANALYZE, postings=interns, note="分析")
+    run_batch(folder, decider_for=lambda: ScriptedDecider([*searched, read, checked, analysed, enough]), tasks=(T3,))
+    with_q1 = record(folder, "T3", "agent")
+
+    assert (with_q1["status"], with_q1["end"], len(with_q1["actions"]), with_q1["hard_problems"]) == ("finished", "enough", 8, [])
+    assert sorted(result["posting_id"] for result in with_q1["results"]) == ["p-bj-intern-1", "p-bj-intern-2", "p-bj-intern-3"]
+

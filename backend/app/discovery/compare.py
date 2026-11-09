@@ -853,13 +853,18 @@ def _provenance_problems(task: frozen.EvalTask, result: dict, seen: dict) -> lis
 
 def _end_problems(record: dict, unsearched: tuple[str, ...]) -> list[str]:
     """Where the end a run claims is not borne out by what it recorded (A1, tools.finish): the scope covered with
-    combinations left; nothing suitable, wholly or in what was searched, with a result, a posting found that came
-    to no conclusion, something given back that could not be taken, or no search that answered."""
+    combinations left; "enough" with experiences chosen and no result (judge 3, U3-Q2); nothing suitable, wholly
+    or in what was searched, with a result, a posting found that came to no conclusion, something given back that
+    could not be taken, or no search that answered."""
     end = record["end"]
     problems = []
 
     if end == EndReason.SCOPE_DONE.value and unsearched:
         problems.append("写了“范围内查完了”，但还有没查的组合")
+
+    # Judge 3 (U3-Q2): with experiences chosen, "enough" needs a result that stands, as A1's finish has it now.
+    if end == EndReason.ENOUGH.value and record.get("personalised") and not record["results"]:
+        problems.append("写了“够了”，但没有完整的分析结果")
 
     if end not in (EndReason.NO_RESULTS.value, EndReason.PARTLY_NO_RESULTS.value):
         return problems

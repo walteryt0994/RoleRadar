@@ -9,8 +9,11 @@ import threading
 
 import pytest
 
+from app.ai_provider import AIProviderTimeoutError
+
 from app.discovery import synthetic
 from app.discovery.agent import (
+    DECISION_INSTRUCTIONS,
     MAX_DECISIONS,
     WITHHELD,
     ScriptedDecider,
@@ -22,6 +25,7 @@ from app.discovery.baseline import run_baseline
 from app.discovery.contracts import RECOMMENDED, Category, EndReason, Limits, Outcome, PostingRef, Tool, Unlisted
 from app.discovery.sources import SourceTimeout
 from app.discovery.synthetic import CAREERS, LEADS, PAGED
+from app.discovery.tools import NOTHING_STANDS
 from app.outbound_review import review
 from discovery_helpers import (
     PROJECT_ACTIONS,
@@ -54,8 +58,8 @@ def check(*posting_ids, note="核对状态"):
     return make_action(Tool.CHECK, postings=[ref(posting_id) for posting_id in posting_ids], note=note)
 
 
-def analyze(posting_id, note="分析这个岗位"):
-    return make_action(Tool.ANALYZE, postings=[ref(posting_id)], note=note)
+def analyze(*posting_ids, note="分析这个岗位"):
+    return make_action(Tool.ANALYZE, postings=[ref(posting_id) for posting_id in posting_ids], note=note)
 
 
 def finish(claim=EndReason.ENOUGH, note="结束"):
@@ -107,20 +111,23 @@ def test_the_agent_adjusts_to_senior_only_results_and_the_fixed_flow_does_not(da
         (Tool.SEARCH, "done", "数据分析 实习"),
         (Tool.READ, "done", None),
         (Tool.CHECK, "done", None),
+        # The three postings checked open, with one decision, each analysed on its own (U3-Q1) ...
         (Tool.ANALYZE, "done", None),
-        (Tool.ANALYZE, "done", None),
-        (Tool.ANALYZE, "done", None),
+        # ... which leaves decisions for a combination not searched yet.
+        (Tool.SEARCH, "done", "数据分析"),
         (Tool.FINISH, "done", None),
     ]
     # The adjustment, and why: the type confirmed, written into the words; the same combination of the scope.
     assert "资深" in trace.steps[1].note and "实习" in trace.steps[1].note
     assert dict(trace.steps[1].params)["城市"] == "北京" and dict(trace.steps[1].params)["求职类型"] == "实习"
-    assert (outcome.end, trace.decisions, trace.decider) == (EndReason.ENOUGH, MAX_DECISIONS, "simulated")
+    assert dict(trace.steps[4].params)["岗位"].count("synthetic-paged/") == 3
+    assert dict(trace.steps[5].params)["城市"] == "北京" and dict(trace.steps[5].params)["求职类型"] == "校招"
+    assert (outcome.end, trace.decisions, trace.decider) == (EndReason.ENOUGH, 7, "simulated")
     assert [result.ref.posting_id for result in outcome.results] == ["p-bj-intern-1", "p-bj-intern-2", "p-bj-intern-3"]
     assert all(result.category in RECOMMENDED for result in outcome.results)
     assert dict(outcome.unlisted)[Unlisted.OUT_OF_SCOPE] == tuple(ref(f"p-senior-{n}", PAGED) for n in range(1, 6))
     # It said what it left: never "the scope was covered".
-    assert outcome.unsearched == ("北京 · 校招 · 数据分析", "上海 · 实习 · 数据分析", "上海 · 校招 · 数据分析")
+    assert outcome.unsearched == ("上海 · 实习 · 数据分析", "上海 · 校招 · 数据分析")
 
     # The fixed flow, the same tools and limits on the same case: one search, nothing to analyse, and said as it is.
     base_run = begin(database, clock, confirmation, RecordingProvider(), register=synthetic.paged_register())
@@ -134,7 +141,9 @@ def test_the_agent_adjusts_to_senior_only_results_and_the_fixed_flow_does_not(da
 def test_a_source_that_fails_is_not_asked_again_and_the_search_moves_to_another(database, library, clock):
     register = synthetic.register()
     register.adapter(CAREERS).faults[("search", None)] = SourceTimeout("synthetic")
-    run = begin(database, clock, confirmation_for(library), register=register)
+    # No experience chosen, so the plain "enough" it ends with is still taken: with experiences chosen it would need
+    # a result (U3-Q2). The source not asked again is what this case is about.
+    run = begin(database, clock, confirmation_for(library, selection=(), preferences=()), register=register)
     decider = ScriptedDecider([search(), search(), search(LEADS, "数据 实习生", city="上海"), finish()])
 
     trace = run_agent(run, decider).trace
@@ -176,11 +185,26 @@ def test_the_eighth_decision_is_the_last_and_the_search_ends_at_the_limit(databa
 
 def test_a_search_finished_by_its_eighth_decision_keeps_its_own_end_reason(database, library, clock):
     run = begin(database, clock, confirmation_for(library))
-    decider = ScriptedDecider([search(), *(read(posting_id) for posting_id in READS[:6]), finish()])
+    analysed = [read("c-bj-analyst"), check("c-bj-analyst"), analyze("c-bj-analyst")]
+    decider = ScriptedDecider([search(), *analysed, *(read(posting_id) for posting_id in READS[1:4]), finish()])
 
     finished = run_agent(run, decider)
 
     assert (len(decider.observations), finished.outcome.end) == (8, EndReason.ENOUGH)
+    assert [result.ref for result in finished.outcome.results] == [ref("c-bj-analyst")]
+
+
+def test_an_eighth_decision_saying_enough_with_no_result_standing_is_refused_and_the_limit_ends_it(database, library, clock):
+    """U3-Q2: with experiences chosen, "enough" with no result standing is refused even as the last decision; the
+    search then ends by the loop's own rule, never by the end it claimed."""
+    run = begin(database, clock, confirmation_for(library))
+    decider = ScriptedDecider([search(), *(read(posting_id) for posting_id in READS[:6]), finish()])
+
+    finished = run_agent(run, decider)
+
+    assert (len(decider.observations), finished.outcome.end, finished.outcome.results) == (8, EndReason.LIMIT, ())
+    assert (finished.trace.steps[-1].outcome, finished.trace.steps[-1].reason) == ("refused", NOTHING_STANDS)
+    assert finished.outcome.refusals == (NOTHING_STANDS,)
 
 
 def test_the_tools_limits_hold_whatever_is_decided_and_two_refusals_end_the_search(database, library, clock):
@@ -319,7 +343,12 @@ def test_an_answer_that_is_not_one_strict_action_is_refused_and_kept_out_of_the_
 @pytest.mark.parametrize(
     "action, problem",
     [
-        (make_action(Tool.ANALYZE, postings=[ref("c-bj-analyst"), ref("c-bj-sales")]), "analyze_posting 一次只分析一个岗位"),
+        # Several postings may be named at once (U3-Q1), but not none, and not more than the structure takes.
+        (make_action(Tool.ANALYZE, postings=[]), "analyze_posting 缺少 postings"),
+        (
+            make_action(Tool.ANALYZE, postings=[ref(f"c-{n}") for n in range(6)]),
+            "动作不是规定结构的 JSON：栏目缺少或多余、类型不对，或者太长",
+        ),
         (make_action(Tool.SEARCH, source_id=CAREERS), "search_postings 缺少 keywords"),
         ({**make_action(Tool.FINISH, claim=EndReason.ENOUGH), "keywords": "数据分析"}, "finish 不用 keywords，要填 null"),
         ({**make_action(Tool.FINISH), "claim": "limit"}, "动作不是规定结构的 JSON：栏目缺少或多余、类型不对，或者太长"),
@@ -335,7 +364,8 @@ def test_an_action_must_fit_its_tool(database, library, clock, action, problem):
 
 
 def test_notes_are_kept_on_one_line_masked_and_short_or_not_at_all(database, library, clock):
-    run = begin(database, clock, confirmation_for(library))
+    # No experience chosen, so the plain "enough" is taken (U3-Q2): the notes are what this case is about.
+    run = begin(database, clock, confirmation_for(library, selection=(), preferences=()))
     long_note = "查北京的岗位，\n有问题联系 hr-a2@example.invalid 或 13800001111，" + "补充说明" * 30
     decider = ScriptedDecider([search(note=long_note), finish(note="面试在合成路 18 号")])
 
@@ -345,3 +375,138 @@ def test_notes_are_kept_on_one_line_masked_and_short_or_not_at_all(database, lib
     assert "\n" not in steps[0].note and len(steps[0].note) <= 60
     assert steps[1].note == "（行动说明里有疑似地址或标明不公开的内容，没有保存）"
     assert all(review(step.note) == () for step in steps)
+
+
+# --- U3-Q1 and Q2: several analyses with one decision; what each search took; "enough" held to a result -----
+
+
+def test_the_history_tells_the_new_postings_each_search_took_and_a_search_that_took_none_as_what_it_was(database, library, clock):
+    """U3-Q1: a search that answered is told with the new postings it took, none included; one that failed or was
+    refused is told as what it was, never as one that found nothing. Steps later the next decision still sees it."""
+    register = synthetic.register()
+    register.adapter(LEADS).faults[("search", None)] = SourceTimeout("synthetic")
+    run = begin(database, clock, confirmation_for(library), register=register)
+    decider = ScriptedDecider(
+        [
+            search(),
+            search(direction=None, note="不限方向再查一次"),
+            search(LEADS, "数据 实习生", city="上海"),
+            search(city="深圳"),
+            read("c-bj-analyst"),
+            check("c-bj-analyst"),
+            analyze("c-bj-analyst"),
+            finish(),
+        ]
+    )
+
+    finished = run_agent(run, decider)
+    first = len(decider.observations[1].new)
+    told = decider.observations[4].history[:4]
+
+    assert first > 0 and decider.observations[2].new == ()
+    assert told[:3] == (
+        f"- 第 1 步 search_postings：完成，新增 {first} 个岗位",
+        "- 第 2 步 search_postings：完成，新增 0 个岗位",
+        "- 第 3 步 search_postings：来源没有给出结果",
+    )
+    assert told[3].startswith("- 第 4 步 search_postings：被拒（") and "新增" not in told[3]
+    # Four steps on, the last decision is told the same, and the text it is given says it word for word.
+    assert decider.observations[-1].history[:4] == told
+    assert all(line in decider.observations[-1].text for line in told)
+    assert (finished.outcome.end, len(finished.outcome.results)) == (EndReason.ENOUGH, 1)
+
+
+def test_a_search_with_experiences_is_told_how_many_postings_are_ready_and_how_many_analyses_are_left(database, library, clock):
+    """U3-Q1: one line counting the states listed below it and the analyses left; nothing new about any posting."""
+    script = [search(), read("c-bj-analyst", "c-choice"), check("c-bj-analyst", "c-choice"), analyze("c-bj-analyst"), finish()]
+    decider = ScriptedDecider(script)
+    run_agent(begin(database, clock, confirmation_for(library)), decider)
+    told = [[line for line in o.text.splitlines() if line.startswith("其中已核对仍在招聘")] for o in decider.observations]
+
+    assert told == [
+        [],
+        ["其中已核对仍在招聘、还没有分析的：0 个；分析次数还剩 3 个。"],
+        ["其中已核对仍在招聘、还没有分析的：0 个；分析次数还剩 3 个。"],
+        ["其中已核对仍在招聘、还没有分析的：2 个；分析次数还剩 3 个。"],
+        ["其中已核对仍在招聘、还没有分析的：1 个；分析次数还剩 2 个。"],
+    ]
+
+    # With no experience chosen nothing is analysed, so there is nothing to count.
+    alone = ScriptedDecider([search(), read("c-bj-analyst"), check("c-bj-analyst"), finish()])
+    run_agent(begin(database, clock, confirmation_for(library, selection=(), preferences=())), alone)
+
+    assert not any("其中已核对仍在招聘" in o.text for o in alone.observations)
+
+
+def test_one_decision_may_analyse_several_postings_each_on_its_own_and_the_instructions_say_so(database, library, clock):
+    assert "postings 可以放多个，最多到剩余分析次数，每个岗位单独分析、单独计数" in DECISION_INSTRUCTIONS
+    assert "选了经历的查找，还没有完整分析结果时不能填 enough" in DECISION_INSTRUCTIONS
+    assert "一次只分析一个岗位" not in DECISION_INSTRUCTIONS
+
+    provider = RecordingProvider()
+    run = begin(database, clock, confirmation_for(library), provider)
+    postings = ("c-bj-analyst", "c-choice", "c-bj-sales")
+    finished = run_agent(run, ScriptedDecider([search(), read(*postings), check(*postings), analyze(*postings), finish()]))
+    step = finished.trace.steps[3]
+
+    # One decision, one step; three analyses, each counted and each sending its own two requests.
+    assert (step.tool, step.outcome, finished.trace.decisions) == (Tool.ANALYZE, "done", 5)
+    assert dict(step.params)["岗位"] == "、".join(f"{CAREERS}/{posting_id}" for posting_id in postings)
+    assert (run.analyses, len(provider.prompts)) == (3, 6)
+    assert [result.ref.posting_id for result in finished.outcome.results] == ["c-bj-analyst", "c-choice", "c-bj-sales"]
+
+
+def test_the_simulated_decider_analyses_what_is_checked_open_at_once_up_to_what_is_left(database, library, clock):
+    run = begin(database, clock, confirmation_for(library, limits=Limits(analyses=2)))
+    finished = run_agent(run, SimulatedDecider())
+    analysed = [dict(step.params)["岗位"].split("、") for step in finished.trace.steps if step.tool is Tool.ANALYZE]
+
+    assert [len(postings) for postings in analysed] == [2]
+    assert (finished.outcome.end, len(finished.outcome.results)) == (EndReason.ENOUGH, 2)
+
+
+def test_the_simulated_decider_never_says_enough_with_experiences_chosen_and_no_result(database, library, clock):
+    """U3-Q2: every analysis fails here, so no result ever stands. The simulated decider goes on with what is left
+    and ends only as the rules take it or at the limit: never "enough", never refused for it."""
+
+    class Failing(RecordingProvider):
+        def generate_text(self, prompt, **options):
+            self.prompts.append(prompt)
+
+            raise AIProviderTimeoutError("synthetic")
+
+    provider = Failing()
+    run = begin(database, clock, confirmation_for(library), provider)
+    finished = run_agent(run, SimulatedDecider())
+    claims = [dict(step.params).get("结束理由") for step in finished.trace.steps if step.tool is Tool.FINISH]
+
+    assert run.analyses > 0 and provider.prompts and finished.outcome.results == ()
+    assert finished.outcome.end in (EndReason.SCOPE_DONE, EndReason.NO_RESULTS, EndReason.PARTLY_NO_RESULTS, EndReason.LIMIT)
+    assert "够了" not in claims and NOTHING_STANDS not in finished.outcome.refusals
+
+
+
+@pytest.mark.parametrize("since", ["closed", "unanswered"])
+def test_a_posting_closed_or_unanswered_since_its_analysis_is_no_longer_shown_as_analysed(database, library, clock, since):
+    """U3-Q2: the next decision is told what stands. Analysed, then checked again and closed or without an answer,
+    the posting is shown as that, its analysis withdrawn; and "enough" is refused, the second time ending the search."""
+    run = begin(database, clock, confirmation_for(library))
+
+    def checked_again(observation):
+        careers = run.register.adapter(CAREERS)
+
+        if since == "closed":
+            careers.closed.add("c-bj-analyst")
+        else:
+            careers.faults[("check", "c-bj-analyst")] = SourceTimeout("synthetic")
+
+        return check("c-bj-analyst", note="再核对一次")
+
+    decider = ScriptedDecider([search(), read("c-bj-analyst"), check("c-bj-analyst"), analyze("c-bj-analyst"), checked_again, finish(), finish()])
+    finished = run_agent(run, decider)
+
+    def shown(observation):
+        return {candidate.ref: candidate.state for candidate in observation.candidates}[ref("c-bj-analyst")]
+
+    assert (shown(decider.observations[4]), shown(decider.observations[5])) == ("analysed", "closed" if since == "closed" else "unknown")
+    assert (finished.outcome.end, finished.outcome.results, finished.outcome.refusals) == (EndReason.REFUSED, (), (NOTHING_STANDS, NOTHING_STANDS))

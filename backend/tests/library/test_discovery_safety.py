@@ -497,7 +497,8 @@ def test_a_second_executor_of_a_running_search_does_nothing(database, library, c
 def test_how_a_search_ended_is_said_once_and_only_by_its_executor(database, library, clock):
     """F2: a second word on how a task ended, by anyone, changes nothing."""
     store = DiscoveryTaskStore()
-    task = started(store, library, confirmation_for(library))
+    # No experience chosen, so the plain "enough" ends it (U3-Q2 holds "enough" to a result only with experiences).
+    task = started(store, library, confirmation_for(library, selection=(), preferences=()))
     run_local(store, database, clock, task, ScriptedDecider([search(), finish()]))
     done = store.get(task.id, library.owner, SESSION)
 

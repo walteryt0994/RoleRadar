@@ -296,7 +296,12 @@ def test_a_search_runs_on_synthetic_postings_with_simulated_decisions_and_says_s
 
     # The must-have the posting does not speak to is to be confirmed: a gap, not enough to rest on.
     assert headings == ["有基础但有差距或待确认", "有明确冲突，需谨慎考虑"]
-    assert titles == ["数据分析实习生（合成岗位，不是真实招聘）", "商业数据分析实习生（合成岗位，不是真实招聘）"]
+    # The three checked open, analysed with one decision, each on its own (U3-Q1).
+    assert titles == [
+        "数据分析实习生（合成岗位，不是真实招聘）",
+        "数据分析实习生（合成岗位，不是真实招聘）",
+        "商业数据分析实习生（合成岗位，不是真实招聘）",
+    ]
     assert "申请前先确认 现实必要条件：最早 2026 年 7 月入职" in text
     # Each with where it came from, its three times and a check that is no real one.
     assert "原始链接 https://careers.synthetic.invalid/postings/c-bj-analyst（合成示例地址，不能访问）" in text
@@ -310,8 +315,9 @@ def test_a_search_runs_on_synthetic_postings_with_simulated_decisions_and_says_s
     assert "没有判断的偏好 工作方式：未填写，无法判断" in text
     # What was searched, and the steps taken.
     assert "合成招聘官网 · 检索词“数据分析” · 城市 北京 · 求职类型 实习 · 岗位方向 不限 · 返回 10 个" in text
-    assert "结束原因 够了" in text and "第 1 步 · 检索岗位 · 完成" in text and "第 8 步 · 结束查找 · 完成" in text
-    assert "本机模拟服务处理的请求：4 次（模拟，没有联网，不产生费用）" in text and "可能已发出" not in found
+    assert "结束原因 够了" in text and "第 1 步 · 检索岗位 · 完成" in text and "第 6 步 · 分析 · 完成" in text
+    assert "第 7 步 · 结束查找 · 完成" in text and "第 8 步" not in text
+    assert "本机模拟服务处理的请求：6 次（模拟，没有联网，不产生费用）" in text and "可能已发出" not in found
 
     for page in (browser_a.get(BASE).text, reviewed, found):
         # Nothing is called a recommendation, nothing synthetic is linked, nothing applies anywhere.
@@ -322,7 +328,8 @@ def test_a_search_runs_on_synthetic_postings_with_simulated_decisions_and_says_s
 
 def test_ideal_cities_come_first_and_acceptable_ones_still_show(app, browser_a, library, inline, searches):
     """Case 1: Beijing first, Shanghai still there; ideal only orders."""
-    scripted(searches, search("上海"), search("北京"), finish())
+    # Both cities searched and nothing analysed: "scope done" ends it ("enough" needs a result, U3-Q2).
+    scripted(searches, search("上海"), search("北京"), finish(EndReason.SCOPE_DONE))
     url = search_of(review(browser_a, sources=[library]))
     confirm(browser_a, url)
     leads = section(browser_a.get(url).text, "未分析线索")
