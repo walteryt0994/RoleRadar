@@ -99,8 +99,9 @@ NOT_FOR_THE_DIRECTION_WORKFLOW = LEGACY_MODULES + (
     "app.directions.live_check",
 )
 # Behind the direction pages (U3-C3a): the task store, its runner, the checked writes and the words. They build no
-# service and enter no gate: the pages hand the runner the local simulation (app.directions.web). They load no search,
-# no other task store or page, and none of their own code imports a network client.
+# service and enter no gate: the pages hand the runner its provider (app.directions.web: the local simulation, or the
+# app's one real service behind its gate, what the gate says turned into the runner's own exceptions). They load no
+# search, no other task store or page, and none of their own code imports a network client.
 DIRECTION_PAGE_PARTS = ("tasks", "runner", "actions", "presentation")
 NOT_FOR_THE_DIRECTION_PAGE_PARTS = LEGACY_MODULES + (
     "app.live_gate",

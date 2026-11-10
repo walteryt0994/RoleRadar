@@ -1,0 +1,16 @@
+{# The approval a real service's task went under, as it stands now: its figures are all its requests', never one
+   exploration's cost. Nothing for the simulation. #}
+{% if service %}
+<section class="review-section direction-service" aria-labelledby="service-title">
+  <h2 id="service-title">这批批准的费用状态</h2>
+  {% if service.unreadable %}
+  <p class="warning" role="status">现在读不出批准 {{ service.approval }} 的费用记录；读出之前，不要据此判断已经花了多少。</p>
+  {% else %}
+  {% if service.paused %}
+  <p class="warning" role="alert">{{ service.paused }}</p>
+  {% endif %}
+  <p>批准 {{ service.approval }} 目前的合计：按用量核算 ${{ service.usd_settled }}，预留占用 ${{ service.usd_reserved }}，费用待核实 ${{ service.usd_unknown }}；还剩 {{ service.requests_left }} 次请求。应用内预算 ${{ service.usd_budget }}，还剩约 ${{ service.usd_left }}。</p>
+  <p class="hint">这是整批批准的合计，可能包括岗位分析等其他任务的请求，不是这一次探索单独的费用；应用内预算不是服务商账单的硬上限，以服务商账单为准。</p>
+  {% endif %}
+</section>
+{% endif %}

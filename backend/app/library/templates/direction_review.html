@@ -22,6 +22,13 @@
         {% for label, text in NOTICE %}
         <div><dt>{{ label }}</dt><dd>{{ text }}</dd></div>
         {% endfor %}
+        {% if service %}
+        {% if service.unreadable %}
+        <div><dt>本批批准</dt><dd>{{ service.approval }}：现在读不出它的费用记录，所以不能开始。</dd></div>
+        {% else %}
+        <div><dt>本批批准</dt><dd>{% if service.paused %}{{ service.paused }}{% else %}{{ service.approval }}：还剩 {{ service.requests_left }} 次请求。{% endif %}应用内预算 ${{ service.usd_budget }}，还剩约 ${{ service.usd_left }}（按用量核算 ${{ service.usd_settled }}、预留占用 ${{ service.usd_reserved }}、费用待核实 ${{ service.usd_unknown }}）。<br>这是整批批准的合计，可能包括岗位分析等其他任务；它是每次发送前的预算检查，不是服务商账单的硬上限，以服务商账单为准。</dd></div>
+        {% endif %}
+        {% endif %}
       </dl>
     </section>
 
@@ -90,8 +97,13 @@
       <p class="hint">自动检查只认得出常见写法的邮箱、电话、证件号、地址和“保密”一类字样，可能漏掉别的敏感内容，也可能误拦。确认前请自己再看一遍上面的文字。</p>
     </section>
 
+    {% if refusal and refusal != error %}
+    <p class="warning" role="status">{{ refusal }}</p>
+    {% endif %}
     <div class="form-actions review-actions">
+      {% if not refusal %}
       <button type="submit" name="action" value="start" class="primary">确认并开始探索</button>
+      {% endif %}
       <button type="submit" name="action" value="update" class="secondary">更新核对</button>
       <a href="/directions?from={{ task.id }}">返回修改</a>
     </div>

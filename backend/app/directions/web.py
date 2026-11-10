@@ -1,10 +1,18 @@
-"""The pages of 方向探索 (U3-C3a): choosing what to send, reviewing it, running one exploration on the local
-simulation, comparing its directions, and keeping what the user chooses to keep.
+"""The pages of 方向探索 (U3-C3a): choosing what to send, reviewing it, running one exploration, comparing its
+directions, and keeping what the user chooses to keep.
 
 Every page and post is the signed-in user's; every post carries the session's CSRF token and comes from this site
 (app.job_analysis.web.checked_fields). A task is the user's and the session's (app.directions.tasks): its id alone
-opens nothing for anyone else. A task runs only the local simulation (RECIPIENT): no real service is built or
-reached from here, and the workflow refuses any other recipient anyway (app.directions.explore).
+opens nothing for anyone else.
+
+An exploration goes to the local simulation (RECIPIENT), unless the app was started with a real service whose
+approval covers direction exploration (web_main): then it goes to that service, the one the analysis pages use,
+behind the same gate and ledger, under the direction purpose. No service is built here, and none changes while the
+app runs. A task binds the recipient and the processing notice it was reviewed under (presentation.notice_rows): a
+confirmation under another service or notice is redone, never started. A confirmation is checked twice: here, where
+the gate is asked whether anything may start (a stop file, a paused approval, no request left), and by the gate
+itself before the request goes out (budget, purpose, another task running, the gate closed). What the gate says is
+turned here into the runner's own exceptions (app.directions.runner), so nothing behind the pages knows the gate.
 
 Nothing is saved unless the user asks: an exploration is saved by "保存这次探索", a decision by the buttons of a
 direction, each through app.directions.actions, which checks the library again in the same transaction. Each view
@@ -15,6 +23,7 @@ C3b is not here: the deletion pages offer no "delete along" yet, and no directio
 """
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import timedelta
 
@@ -23,6 +32,7 @@ from fastapi.responses import JSONResponse, Response
 from sqlalchemy import select
 from starlette.datastructures import FormData
 
+from app.ai_provider import AIProvider
 from app.directions import presentation
 from app.directions.actions import (
     Saved,
@@ -37,7 +47,15 @@ from app.directions.actions import (
 )
 from app.directions.contracts import ExplorationResult, name_key
 from app.directions.handoff import held_back, kept_for_search
-from app.directions.explore import FIELD_GROUPS, FIELD_ORDER, ExplorationInputs, build_plan, build_request, fingerprint
+from app.directions.explore import (
+    FIELD_GROUPS,
+    FIELD_ORDER,
+    NOTICE_VERSION,
+    ExplorationInputs,
+    build_plan,
+    build_request,
+    fingerprint,
+)
 from app.directions.records import (
     SeenDecision,
     decisions_in_use,
@@ -49,17 +67,17 @@ from app.directions.records import (
     restore_decision,
     restore_exploration,
 )
-from app.directions.runner import run_task
+from app.directions.runner import LedgerFailed, ServiceRefused, ServiceUnavailable, run_task
 from app.directions.tasks import TASK_TTL_SECONDS, Claim, ExplorationTaskStore, Stage, Start, TooManyTasks
 from app.job_analysis import presentation as analysis_text
 from app.job_analysis.scope import BLOCKED, LEFT_OUT, MAX_EXPERIENCES, PREFERENCES_KEY, SEND, InputProblem
-from app.job_analysis.service import local_provider
+from app.job_analysis.service import LiveService, ProviderUnavailable, local_provider
 from app.job_analysis.simulation import RECIPIENT, SimulatedProvider
 from app.job_analysis.tasks import SWEEP_SECONDS
 from app.job_analysis.web import checked_fields
 from app.library.content import CATEGORY_LABELS, display_title
 from app.library.direction_export import SOURCE_STATE_LABELS
-from app.library.errors import NotAllowed, NotFound, RecordConflict
+from app.library.errors import ConfigError, NotAllowed, NotFound, RecordConflict, StorageError
 from app.library.identity import CurrentUser
 from app.library.lifecycle import active_direction_record, decision_in_use, trashed_direction_record
 from app.library.models import DecisionState, DirectionDecision, DirectionExploration, ExperienceItem, ExperienceVersion
@@ -69,6 +87,7 @@ from app.library.sends import sends_text
 from app.library.service import list_experiences
 from app.library.web import NOTICES as LIBRARY_NOTICES
 from app.library.web import current_user, message_page, render, runtime, safe_next, see_other
+from app.live_gate import LiveBlocked, LiveRefused, Purpose
 
 BASE = "/directions"
 RECORDS = f"{BASE}/records"
@@ -91,19 +110,69 @@ class DirectionsRuntime:
     sweep_seconds: float = SWEEP_SECONDS
     # The lifespan's sweeping task, while the app runs.
     sweeper: object = None
+    # The app's real service, when its approval covers direction exploration (install_directions); shared with the
+    # analysis pages, which close it. Otherwise the simulation answers.
+    live: LiveService | None = None
 
     @property
     def recipient(self):
-        """The local simulation: the only service a direction exploration goes to (C3a)."""
-        return RECIPIENT
+        """Where a new exploration goes: the real service, or the local simulation."""
+        return self.live.recipient if self.live is not None else RECIPIENT
+
+    @property
+    def notice_version(self) -> str:
+        return presentation.LIVE_NOTICE_VERSION if self.live is not None else NOTICE_VERSION
 
     def make_provider(self, task):
         # The simulated service waits on the task's cancel signal, so cancelling ends its wait.
         return SimulatedProvider(self.simulation_delay, stop=task.cancel)
 
     def provider_for(self, task, sending):
-        """The task's provider as a context (runner.run_task): the simulation, counted by the store."""
+        """The task's provider as a context (runner.run_task): the real service's behind its gate, else the
+        simulation's, counted by the store either way."""
+        if self.live is not None:
+            return _gated(self.live, task, sending)
+
         return local_provider(self.make_provider)(task, sending)
+
+    def refusal(self) -> str | None:
+        """Why no exploration may start now, in the gate's word, or "ledger" when its ledger cannot be read; None
+        when one may, and always for the simulation."""
+        if self.live is None:
+            return None
+
+        try:
+            refusal = self.live.refusal()
+        except StorageError:
+            return "ledger"
+
+        return None if refusal is None else refusal.value
+
+    def service_status(self) -> dict | None:
+        """The approval's figures now, for a real service's pages: all its requests, never one exploration's cost;
+        None for the simulation."""
+        if self.live is None:
+            return None
+
+        terms = self.live.gate.terms
+
+        try:
+            status = self.live.gate.status()
+        except StorageError:
+            return {"approval": terms.approval_id, "unreadable": True}
+
+        return {
+            "approval": terms.approval_id,
+            "unreadable": False,
+            "requests_left": status.requests_left,
+            "usd_budget": presentation.usd(terms.max_cost_micro_usd),
+            "usd_left": presentation.usd(status.micro_usd_left),
+            # Never one figure called charged: what usage accounted for, what is only reserved, what is still to be checked.
+            "usd_settled": presentation.usd(status.settled_micro_usd),
+            "usd_reserved": presentation.usd(status.reserved_micro_usd),
+            "usd_unknown": presentation.usd(status.unknown_micro_usd),
+            "paused": presentation.pause_text(status.paused_reason) if status.paused_reason else None,
+        }
 
     def end_session(self, session: str) -> None:
         self.store.end_session(session)
@@ -112,8 +181,69 @@ class DirectionsRuntime:
         self.store.sweep()
 
     def shutdown(self) -> None:
+        # The shared service is not closed here: the analysis pages close it once, after this (web_main).
         self.store.shutdown()
         self.executor.shutdown(wait=False, cancel_futures=True)
+
+
+class _Translated(AIProvider):
+    """A direction task's provider behind the gate, what the gate says turned into the runner's words: a request it
+    stopped is ServiceRefused, a ledger it could not read or write LedgerFailed. Anything else passes as it is: the
+    service's own failures, and a stop of the task (TaskStopped), which the gate passes on."""
+
+    def __init__(self, provider: AIProvider):
+        self._provider = provider
+
+    def identity(self):
+        return self._provider.identity()
+
+    def generate_text(self, prompt, max_output_tokens=None, reasoning_effort=None, json_schema_format=None):
+        try:
+            return self._provider.generate_text(
+                prompt,
+                max_output_tokens=max_output_tokens,
+                reasoning_effort=reasoning_effort,
+                json_schema_format=json_schema_format,
+            )
+        except LiveBlocked as blocked:
+            raise ServiceRefused(blocked.reason.value) from None
+        except StorageError:
+            # Reserving or settling failed; what went out, or may have, the gate told the task's sending already.
+            raise LedgerFailed() from None
+
+
+@contextmanager
+def _gated(live: LiveService, task, sending):
+    """A direction task's provider behind the app's one gate, under the direction purpose."""
+    entered = False
+
+    try:
+        with live.provider_of(task.owner_id, sending, Purpose.DIRECTION) as gated:
+            entered = True
+            yield _Translated(gated)
+    except LiveBlocked as blocked:
+        if entered:
+            raise
+
+        # The gate refused the task itself: its purpose is not approved, another task is running, or it is closed.
+        raise ServiceRefused(blocked.reason.value) from None
+    except (LiveRefused, ProviderUnavailable):
+        if entered:
+            raise
+
+        raise ServiceUnavailable() from None
+
+
+def check_live_terms(terms) -> None:
+    """ConfigError when an approval names direction exploration for a service its processing notice does not cover
+    (presentation.LIVE_NOTICE_COVERS): the app then refuses to start, never quietly simulating (web_main)."""
+    if Purpose.DIRECTION.value not in terms.purposes:
+        return
+
+    if presentation.LIVE_NOTICE_COVERS.get(terms.provider) != terms.endpoint:
+        raise ConfigError(
+            "批准写了方向探索（direction），但方向探索的处理说明只适用于 OpenAI 的官方地址，不能用在这个接收方上。"
+        )
 
 
 def install_directions(
@@ -123,12 +253,19 @@ def install_directions(
     sweep_seconds: float = SWEEP_SECONDS,
     clock=None,
     executor=None,
+    live: LiveService | None = None,
 ) -> DirectionsRuntime:
+    """The direction pages; live is the app's real service, taken only when its approval covers direction
+    exploration (checked before the app opened it, check_live_terms), else the simulation answers."""
+    if live is not None:
+        check_live_terms(live.gate.terms)
+
     directions = DirectionsRuntime(
         store=ExplorationTaskStore(clock or time.monotonic),
         executor=executor or ThreadPoolExecutor(max_workers=2, thread_name_prefix="directions"),
         simulation_delay=simulation_delay,
         sweep_seconds=sweep_seconds,
+        live=live if live is not None and Purpose.DIRECTION.value in live.gate.terms.purposes else None,
     )
     app.state.directions = directions
     # Logging out, or signing in as someone else, ends the session's tasks.
@@ -194,6 +331,8 @@ def input_form(
             "problem": problem,
             "notice": notice,
             "error": problem.message if problem else None,
+            # The service a task started from here would go to: the app's, never a fixed text.
+            "mode": presentation.input_mode(directions_of(request).recipient),
             "MAX_EXPERIENCES": MAX_EXPERIENCES,
             "CATEGORY_LABELS": CATEGORY_LABELS,
         },
@@ -234,7 +373,7 @@ def new_review(request: Request, user: CurrentUser, inputs: ExplorationInputs, *
     except InputProblem as problem:
         return input_form(request, user, inputs, problem)
 
-    exploration_request = build_request(user.id, plan, directions.recipient)
+    exploration_request = build_request(user.id, plan, directions.recipient, directions.notice_version)
 
     try:
         task = directions.store.create(user.id, user.token_hash, inputs, plan, exploration_request, fingerprint(exploration_request))
@@ -296,6 +435,16 @@ def task_page(task_id: str, request: Request, notice: str = "", user: CurrentUse
     return task_view(request, user, task, notice=presentation.NOTICES.get(notice))
 
 
+def _service_of(request: Request, task) -> dict | None:
+    """The approval's figures for a task's pages: only for a task confirmed for the app's real service."""
+    directions = directions_of(request)
+
+    if directions.live is None or task.request.recipient != directions.live.recipient:
+        return None
+
+    return directions.service_status()
+
+
 def review_page(request: Request, user: CurrentUser, task, *, notice=None, error=None, status_code=200) -> Response:
     groups = []
 
@@ -319,7 +468,11 @@ def review_page(request: Request, user: CurrentUser, task, *, notice=None, error
             "groups": groups,
             "notice": notice,
             "error": error,
-            "NOTICE": presentation.NOTICE,
+            # The words of the version this task was reviewed under, and, for the real service, its approval now.
+            "NOTICE": presentation.notice_rows(task.request),
+            "live": presentation.is_live(task.request.recipient),
+            "service": _service_of(request, task),
+            "refusal": presentation.REFUSALS.get(directions_of(request).refusal()),
             "SEND": SEND,
             "LEFT_OUT": LEFT_OUT,
             "BLOCKED": BLOCKED,
@@ -348,6 +501,10 @@ def confirm(task_id: str, request: Request, user: CurrentUser = Depends(current_
     if task.stage is not Stage.REVIEW:
         return see_other(f"{BASE}/tasks/{task.id}" + ("" if task.stage is Stage.CANCELLED else "?notice=already"))
 
+    if (task.request.recipient, task.request.notice_version) != (directions.recipient, directions.notice_version):
+        # Reviewed under another service or notice: that review is not confirmed, it is redone.
+        return new_review(request, user, task.inputs, replaces=task.id, notice="service_changed")
+
     sendable = _sendable(task.plan)
     ticked = set(form.getlist("send")) & sendable
 
@@ -359,6 +516,12 @@ def confirm(task_id: str, request: Request, user: CurrentUser = Depends(current_
 
     if form.get("action") != "start":
         return see_other(f"{BASE}/tasks/{task.id}")
+
+    refusal = directions.refusal()
+
+    if refusal is not None:
+        # Nothing starts; the gate would refuse it again before anything went out.
+        return review_page(request, user, task, error=presentation.REFUSALS[refusal], status_code=409)
 
     outcome, started = directions.store.begin(task.id, user.id, user.token_hash, form.get("fingerprint", ""))
 
@@ -482,6 +645,16 @@ def task_view(request: Request, user: CurrentUser, task, *, notice=None, error=N
 
     if task.stage is Stage.CANCELLED:
         context["cancelled_by"] = presentation.CANCELLED_BY.get(task.cancelled_by, "")
+
+    # Which service the task went to, as it was confirmed, and for a real one the approval's figures now.
+    recipient = task.request.recipient
+    context.update(
+        live=presentation.is_live(recipient),
+        mode=presentation.task_mode(recipient),
+        result_mode=presentation.result_mode(recipient, task.outcome),
+        sends_note=presentation.sends_note(recipient),
+        service=_service_of(request, task),
+    )
 
     return render(request, "direction_task.html", context, user=user, status_code=status_code)
 

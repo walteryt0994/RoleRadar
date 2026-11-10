@@ -748,11 +748,11 @@ def test_the_export_holds_what_the_pages_saved(app, inline, browser_a, library):
 # --- the local simulation only ------------------------------------------------------------------------------------------
 
 
-def test_only_the_local_simulation_answers_and_no_real_service_is_reachable(app, browser_a, library):
+def test_without_a_real_service_only_the_local_simulation_answers_and_nothing_builds_one(app, browser_a, library):
     import ast
     import inspect
 
-    from app.directions import actions, runner, tasks, web
+    from app.directions import actions, presentation, runner, tasks, web
 
     directions = app.state.directions
     task = directions.store.create("owner", "session", None, None, None, "fingerprint")
@@ -760,9 +760,9 @@ def test_only_the_local_simulation_answers_and_no_real_service_is_reachable(app,
     with directions.provider_for(task, runner._Sending(directions.store, task.id)) as provider:
         identity = provider.identity()
 
-    assert directions.recipient == RECIPIENT and identity.provider == SIMULATION_PROVIDER
-    # The pages, the runner, the store and the writes import no gate and no way to build a real service.
-    for module in (web, runner, tasks, actions):
+    assert directions.live is None and directions.recipient == RECIPIENT and identity.provider == SIMULATION_PROVIDER
+
+    def imports_of(module) -> set:
         imported = set()
 
         for node in ast.walk(ast.parse(inspect.getsource(module))):
@@ -771,7 +771,14 @@ def test_only_the_local_simulation_answers_and_no_real_service_is_reachable(app,
             elif isinstance(node, ast.Import):
                 imported |= {alias.name for alias in node.names}
 
-        assert not imported & {"app.live_gate", "app.job_analysis.live", "LiveService", "make_live_provider", "LiveSetup", "openai"}, module
+        return imported
+
+    # The runner, the store, the writes and the words import no gate and no way to build a real service; the pages
+    # may hand a task the app's one gate (a real service web_main built), but never build a service or a client.
+    for module in (runner, tasks, actions, presentation):
+        assert not imports_of(module) & {"app.live_gate", "app.job_analysis.live", "app.job_analysis.service", "LiveService", "make_live_provider", "LiveSetup", "openai"}, module
+
+    assert not imports_of(web) & {"app.job_analysis.live", "make_live_provider", "LiveSetup", "open_gate", "OpenAIProvider", "openai"}
     assert "本机模拟服务" in browser_a.get(task_of(review(browser_a, [library]))).text
 
 

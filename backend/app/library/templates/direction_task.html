@@ -12,7 +12,7 @@
   {% if task.stage == "running" %}
   <header class="job-head">
     <h1>正在探索方向</h1>
-    <p class="job-mode">本机模拟服务：由固定规则生成结果，不是 AI。</p>
+    <p class="job-mode">{{ mode }}</p>
   </header>
   <p class="task-status" role="status" data-task-step>正在{{ STEP }}。已交给服务的请求：{{ sends_text(task.handed) }}。</p>
   <p class="hint">完成后这一页会自动更新；没有更新时可以<a href="/directions/tasks/{{ task.id }}" data-skip-leave-guard>刷新状态</a>。</p>
@@ -34,7 +34,11 @@
   <header class="job-head">
     <h1>探索已取消</h1>
   </header>
-  <p>{{ cancelled_by }}已交给服务的请求：{{ sends_text(task.handed) }}；它的回答不会采用。</p>
+  {% if live %}
+  <p class="job-mode">{{ mode }}</p>
+  {% endif %}
+  <p>{{ cancelled_by }}已交给服务的请求：{{ sends_text(task.handed) }}；它的回答不会采用。{% if live %}已经发出的请求无法撤回，费用照常核算。{% endif %}</p>
+  {% include "_direction_service.html" %}
   <div class="actions">
     <form method="post" action="/directions/tasks/{{ task.id }}/again" class="inline">
       {{ m.csrf() }}
@@ -46,7 +50,7 @@
   {% else %}
   <header class="job-head">
     <h1>方向探索结果</h1>
-    <p class="job-mode">本机模拟服务：由固定规则生成结果，不是 AI。</p>
+    <p class="job-mode">{{ result_mode }}</p>
   </header>
   {% if error %}
   <p class="error" role="alert">{{ error }}</p>
@@ -76,7 +80,8 @@
   </div>
   {{ direction_cards(cards, "/directions/tasks/" ~ task.id ~ "/decide", can_decide, "/directions/tasks/" ~ task.id) }}
   {% endif %}
-  <p class="hint result-foot">已交给服务的请求：{{ sends_text(task.handed) }}（本机模拟，没有联网，不产生费用）。</p>
+  <p class="hint result-foot">已交给服务的请求：{{ sends_text(task.handed) }}{{ sends_note }}。</p>
+  {% include "_direction_service.html" %}
   <div class="actions">
     <form method="post" action="/directions/tasks/{{ task.id }}/again" class="inline">
       {{ m.csrf() }}

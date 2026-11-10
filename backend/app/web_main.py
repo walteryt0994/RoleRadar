@@ -7,8 +7,9 @@ candidates (app.library.review_web) and their adoption at the user's choice
 as an attachment (app.library.finish_web), the job analysis pages
 (app.job_analysis), the preview of finding postings on synthetic sources
 with simulated decisions and analyses only (app.discovery.web, U3-A3: it never
-takes the real service below), the direction exploration pages on the local
-simulation only (app.directions.web, U3-C3a: neither), stores data in its own SQLite file and attachment
+takes the real service below), the direction exploration pages (app.directions.web,
+U3-C3a), which take the real service below only when its approval covers
+direction exploration and run the local simulation otherwise, stores data in its own SQLite file and attachment
 folder, and never imports the legacy database, models or routers. A resume
 import is read on this machine in a child process and sent nowhere; its
 candidates come from local simulated rules, or, with a real service whose
@@ -48,7 +49,7 @@ from app.library.imports_web import install_imports
 from app.library.models import create_schema, read_library_id
 from app.library.review_web import install_review
 from app.discovery.web import DiscoveryRuntime, install_discovery
-from app.directions.web import DirectionsRuntime, install_directions
+from app.directions.web import DirectionsRuntime, check_live_terms, install_directions
 from app.job_analysis.live import analysis_setup
 from app.job_analysis.service import LiveService
 from app.job_analysis.tasks import SWEEP_SECONDS
@@ -85,6 +86,12 @@ def create_app(
 
     if live is None:
         live = analysis_setup(os.environ if environ is None else environ)
+
+    if live is not None:
+        # Before anything is created or opened: an approval for direction exploration names a service its processing
+        # notice covers, or the app does not start (never quietly simulating).
+        check_live_terms(live.terms)
+
     db_path = check_storage_path(config.db_path, test_root=config.test_root)
     files = FileStore(check_files_path(config.files_dir, db_path=db_path, test_root=config.test_root))
 
@@ -140,8 +147,9 @@ def create_app(
     install_job_analysis(app, simulation_delay=simulation_delay, sweep_seconds=job_sweep_seconds, live=service)
     # The search preview gets no service: it runs the simulation only (app.discovery.web).
     install_discovery(app, simulation_delay=simulation_delay, sweep_seconds=job_sweep_seconds)
-    # Direction exploration (U3-C3a) runs the local simulation only: it gets no service either.
-    install_directions(app, simulation_delay=simulation_delay, sweep_seconds=job_sweep_seconds)
+    # Direction exploration shares the same service, gate and ledger, and takes it only when the approval names the
+    # direction purpose; otherwise it runs the local simulation.
+    install_directions(app, simulation_delay=simulation_delay, sweep_seconds=job_sweep_seconds, live=service)
 
     return app
 
@@ -177,12 +185,12 @@ async def _lifespan(app: FastAPI):
                 with contextlib.suppress(asyncio.CancelledError):
                     await running
 
-        # Real structuring runs and running analyses stop before their next request; the gate
-        # closes once (jobs.shutdown), after any request still out is settled.
+        # Real structuring runs, running explorations and running analyses stop before their next
+        # request; then the gate closes once (jobs.shutdown), after any request still out is settled.
         app.state.structuring.shutdown()
+        explorations.shutdown()
         jobs.shutdown()
         searches.shutdown()
-        explorations.shutdown()
         runtime.database.engine.dispose()
 
 
