@@ -84,7 +84,7 @@ NOT_FOR_DIRECTIONS = LEGACY_MODULES + (
 # The direction workflow (U3-C2) and its simulated answers: one request to a provider it is handed, never a gate,
 # a search, a task store, a page or a saving entry of its own. It reuses U2's per-field plans and quote reading,
 # so the provider types and the SDK they import come along; none of its own code imports a network client.
-DIRECTION_WORKFLOW = ("explore", "simulation")
+DIRECTION_WORKFLOW = ("explore", "simulation", "attribution")
 NOT_FOR_THE_DIRECTION_WORKFLOW = LEGACY_MODULES + (
     "app.live_gate",
     "app.discovery",

@@ -458,4 +458,9 @@ def caseset_digest() -> str:
 
 
 # The digest the cases were frozen at (caseset_digest): a run with --send needs it given, and to match.
-FROZEN_DIGEST = "0e8dd1f0085e24f483f2ecd846623b3e8b90f7144256d7fdd6be0b98e3d78425"
+# The first run (approval u3c4-2026-11-09-a, its records kept as they are) was at the digest
+# 0e8dd1f0085e24f483f2ecd846623b3e8b90f7144256d7fdd6be0b98e3d78425, with the workflow's prompt version 1. Only that
+# version changed since (3, business F1 R2: whose doing a quote is, arranging and watching others included); the
+# cases, the checks, the notice and the settings are the same. The R1 candidate (version 2), never approved or run,
+# was at 9437123ed4534cf0e11dda1d671e21697daec0de20fa2ac31fa25c191dde84cf. A new run needs a new approval.
+FROZEN_DIGEST = "d0392e8124fd937ec43e4d768d7ed8ccdd0ebd358426868e7e587e1c9faa2749"

@@ -29,8 +29,14 @@ gate and the confirmation of the task still decide whether anything goes at all,
    answer back after a cancellation is not used.
 4. The answer must be one ExplorationOutput, every quote standing word for word (whitespace aside) in the field
    or the preference it names, as sent; anything else fails the whole answer. Then local rules that only
-   ever lower what the answer says: a quote of a plan, of someone else's work, of a denial or of a mere claim
-   is no basis (U2's reading of quotes, app.experience_analysis.quote_flags); a direction in general cannot
+   ever lower what the answer says: a quote of a plan, of a denial or of a mere claim is no basis (U2's
+   reading of quotes, app.experience_analysis.quote_flags), and neither is a quote that is not, everywhere it
+   touches, the user's own doing: someone else's clause, however short the quote, a sentence mixing theirs
+   with the user's, what the user only had others do or watched them do cut from the words saying so, work
+   done with others cut from the words saying so, or one it cannot place (app.directions.attribution, U3-C4
+   business F1, R2). Who did what is
+   read clause by clause there, not by U2's words for someone else's work, which read a whole sentence and so
+   would take the user's own clause beside a teammate's as well; a direction in general cannot
    tell a city, a type of job, the way a company works or a start date, so those relations are unknown; and
    a "basis" that only restates the user's words is none (U3-C pre-check 12.4).
 5. The material is read once more. A source deleted or no longer available meanwhile: nothing of the answer
@@ -62,6 +68,7 @@ from app.analysis_contracts import (
     SelectedSource,
     TaskApproval,
 )
+from app.directions.attribution import SELF, whose
 from app.directions.contracts import (
     DIFFERENCE_CHARS,
     LINE_CHARS,
@@ -105,7 +112,10 @@ from app.outbound_review import review
 # What a direction exploration is, in a request and its fingerprint.
 PURPOSE = "direction_exploration"
 # The instructions and the local rules below, numbered together: a change to either is a new version.
-PROMPT_VERSION = "1"
+# 2 (U3-C4 business F1): a quote is a basis only where it is the user's own doing (app.directions.attribution).
+# 3 (F1 R2): letting, arranging or watching someone is not doing what they did, and work done with others needs the
+# words saying so. 2 was the R1 candidate, never run.
+PROMPT_VERSION = "3"
 # What the review page tells the user before they confirm (the pages, C3, show it).
 NOTICE_VERSION = "direction-1"
 SCHEMA_NAME = "direction_exploration"
@@ -149,6 +159,9 @@ UNKNOWN_ONLY = frozenset(name for key in ("cities", "job_types", "work_style", "
 # What a quote may be taken as: done by the user, or a fact such as a school or a major.
 BASES = ("practice", "fact", "claim", "plan", "other_person", "negated")
 TAKEN_BASES = ("practice", "fact")
+# U2's flag for words of someone else's work (app.experience_analysis.QUOTE_FLAGS): it reads a whole sentence, so
+# here whose doing a quote is is read clause by clause instead (app.directions.attribution), as the module says.
+OTHERS_FLAG = "other_person"
 SET_ASIDE_NOTE = "RoleRadar 核对：有 {} 条经历引文写的是计划、他人完成、没有做或只说熟悉，没有算作已有基础"
 # How a relation the user should weigh is labelled where results are shown (derived, never stored).
 FIRM_CONFLICT = "可能和你写的“不能接受”冲突，需谨慎考虑"
@@ -965,8 +978,10 @@ def checked_result(text: str, material: _Material) -> tuple[ExplorationResult, t
 
 
 def _evidence(citations, material: _Material) -> tuple[tuple[Quote, ...], int]:
-    """A direction's quotes of experiences: each must stand in the field it names, as sent. Those read as a plan,
-    someone else's work, a denial or a claim, or labelled so, are no basis and are set aside, never raised."""
+    """A direction's quotes of experiences: each must stand in the field it names, as sent. Those read as a plan, a
+    denial or a claim, or labelled as anything but practice or fact, are no basis and are set aside, never raised;
+    and so is any quote whose words, read where they stand, are not all the user's own doing (attribution.whose),
+    which is how someone else's work is read here."""
     taken, seen, aside = [], set(), 0
 
     for citation in citations:
@@ -984,7 +999,9 @@ def _evidence(citations, material: _Material) -> tuple[tuple[Quote, ...], int]:
         if not context:
             raise _Failed(AnalysisFailure.CITATION)
 
-        if citation.basis not in TAKEN_BASES or quote_flags(context):
+        flags = set(quote_flags(context)) - {OTHERS_FLAG}
+
+        if citation.basis not in TAKEN_BASES or flags or whose(citation.quote, field_text) != SELF:
             aside += 1
             continue
 

@@ -389,7 +389,7 @@ def test_the_fingerprint_covers_every_part_and_not_the_order_of_choosing(databas
         replace(request, owner_id=material.other),
         replace(request, recipient=Recipient("simulation", "another-model")),
         replace(request, notice_version="direction-2"),
-        replace(request, prompt_version="2"),
+        replace(request, prompt_version="1" if PROMPT_VERSION != "1" else "2"),
         replace(request, sources=(replace(first, fields=first.fields[:1]), second)),
         replace(request, sources=(replace(first, version_id=second.version_id), second)),
         replace(request, preferences=replace(preferences, revision=preferences.revision + 1)),
@@ -814,6 +814,170 @@ def test_a_plan_someone_elses_work_a_denial_or_a_claim_is_no_basis(database, clo
     assert [quote.text for quote in first.evidence] == ["用 Python 清洗订单数据"]
     assert outcome.set_aside == (5, 0, 0)
     assert first.unknowns[-1] == SET_ASIDE_NOTE.format(5)
+
+
+def test_someone_elses_clause_is_no_basis_however_it_is_quoted_and_the_users_own_clause_is(database, clock, owners):
+    """U3-C4 business F1: a sentence telling what a teammate did beside what the user did. Its whole, the teammate's
+    clause, a short quote of it with its subject cut off and a quote across both are set aside; the user's own
+    clause, with or without its subject, is a basis. Nothing in the field is banned for being next to it."""
+    a, _ = owners
+    said = "组员负责搭建模型，我整理了会议记录。"
+    project = confirmed(database, a, clock, "project", title="合成小组项目", actions=said)
+    request = request_for(database, clock, a, (project,))
+    alias_ = alias(request, project[0])
+    quotes = [
+        cite(alias_, "actions", said),
+        cite(alias_, "actions", "组员负责搭建模型"),
+        cite(alias_, "actions", "搭建模型"),
+        cite(alias_, "actions", "模型，我整理了会议记录"),
+        cite(alias_, "actions", "我整理了会议记录"),
+        cite(alias_, "actions", "整理了会议记录"),
+    ]
+    outcome, _ = run(database, clock, request, scripted(answer(*three(direction("研究运营", quotes)))))
+    first = outcome.result.directions[0]
+
+    assert outcome.status is ExplorationStatus.COMPLETE
+    assert [quote.text for quote in first.evidence] == ["我整理了会议记录", "整理了会议记录"]
+    assert outcome.set_aside == (4, 0, 0)
+    assert first.unknowns[-1] == SET_ASIDE_NOTE.format(4)
+
+
+def test_the_users_own_clause_beside_a_teammates_is_not_set_aside_with_it(database, clock, owners):
+    """A word for someone else's work earlier in the sentence ("队友") once took the user's own clause after it as
+    well; who did what is now read clause by clause, so only the teammate's clause goes."""
+    a, _ = owners
+    said = "队友完成了建模，我写了报告。"
+    project = confirmed(database, a, clock, "project", title="合成小组项目", actions=said)
+    request = request_for(database, clock, a, (project,))
+    alias_ = alias(request, project[0])
+    quotes = [cite(alias_, "actions", said), cite(alias_, "actions", "队友完成了建模"), cite(alias_, "actions", "我写了报告")]
+    outcome, _ = run(database, clock, request, scripted(answer(*three(direction("研究运营", quotes)))))
+    first = outcome.result.directions[0]
+
+    assert outcome.status is ExplorationStatus.COMPLETE
+    assert [quote.text for quote in first.evidence] == ["我写了报告"]
+    assert outcome.set_aside == (2, 0, 0)
+
+
+def test_the_same_holds_in_english_and_in_either_order(database, clock, owners):
+    a, _ = owners
+    said = "I took the meeting notes while my teammate built the model. My teammate cleaned the data, and I wrote the report."
+    project = confirmed(database, a, clock, "project", title="Synthetic group project", actions=said)
+    request = request_for(database, clock, a, (project,))
+    alias_ = alias(request, project[0])
+    quotes = [
+        cite(alias_, "actions", "I took the meeting notes while my teammate built the model."),
+        cite(alias_, "actions", "I took the meeting notes"),
+        cite(alias_, "actions", "my teammate built the model"),
+        cite(alias_, "actions", "cleaned the data"),
+        cite(alias_, "actions", "I wrote the report"),
+    ]
+    outcome, _ = run(database, clock, request, scripted(answer(*three(direction("研究运营", quotes)))))
+    first = outcome.result.directions[0]
+
+    assert outcome.status is ExplorationStatus.COMPLETE
+    assert [quote.text for quote in first.evidence] == ["I took the meeting notes", "I wrote the report"]
+    assert outcome.set_aside == (3, 0, 0)
+
+
+def test_plans_denials_claims_and_turns_still_hold_beside_whose_doing_it_is(database, clock, owners):
+    """The other rules are not loosened: a quote of the user's own doing that is a plan, a denial or a claim is still
+    no basis; what follows a turn is read without the denial before it; working with others is the user's doing."""
+    a, _ = owners
+    said = "组员没用 Python，但我用 Python 做了分析。队友计划学习 Tableau。我熟悉 Excel。我没有用过 R 语言。和同学一起访谈了五位店主。"
+    project = confirmed(database, a, clock, "project", title="合成项目", actions=said)
+    request = request_for(database, clock, a, (project,))
+    alias_ = alias(request, project[0])
+    quotes = [
+        cite(alias_, "actions", "我用 Python 做了分析"),
+        cite(alias_, "actions", "组员没用 Python"),
+        cite(alias_, "actions", "队友计划学习 Tableau"),
+        cite(alias_, "actions", "我熟悉 Excel"),
+        cite(alias_, "actions", "我没有用过 R 语言"),
+        cite(alias_, "actions", "和同学一起访谈了五位店主"),
+    ]
+    outcome, _ = run(database, clock, request, scripted(answer(*three(direction("数据分析", quotes)))))
+    first = outcome.result.directions[0]
+
+    assert outcome.status is ExplorationStatus.COMPLETE
+    assert [quote.text for quote in first.evidence] == ["我用 Python 做了分析", "和同学一起访谈了五位店主"]
+    assert outcome.set_aside == (4, 0, 0)
+
+
+def test_what_the_user_had_others_do_or_watched_them_do_is_theirs_and_only_the_arranging_is_the_users(database, clock, owners):
+    """F1 R2 (C4 report 11.2): letting, arranging or watching someone is not doing what they did. Quoted with the
+    words that say so, the arranging or the watching is the user's; what follows them, cut from those words, is not,
+    nor is a clause without a doer of its own right after them; the user's own clause beside them is."""
+    a, _ = owners
+    said = "我整理了会议记录，并让组员负责搭建模型。我安排队友完成调参，并汇报了结果。我观察同学测试原型。"
+    project = confirmed(database, a, clock, "project", title="合成小组项目", actions=said)
+    request = request_for(database, clock, a, (project,))
+    alias_ = alias(request, project[0])
+    quotes = [
+        cite(alias_, "actions", "搭建模型"),
+        cite(alias_, "actions", "完成调参"),
+        cite(alias_, "actions", "汇报了结果"),
+        cite(alias_, "actions", "测试原型"),
+        cite(alias_, "actions", "我整理了会议记录"),
+        cite(alias_, "actions", "让组员负责搭建模型"),
+        cite(alias_, "actions", "我观察同学测试原型"),
+    ]
+    outcome, _ = run(database, clock, request, scripted(answer(*three(direction("研究运营", quotes)))))
+    first = outcome.result.directions[0]
+
+    assert outcome.status is ExplorationStatus.COMPLETE
+    assert [quote.text for quote in first.evidence] == ["我整理了会议记录", "让组员负责搭建模型", "我观察同学测试原型"]
+    assert outcome.set_aside == (4, 0, 0)
+
+
+def test_the_same_in_english_and_help_is_no_doing_it_alone(database, clock, owners):
+    a, _ = owners
+    said = "I asked my teammate to build the model, and I took notes. I helped a classmate debug the code."
+    project = confirmed(database, a, clock, "project", title="Synthetic group project", actions=said)
+    request = request_for(database, clock, a, (project,))
+    alias_ = alias(request, project[0])
+    quotes = [
+        cite(alias_, "actions", "build the model"),
+        cite(alias_, "actions", "debug the code"),
+        cite(alias_, "actions", "I took notes"),
+        cite(alias_, "actions", "I asked my teammate to build the model"),
+        cite(alias_, "actions", "I helped a classmate debug the code"),
+    ]
+    outcome, _ = run(database, clock, request, scripted(answer(*three(direction("研究运营", quotes)))))
+    first = outcome.result.directions[0]
+
+    assert outcome.status is ExplorationStatus.COMPLETE
+    assert [quote.text for quote in first.evidence] == [
+        "I took notes",
+        "I asked my teammate to build the model",
+        "I helped a classmate debug the code",
+    ]
+    assert outcome.set_aside == (2, 0, 0)
+
+
+def test_work_done_with_others_is_a_basis_only_with_the_words_saying_so(database, clock, owners):
+    """"一起", "帮助" and "我们" keep their meaning: quoted with them, the work is the user's with others; cut down to
+    the doing alone, or a clause right after them without a doer of its own, it is not taken as the user's alone."""
+    a, _ = owners
+    said = "我和组员一起搭建了模型，并完成了调参。帮助同学调试代码。我们小组完成了需求分析。"
+    project = confirmed(database, a, clock, "project", title="合成小组项目", actions=said)
+    request = request_for(database, clock, a, (project,))
+    alias_ = alias(request, project[0])
+    quotes = [
+        cite(alias_, "actions", "搭建了模型"),
+        cite(alias_, "actions", "完成了调参"),
+        cite(alias_, "actions", "调试代码"),
+        cite(alias_, "actions", "完成了需求分析"),
+        cite(alias_, "actions", "和组员一起搭建了模型"),
+        cite(alias_, "actions", "帮助同学调试代码"),
+        cite(alias_, "actions", "我们小组完成了需求分析"),
+    ]
+    outcome, _ = run(database, clock, request, scripted(answer(*three(direction("研究运营", quotes)))))
+    first = outcome.result.directions[0]
+
+    assert outcome.status is ExplorationStatus.COMPLETE
+    assert [quote.text for quote in first.evidence] == ["和组员一起搭建了模型", "帮助同学调试代码", "我们小组完成了需求分析"]
+    assert outcome.set_aside == (4, 0, 0)
 
 
 def test_relations_a_direction_cannot_settle_or_only_restates_are_unknown_and_conflicts_are_labelled(database, clock, material):
