@@ -71,8 +71,12 @@ from app.library.models import LiveRequest, LiveRequestState, create_schema
 from app.live_gate import LiveBlocked, LiveRefused, Purpose, open_gate
 
 # 2 (U3-B0 R1): a run's status; a failed run keeps what it had done; each posting found with its read and check;
-# a result with its title, company and apply address; each search with what it could not take.
-RECORD_VERSION = "2"
+# a result with its title, company and apply address; each search with what it could not take. 3 (U3-D5, R1): each
+# posting found with where it stood (relevance) and whether an analysis could send it; the sources' calls; each agent
+# step with what it did (progress) and the analyses it saw stopped; a lead's official posting with its source. 4 (U3-D5
+# R2): each agent step with the postings it analysed and those whose analysis did not finish, so evidence of an
+# adjustment says posting by posting what a step did.
+RECORD_VERSION = "4"
 FINISHED, FAILED = "finished", "failed"
 EXIT_DONE, EXIT_NOT_RUN, EXIT_STOPPED, EXIT_FAILED = 0, 2, 3, 4
 EVALUATION_DB = "evaluation.db"
@@ -287,17 +291,68 @@ class RecordingDecider:
 
 
 class StepRecorder:
-    """Each step of an agent run as it is recorded (on_step), with what the step newly found, as the run saw it."""
+    """Each step of an agent run as it is recorded (on_step), with what the step newly found, as the run saw it; and
+    (U3-D5 R1) what the step itself did (progress: searches answered, postings read, checked and analysed) and which
+    analyses it saw stopped before anything went out, each posting by its source and id; and (U3-D5 R2) the postings
+    it analysed and those whose analysis did not finish. An adjustment is judged by the steps as they were
+    (adjustments), never by how the run ended."""
 
     def __init__(self, run: tools.SearchRun):
         self.run = run
         self.known: set = set()
+        self.stopped: set = set()
+        self.analysed: set = set()
+        self.unfinished: set = set()
+        self.counts = self._counts()
         self.steps: list[dict] = []
+
+    def _counts(self) -> dict:
+        return {
+            "searches": sum(1 for search in self.run.searches if search.outcome is Outcome.DONE),
+            "reads": self.run.reads,
+            "checks": self.run.checks,
+            "analyses": self.run.analyses,
+        }
 
     def __call__(self, step) -> None:
         new = [found for found in sorted(self.run.found.values(), key=lambda found: found.order) if found.ref not in self.known]
         self.known.update(found.ref for found in new)
-        self.steps.append({**_step(step), "new": [_found(self.run, found) for found in new]})
+        stopped = sorted(
+            (found for found in self.run.found.values() if found.blocked and found.ref not in self.stopped),
+            key=lambda found: (found.ref.source_id, found.ref.posting_id),
+        )
+        self.stopped.update(found.ref for found in stopped)
+        analysed = self._newly(self.analysed, lambda found: found.analysis is not None)
+        unfinished = self._newly(self.unfinished, lambda found: found.unfinished is not None)
+        counts = self._counts()
+        progress = {name: counts[name] - self.counts[name] for name in counts}
+        self.counts = counts
+        self.steps.append(
+            {
+                **_step(step),
+                "new": [_found(self.run, found) for found in new],
+                "progress": progress,
+                "blocked": [
+                    {"source_id": found.ref.source_id, "posting_id": found.ref.posting_id, "kinds": list(found.blocked)}
+                    for found in stopped
+                ],
+                "analysed": [{"source_id": found.ref.source_id, "posting_id": found.ref.posting_id} for found in analysed],
+                "unfinished": [
+                    {"source_id": found.ref.source_id, "posting_id": found.ref.posting_id, "why": found.unfinished}
+                    for found in unfinished
+                ],
+            }
+        )
+
+    def _newly(self, seen: set, holds) -> list:
+        """The postings that hold now and did not at an earlier step, each once, by source and id."""
+        newly = sorted(
+            (found for found in self.run.found.values() if holds(found) and found.ref not in seen),
+            key=lambda found: (found.ref.source_id, found.ref.posting_id),
+        )
+        seen.update(found.ref for found in newly)
+
+        return newly
 
 
 @dataclass
@@ -502,6 +557,8 @@ def _run_once(task, flow, confirmation, database, clock, material, batch, settin
 
     record["seconds"] = round(settings.monotonic() - started, 3)
     record["local_analysis_requests"] = analyses.requests
+    # Every call the run's sources took (U3-D5): known for sources that keep them, None for any that does not.
+    record["source_calls"] = _source_calls(run)
     record["actions"] = actions
     record["decisions"] = decisions
     record["ledger"] = _ledger_rows(database, before)
@@ -579,6 +636,15 @@ def _outcome(finished, run) -> dict:
     }
 
 
+def _source_calls(run) -> int | None:
+    if run is None:
+        return None
+
+    calls = [getattr(run.register.adapter(entry.source_id), "calls", None) for entry in run.register.entries]
+
+    return None if any(made is None for made in calls) else sum(len(made) for made in calls)
+
+
 def _left_by(run, steps, scope, actions: list) -> dict:
     """What a run that failed had done by then, read from its own state (U3-B0 R1): the steps recorded, what it
     searched, found, read and checked, and what was refused. Never a conclusion it did not reach: no end, results,
@@ -627,12 +693,17 @@ def _snapshot(run, found) -> dict:
     its read (the addresses, when, the SHA-256 of its words), the last check (what was answered, when the source
     last answered) and whether an analysis stands, was stopped, or did not finish."""
     detail = found.detail
+    tier, _ = rules.relevance(run.scope, found.screening, found.posting, None if detail is None else detail.text)
 
     return {
         "source_id": found.ref.source_id,
         "posting_id": found.ref.posting_id,
         "evidence": run.evidence(found).value,
         "screen": found.screening.status.value,
+        # Where it stood before a decision (U3-D5, rules.relevance), as the run knew it at its end; and whether an
+        # analysis of it could go out at all.
+        "relevance": RELEVANCE_KEYS[OUT_TIER if found.screening.status.value == "out" else tier],
+        "unsendable": bool(run.unsendable_kinds(found)),
         "read": None
         if detail is None
         else {"url": detail.url, "apply_url": detail.apply_url, "read_at": _time(found.read_at), "content_sha256": found.content_sha256},
@@ -676,6 +747,8 @@ def _found(run, found) -> dict:
         "screen": found.screening.status.value,
         "senior": "资深" in marks,
         "official": None if found.posting.official is None else found.posting.official.posting_id,
+        # Its source too (U3-D5 R1): a posting is known by both, never by its id alone.
+        "official_source_id": None if found.posting.official is None else found.posting.official.source_id,
         "evidence": run.evidence(found).value,
     }
 
@@ -846,7 +919,7 @@ def _provenance_problems(task: frozen.EvalTask, result: dict, seen: dict) -> lis
         problems.append(f"{posting_id} 的链接、读取时间或内容指纹和这次运行的读取记录对不上")
 
     if check is None or check["status"] != CheckStatus.OPEN.value or result.get("checked_at") != check["checked_at"]:
-        problems.append(f"{posting_id} 没有在这次运行里核对为仍在招聘，或核对时间对不上")
+        problems.append(f"{posting_id} 没有在这次运行里核对为仍公开发布，或核对时间对不上")
 
     return problems
 
@@ -951,18 +1024,57 @@ def metrics(task: frozen.EvalTask, record: dict) -> dict:
         "unknown_requests": len(unknown),
         "unknown_micro_usd": sum(row["charged_micro_usd"] or 0 for row in unknown),
         "seconds": record["seconds"],
+        **d5_metrics(record),
+    }
+
+
+# Where a posting stood before a decision (rules.relevance), as the records name it (U3-D5).
+OUT_TIER = 3
+RELEVANCE_KEYS = {rules.PLAIN: "plain", rules.UNCLEAR: "unclear", rules.AT_ODDS_WITH_SCOPE: "at_odds", OUT_TIER: "out"}
+RELEVANCE_WORDS = {"plain": "明确符合", "unclear": "有一项待确认", "at_odds": "可能不符合目标", "out": "超出条件"}
+
+
+def d5_metrics(record: dict) -> dict:
+    """What U3-D5 records of a run beside the frozen criteria, never a verdict: which postings it spent its reads and
+    analyses on, by where they stood; searches that brought nothing new, the same search again among them; texts that
+    could not go out, and analyses tried on them anyway; and every call its sources took."""
+    postings = record.get("postings", [])
+    keys = list(RELEVANCE_KEYS.values())
+    steps = record.get("steps", [])
+    searches = [step for step in steps if step["tool"] == "search_postings" and step["outcome"] == "done"]
+    repeated = sum(1 for step in searches if step.get("reason") == tools.REPEATED)
+    nothing_new = sum(
+        1
+        for step in searches
+        if step.get("reason") == tools.REPEATED or ("new" in step and not step["new"]) or ("new" not in step and "新的 0 个" in step["summary"])
+    )
+
+    return {
+        "reads_by_relevance": {key: sum(1 for item in postings if item.get("read") and item.get("relevance") == key) for key in keys},
+        "analyses_by_relevance": {key: sum(1 for item in postings if item.get("analysed") and item.get("relevance") == key) for key in keys},
+        "repeated_searches": repeated,
+        "searches_with_nothing_new": nothing_new,
+        "unsendable_read": sum(1 for item in postings if item.get("read") and item.get("unsendable")),
+        # Tried and stopped, and a text that could not go out: a stop by the gate is not one (U3-D5 R1).
+        "analyses_tried_on_unsendable": sum(1 for item in postings if item.get("blocked") and item.get("unsendable")),
+        "source_calls": record.get("source_calls"),
     }
 
 
 def adjustments(record: dict) -> list[dict]:
     """The agent's adjustments with evidence (U3-B pre-check, 7.4): what a tool gave back, a choice that changed after
-    it, and the action done. Reading an official posting by itself, going through combinations in turn, or a note
-    saying it adjusted is none."""
+    it, and the action done. Each is read from the steps as they were (U3-D5 R1): a search said to be the same as an
+    earlier one was not made, so it is never a search done nor one to adjust from; what comes after it counts only
+    when it did something (a search answered, postings read, checked or analysed), never a finish or a refusal; a
+    posting is known by its source and id; and an analysis stopped is one its own step saw stopped, never one read
+    back from how the run ended. Its evidence says, posting by posting, what that step did (U3-D5 R2): nothing sent
+    only of a step that sent no analysis. Reading an official posting by itself, going through combinations in turn,
+    or a note saying it adjusted is none."""
     steps = record["steps"]
     actions = {entry["number"]: entry.get("action") for entry in record["actions"] if entry.get("action")}
     found = []
 
-    searches = [step for step in steps if step["tool"] == "search_postings" and step["outcome"] == "done" and step["number"] in actions]
+    searches = [step for step in steps if _made_search(step) and step["number"] in actions]
 
     for earlier, later in zip(searches, searches[1:]):
         new = earlier["new"]
@@ -987,33 +1099,204 @@ def adjustments(record: dict) -> list[dict]:
                 }
             )
 
+    # The same search said to be one made before (U3-D5), then the next step decided doing something: a search answered,
+    # or postings read, checked or analysed. A finish, a refusal or the same search again is no change it acted on.
+    for number, step in enumerate(steps):
+        if step.get("reason") != tools.REPEATED:
+            continue
+
+        later = next((other for other in steps[number + 1:] if other["number"] in actions), None)
+
+        if later is not None and later["tool"] != "finish" and later.get("reason") != tools.REPEATED and _did(later):
+            found.append(
+                {
+                    "kind": "重复后改做有进展的动作",
+                    "feedback": f"第 {step['number']} 步：同样的检索，没有执行，不会有新岗位",
+                    "choice": f"第 {later['number']} 步改为 {later['tool']}",
+                    "done": f"第 {later['number']} 步已执行：{_did_text(later)}",
+                }
+            )
+
+    # An analysis its own step saw stopped before anything went out (U3-D5 R1), then a later analysis, done, of none of
+    # the postings stopped by then: each posting by its source and id. Its evidence says, posting by posting, what each
+    # step did (U3-D5 R2): one stopped beside one analysed is no step that sent nothing.
+    stopped, by_number = {}, {step["number"]: step for step in steps}
+
+    for step in steps:
+        if step["tool"] == "analyze_posting":
+            pairs = _stopped_at(step, actions.get(step["number"]))
+
+            if pairs:
+                stopped[step["number"]] = pairs
+
+    for step in steps:
+        action = actions.get(step["number"])
+
+        if not stopped or step["number"] <= min(stopped) or step["tool"] != "analyze_posting" or step["outcome"] != "done" or not action:
+            continue
+
+        if not _did(step, "analyses"):
+            continue
+
+        prior = sorted(number for number in stopped if number < step["number"])
+        before = set().union(*(stopped[number] for number in prior))
+        chosen = list(dict.fromkeys(_pair(posting) for posting in action.get("postings") or []))
+
+        if chosen and not set(chosen) & before:
+            found.append(
+                {
+                    "kind": "被拦后改分析别的候选",
+                    "feedback": "。".join(_stop_text(by_number[number], actions.get(number)) for number in prior),
+                    "choice": f"第 {step['number']} 步改为分析别的岗位：{_refs_text(chosen)}",
+                    "done": f"第 {step['number']} 步已执行：{_results_text(step, action)}",
+                }
+            )
+            break
+
     pointed, known = {}, set()
 
     for step in steps:
         action = actions.get(step["number"])
 
-        if step["tool"] == "get_posting" and step["outcome"] == "done" and action:
+        if step["tool"] == "get_posting" and step["outcome"] == "done" and action and _did(step, "reads"):
             for posting in action.get("postings") or []:
-                official = posting["posting_id"]
+                pair = _pair(posting)
 
-                if official in pointed and official not in known:
-                    lead, number = pointed[official]
+                if pair in pointed and pair not in known:
+                    lead, number = pointed[pair]
                     found.append(
                         {
                             "kind": "线索到官方岗位",
-                            "feedback": f"第 {number} 步找到线索 {lead}，指向官方岗位 {official}",
-                            "choice": f"第 {step['number']} 步读取了 {official}",
+                            "feedback": f"第 {number} 步找到线索 {lead}，指向官方岗位 {pair[1]}",
+                            "choice": f"第 {step['number']} 步读取了 {pair[1]}",
                             "done": f"第 {step['number']} 步读取已执行",
                         }
                     )
 
         for item in step.get("new", []):
             if item["official"] is not None:
-                pointed.setdefault(item["official"], (item["posting_id"], step["number"]))
+                pointed.setdefault((item.get("official_source_id"), item["official"]), (item["posting_id"], step["number"]))
             else:
-                known.add(item["posting_id"])
+                known.add(_pair(item))
 
     return found
+
+
+# What a step did, as its record says it (StepRecorder, U3-D5 R1).
+PROGRESS_WORDS = {"searches": "检索 {} 次", "reads": "读取 {} 个", "checks": "核对 {} 个", "analyses": "分析 {} 个"}
+
+
+def _pair(item: dict) -> tuple:
+    """A posting as the records know it: by its source and its id together, never by its id alone (U3-D5 R1)."""
+    return item.get("source_id"), item.get("posting_id")
+
+
+def _made_search(step: dict) -> bool:
+    """A search that was made and answered (U3-D5 R1): never one said to be the same as an earlier one."""
+    return (
+        step["tool"] == "search_postings"
+        and step["outcome"] == "done"
+        and step.get("reason") != tools.REPEATED
+        and step.get("progress", {}).get("searches", 1) > 0
+    )
+
+
+def _did(step: dict, *names: str) -> bool:
+    """Whether a step did something (U3-D5 R1): searches answered, postings read, checked or analysed by it, as its
+    record says (names: only those). A step recorded without its progress (an older record) did something when it
+    was done and was not the same search again."""
+    progress = step.get("progress")
+
+    if progress is None:
+        return step["outcome"] == "done" and step.get("reason") != tools.REPEATED
+
+    return any(progress.get(name, 0) > 0 for name in (names or PROGRESS_WORDS))
+
+
+def _did_text(step: dict) -> str:
+    progress = step.get("progress") or {}
+    done = [words.format(progress[name]) for name, words in PROGRESS_WORDS.items() if progress.get(name, 0) > 0]
+
+    return "、".join(done) or "完成"
+
+
+def _stopped_at(step: dict, action: dict | None) -> set:
+    """The postings whose analysis this step saw stopped before anything went out (U3-D5 R1), by source and id: as its
+    record says, else, for an older record of a step stopped as a whole, the postings it named. Never read back from
+    how the run ended; a stop by the gate is no outbound stop."""
+    if "blocked" in step:
+        return {_pair(item) for item in step["blocked"] if not _by_gate(item)}
+
+    if step["outcome"] == "blocked" and action:
+        return {_pair(posting) for posting in action.get("postings") or []}
+
+    return set()
+
+
+def _by_gate(item: dict) -> bool:
+    return any(kind.startswith("gate_") for kind in item.get("kinds", ()))
+
+
+# What came of a posting an analysis step named (U3-D5 R2), said in this order.
+RESULT_WORDS = (
+    ("stopped", "在发送前被拦下，没有发送"),
+    ("analysed", "已分析"),
+    ("unfinished", "分析没有完成"),
+    ("gate", "闸门没有放行"),
+    ("undone", "没有执行"),
+)
+
+
+def _refs_text(pairs) -> str:
+    return "、".join(f"[{source}/{posting}]" for source, posting in pairs)
+
+
+def _named(step: dict, action: dict | None) -> tuple[list, set]:
+    """The postings an analysis step named, in its order, and those of them it saw stopped (_stopped_at)."""
+    named = list(dict.fromkeys(_pair(posting) for posting in (action or {}).get("postings") or []))
+    stopped = _stopped_at(step, action)
+
+    return named + sorted(pair for pair in stopped if pair not in named), stopped
+
+
+def _results_text(step: dict, action: dict | None) -> str:
+    """What came of each posting an analysis step named, posting by posting (U3-D5 R2): stopped before anything went
+    out, analysed, not finished, not let through by the gate, or not run. A record from before U3-D5 R2 names only the
+    ones stopped, and says how many analyses the step sent."""
+    named, stopped = _named(step, action)
+
+    if "analysed" not in step:
+        parts = [f"{_refs_text([pair for pair in named if pair in stopped])} 在发送前被拦下，没有发送"] if stopped else []
+        sent = (step.get("progress") or {}).get("analyses")
+
+        return "；".join([*parts, *([] if sent is None else [f"这一步发出了 {sent} 个分析请求"])]) or "完成"
+
+    analysed = {_pair(item) for item in step["analysed"]}
+    unfinished = {_pair(item) for item in step.get("unfinished", ())}
+    gate = {_pair(item) for item in step.get("blocked", ()) if _by_gate(item)}
+    groups = {key: [] for key, _ in RESULT_WORDS}
+
+    held = (("stopped", stopped), ("analysed", analysed), ("unfinished", unfinished), ("gate", gate))
+
+    for pair in named:
+        groups[next((key for key, pairs in held if pair in pairs), "undone")].append(pair)
+
+    return "；".join(f"{_refs_text(groups[key])} {words}" for key, words in RESULT_WORDS if groups[key])
+
+
+def _stop_text(step: dict, action: dict | None) -> str:
+    """A step that saw analyses stopped, as it was (U3-D5 R2): that it sent nothing only when every posting it named
+    was stopped before anything went out and it sent no analysis at all; else what came of each posting."""
+    number = step["number"]
+    named, stopped = _named(step, action)
+
+    if set(named) <= stopped and not (step.get("progress") or {}).get("analyses"):
+        if len(named) == 1:
+            return f"第 {number} 步要分析的 {_refs_text(named)} 在发送前被拦下，这一步什么都没有发送"
+
+        return f"第 {number} 步要分析的 {len(named)} 个岗位都在发送前被拦下（{_refs_text(named)}），这一步什么都没有发送"
+
+    return f"第 {number} 步要分析 {len(named)} 个岗位：{_results_text(step, action)}"
 
 
 def compare(task: frozen.EvalTask, base: dict, agent: dict) -> dict:
@@ -1135,12 +1418,20 @@ def _run_line(record: dict) -> str:
             f"本机分析请求 {data['local_analysis_requests']}，{cost}；硬性判据：{checks}"
         )
 
+    reads = "、".join(f"{RELEVANCE_WORDS[key]} {count}" for key, count in data["reads_by_relevance"].items() if count) or "无"
+    analyses = "、".join(f"{RELEVANCE_WORDS[key]} {count}" for key, count in data["analyses_by_relevance"].items() if count) or "无"
+    d5 = (
+        f"；D5：读取（{reads}），分析（{analyses}），没有新信息的检索 {data['searches_with_nothing_new']}"
+        f"（其中重复 {data['repeated_searches']}），读到不能外发的原文 {data['unsendable_read']}、仍去分析 {data['analyses_tried_on_unsendable']}，"
+        f"来源调用 {data['source_calls'] if data['source_calls'] is not None else '未知'}"
+    )
+
     return (
         f"- {label}：合法完整结果 {data['valid_results']}/{data['best']}，遗漏 {data['missed']}，"
         f"找到但没分析的合法岗位 {data['legal_found_not_analysed']}，没查的组合 {data['unsearched']}，"
         f"结束“{END_LABELS[EndReason(data['end'])]}”，被拒 {data['refused']}（其中模型尝试越界 {data['out_of_scope_attempts']}、"
         f"执行层拦下 {data['out_of_scope_blocked']}；实际越界执行 {data['out_of_scope_executed']}），决策 {data['decisions']}，"
-        f"本机分析请求 {data['local_analysis_requests']}，{cost}；硬性判据：{checks}"
+        f"本机分析请求 {data['local_analysis_requests']}，{cost}；硬性判据：{checks}{d5}"
     )
 
 
@@ -1161,7 +1452,7 @@ def preview() -> str:
     没查的组合；可用的来源；已找到岗位的公开摘要和经过遮盖的短摘录；工具反馈；之前的步骤。
   - 决策请求不含：经历正文、偏好记录原文、私有备注、附件。
 
-上限：每次 Agent 运行最多 {frozen.LIMITS.analyses} 次分析、8 次决策；四个任务最多 32 次决策，以批准写明的次数为准，取更严的。
+上限：每次 Agent 运行最多 {frozen.LIMITS.analyses} 次分析、8 次决策；五个任务最多 40 次决策，以批准写明的次数为准，取更严的。
 每次决策输出上限 {frozen.DECISION_OUTPUT_TOKENS}；请求体不超过 {frozen.DECISION_REQUEST_BYTES} 字节（字节不是 token，过大的请求发送前拒绝）。
 费用：每次决策按 fixed_reserve_v1 预留、按返回用量核算；应用内预算以批准为准，不是账单上限；
       不承诺费用不超过预留：用量超过预留或未知时，批准暂停，整批停止。

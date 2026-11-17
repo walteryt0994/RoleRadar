@@ -9,4 +9,10 @@ the loop deciding each next step (agent), the fixed flow it is compared with
 running one as a single parent task behind its service (runner). There is no
 page yet (A3) and no real source: every source a tool can call is synthetic,
 nothing goes over the network, and no real model has decided anything.
+
+U3-D2, offline and ahead of its batch, adds the Lever Postings API as a
+source (lever): its boards are registered unverified, so no tool calls them,
+and their transport sends nothing unless another is passed in. The one that
+does (lever_http) is imported by nothing in the product. Tests replay
+synthetic replies only.
 """

@@ -40,12 +40,19 @@ from app.library.content import PREFERENCES, parse_experience_form
 from app.library.identity import dev_users, ensure_dev_users
 from app.library.service import active_item, confirm_experience, create_document, create_experience
 
-TASKSET_VERSION = "1"
+# 2 (U3-D5): T5, a site listing full-time roles of unknown type before its internships, with a text too long to send and
+# a posting never answered when read.
+TASKSET_VERSION = "2"
 # What the comparison holds runs to (app.discovery.compare): a change of the criteria is a new version. 2 (U3-B0 R1):
 # a result must show the frozen provenance of its posting and the run's own read and check of it, and "nothing
 # suitable" is held to every posting found having a conclusion, as A1's finish has it. 3 (U3-Q2): with experiences
 # chosen, "enough" is held to a result that stands, as A1's finish has it since. Judge 2 stays what B1 was judged by.
-JUDGE_VERSION = "3"
+# 4 (U3-D5 R1): an adjustment is read from the steps as they were (compare.adjustments): a search said to be the same as
+# an earlier one is never one done; what follows it counts only when it did something; a posting is known by its
+# source and id; an analysis stopped is one its own step saw stopped. Two kinds were added with U3-D5. U3-D5 R2 only
+# says the evidence of a stop posting by posting, as the step did it (compare.adjustments): what counts as an
+# adjustment is unchanged, so the judge stays 4; the record holding what it says it from is record version 4.
+JUDGE_VERSION = "4"
 NOTICE_VERSION = "discovery-eval-1"
 LIMITS = Limits()
 # The decision settings of an evaluation run (U3-B pre-check, 7.3.1): this decider's own, never the product's
@@ -79,6 +86,7 @@ SENT_PREFERENCES = ("work_content_no", "must_haves")
 SOURCES = {
     "main": (synthetic.register, synthetic.GRANTS, synthetic.POSTINGS + synthetic.LEAD_POSTINGS),
     "paged": (synthetic.paged_register, synthetic.PAGED_GRANTS, synthetic.SENIOR_FIRST),
+    "mixed": (synthetic.mixed_register, synthetic.MIXED_GRANTS, synthetic.MIXED_POSTINGS),
 }
 
 
@@ -162,6 +170,7 @@ def _scope(cities, city_ideal, job_types, directions, targets, *, city_others=Ot
 
 PARTIAL, CONFLICT = "partial", "conflict"
 OUT, CLOSED, UNANSWERED, BLOCKED, LEAD = "超出条件", "核对时已关闭", "核对没有回答", "外发检查拦下", "待核验线索，不分析"
+UNREAD = "读取没有成功"
 
 TASKS = (
     EvalTask(
@@ -229,14 +238,59 @@ TASKS = (
             for item in synthetic.POSTINGS + synthetic.LEAD_POSTINGS
         ),
     ),
+    # U3-D5 (B2 as met with validation B): the roles first in the list say only "Full-time", so whether each is an
+    # internship is pending and each may stand as a result; half of them ask for years of experience; the
+    # internships, plainly in the scope, come after. What it measures beyond valid results is which postings a flow
+    # spends its reads and analyses on (compare.metrics), and that a text too long to send costs no analysis.
+    EvalTask(
+        "T5",
+        "实习目标：全职、资深岗位排在前面，实习岗位在后面；有超长原文和读不到的岗位",
+        _scope(("北京",), ("北京",), ("实习",), ("数据分析",), ("数据分析实习生",)),
+        "mixed",
+        legal=(
+            *(((f"m-full-{number}",), PARTIAL) for number in range(1, 13)),
+            (("m-intern-1",), PARTIAL),
+            (("m-intern-2",), PARTIAL),
+        ),
+        not_results=(("m-intern-long", BLOCKED), ("m-intern-unreadable", UNREAD)),
+    ),
 )
 TASK_IDS = tuple(task.id for task in TASKS)
 # taskset_digest() of everything above, the synthetic sources, the rules' version and the decision instructions and
-# settings, as frozen for U3-Q (2026-11-08: judge 3; the instructions say an analysis may name several postings and
-# when "enough" is refused; the tasks, rules, limits and settings unchanged). For runs from now on only: B1 ran and
-# was judged under 9aee3ffa… (judge 2, B-0 R1), which stays as it was; the first B-0 digest, a02cade6…, is void. Any
-# change to them makes another digest: a new freeze, under review.
-FROZEN_DIGEST = "6c1ccdba2b4dc021cfd098c6f2788b5296ca751a00ae933431756eb3c1e3deaf"
+# settings, as frozen for U3-D6-1 R3 (2026-11-16: the decision instructions say, with an example each, that
+# get_posting, check_posting and analyze_posting carry their sources inside postings with the top-level source_id and
+# every other field null, and that a type word such as Intern goes in job_type, never in keywords; kept short, about
+# 380 bytes more, so that a decision about many postings alike stays within its bound; the action schema and the
+# strict check of a field its tool does not take are unchanged; rules 8, the tasks, judge 4, limits and settings are
+# those of U3-D5 R2). For runs from now on only: no run, real or offline, was made under it before D6-1 R3's own
+# offline tests. U3-D5 R2's bfe1223d… stays with the runs made under it (D5's validation A, 2026-11-15, and the
+# decisions of D6-1's real run, 2026-11-15) and does not cover this version.
+#
+# Before it: as frozen for U3-D5 R2 (2026-11-15: rules 8 read years of work as asked only when they are a minimum, never
+# a ceiling, a range's upper end, a time window, a guess or years said not to be required; the tasks, judge 4, limits,
+# settings and decision instructions are those of U3-D5 R1). For runs from now on only: no run, real or offline, was
+# made under it before D5 R2's own offline runs. U3-D5 R1's bd772488… (rules 7) stays with D5 R1's offline evidence and
+# does not cover this version.
+#
+# Before it: as frozen for U3-D5 R1 (2026-11-15: rules 7 take seniority only from the role's title or years of work
+# asked of the applicant; judge 4 reads adjustments from the steps as they were; the decision instructions say that
+# scope values and combinations are written as JSON). U3-D5's 422c3fbf… (rules 6, judge 3) stays with D5's first
+# offline evidence and does not cover this version.
+#
+# Before it: as frozen for U3-D5 (2026-11-14: task set 2 adds T5; rules 6 order postings by relevance and read "N+ years"
+# as seniority; the decision instructions say how postings are grouped, that the same search from the same data is
+# not made again, and that a text that cannot go out is not analysed). For runs from now on only: no run, real or
+# offline, was made under it before D5's own offline runs. U3-D2-E4 F1's f52d53a5… (rules 5, task set 1) stays with
+# the runs made under it, validation B2 among them, and does not cover this version.
+#
+# Before it: as frozen for U3-D2-E4 F1 (2026-11-13: the decision instructions no longer let keywords hold a city, put
+# the city and the type in the filters first, and hold keywords to what a source says it matches; rules 5, the tasks,
+# judge, limits and settings are those of U3-D2-E3). For runs from now on only, and no run, real or offline, has been
+# made under it yet. Earlier digests stay with the evidence made under them and do not cover this version: U3-D2-E3's
+# f9e917cd… (rules 5; validation B's one real run, 2026-11-12, was launched under it), U3-D2-2's a82ff78f… (rules 4, no
+# run made), U3-Q's 6c1ccdba… (judge 3, offline only), B1's real run under 9aee3ffa… (judge 2, B-0 R1); the first B-0
+# digest, a02cade6…, is void. Any change to them makes another digest: a new freeze, under review.
+FROZEN_DIGEST = "5844dcf2b6012a02c08b99ef8d8c3bdf486b4d0b423d5512b7b5ca51b4d9fdf2"
 
 
 # --- the material, and what a run of a task is confirmed for ------------------------------------------
@@ -323,13 +377,21 @@ def derive_truth(task: EvalTask, database, material: Material, clock, provider) 
         run = tools.start(
             database, confirmation, approval_of(confirmation), provider, register=task.register(), clock=clock
         )
-        filters = {dimension.value: _allowed(task.scope, dimension, values) for dimension, values in (
+        # A fact the posting does not state is searched for as the scope asks (U3-D5): a dimension it does not leave
+        # open takes its first value, which a source keeping postings of unknown facts still answers with.
+        filters = {dimension.value: _allowed(task.scope, dimension, values) or _first(task.scope, dimension) for dimension, values in (
             (Dimension.CITY, posting.cities), (Dimension.JOB_TYPE, (posting.job_type,)), (Dimension.DIRECTION, (posting.direction,)),
         )}
         tools.search_postings(run, posting.ref.source_id, posting.title.split("（")[0], **filters)
         # A posting found twice (an original and its repost) is one: read and check both, analyse the one kept.
         group = [found.ref for found in run.group_of(posting.ref)]
         tools.get_posting(run, group)
+
+        if run.found[posting.ref].detail is None:
+            # Never answered when read (U3-D5): nothing to check or analyse.
+            others[posting_id] = UNREAD
+            continue
+
         checked = tools.check_posting(run, group)
 
         if checked.outcome is not Outcome.DONE or run.found[posting.ref].status is None:
@@ -351,6 +413,12 @@ def derive_truth(task: EvalTask, database, material: Material, clock, provider) 
             others[posting_id] = f"没有分析：{analysed.reason}"
 
     return legal, others
+
+
+def _first(scope: SearchScope, dimension: Dimension) -> str | None:
+    part = scope.of(dimension)
+
+    return None if part.others is Others.INCLUDED or not part.values else part.values[0]
 
 
 def _allowed(scope: SearchScope, dimension: Dimension, values) -> str | None:

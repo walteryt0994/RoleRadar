@@ -35,7 +35,7 @@ from app.live_gate import FIXED_RESERVE_V1, LiveRefused, LiveSetup
 from discovery_helpers import ref
 from test_live_gate import USED, answer, budget_terms
 
-T1, T2, T3, T4 = TASKS
+T1, T2, T3, T4, T5 = TASKS
 NEVER_SENT = (compare_tasks.PROJECT["actions"], compare_tasks.PROJECT["outcome"], compare_tasks.PROJECT["private_note"], compare_tasks.PROJECT["reflection"])
 
 
@@ -329,12 +329,13 @@ def test_a_discovery_approval_for_32_requests_reaches_the_comparison_through_the
 @pytest.mark.parametrize(
     "change, says",
     [
-        ({"ROLERADAR_LIVE_MAX_REQUESTS": "33"}, "请求次数上限要写成 1 到 32 之间的整数"),
+        # The ceiling of an approval for discovery alone: 40 since task set 2 (U3-D5), 32 before.
+        ({"ROLERADAR_LIVE_MAX_REQUESTS": "41"}, "请求次数上限要写成 1 到 40 之间的整数"),
         ({"ROLERADAR_LIVE_PURPOSES": "analysis, discovery"}, "请求次数上限要写成 1 到 20 之间的整数"),
         ({"ROLERADAR_LIVE_PURPOSES": "discovery,discovery"}, "请求次数上限要写成 1 到 20 之间的整数"),
         ({"ROLERADAR_LIVE_PURPOSES": "analysis, discovery", "ROLERADAR_LIVE_MAX_REQUESTS": "20"}, "只能写 discovery 一个用途"),
     ],
-    ids=["33-requests", "mixed-32", "repeated-32", "mixed-20"],
+    ids=["41-requests", "mixed-32", "repeated-32", "mixed-20"],
 )
 def test_the_command_takes_no_more_than_the_parser_allows(monkeypatch, tmp_path, capsys, change, says):
     monkeypatch.setattr(live_config, "make_live_provider", lambda *args, **kwargs: pytest.fail("a service was made"))
@@ -464,8 +465,8 @@ def test_a_result_shows_its_postings_frozen_provenance_and_the_runs_own_read_and
     unchecked = hard_checks(T1, {**good, "postings": [{**seen, "check": None}, *others]})
 
     assert f"{posting_id} 的链接、读取时间或内容指纹和这次运行的读取记录对不上" in unread
-    assert f"{posting_id} 没有在这次运行里核对为仍在招聘，或核对时间对不上" in unknown
-    assert f"{posting_id} 没有在这次运行里核对为仍在招聘，或核对时间对不上" in unchecked
+    assert f"{posting_id} 没有在这次运行里核对为仍公开发布，或核对时间对不上" in unknown
+    assert f"{posting_id} 没有在这次运行里核对为仍公开发布，或核对时间对不上" in unchecked
     assert f"{posting_id} 不是这次运行在这个来源找到的岗位" in hard_checks(T1, {**good, "postings": others})
 
 
@@ -643,7 +644,7 @@ def test_the_four_tasks_share_one_allowance_a_task_never_gets_a_fresh_one(offlin
     assert (len(first["ledger"]), len(second["ledger"]), len(service.calls)) == (used, 10 - used, 10)
     assert summary["gate"]["requests_used"] == 10 and second["end"] == EndReason.GATE.value
     assert summary["stopped"] == "闸门拦下了决策请求（requests）"
-    assert summary["not_run"] == ["T3", "T4"]
+    assert summary["not_run"] == ["T3", "T4", "T5"]
     assert "批次没有跑完" in summary["conclusion"]
 
 
@@ -656,7 +657,7 @@ def test_the_budget_is_one_for_the_whole_batch(offline, new_folder):
 
     assert len(service.calls) == 10 and summary["stopped"] == "闸门拦下了决策请求（cost）"
     assert (len(record(folder, "T1", "agent")["ledger"]), len(record(folder, "T2", "agent")["ledger"])) == (used, 10 - used)
-    assert summary["not_run"] == ["T3", "T4"]
+    assert summary["not_run"] == ["T3", "T4", "T5"]
 
 
 @pytest.mark.parametrize(
@@ -676,7 +677,7 @@ def test_a_decision_without_a_usable_answer_stops_the_batch_and_nothing_more_goe
     assert [entry["status"] for entry in first["decisions"]] == ["answered", "answered", status]
     assert first["end"] == EndReason.CANCELLED.value
     assert summary["stopped"] == f"服务没有给出可用的回答（{type(fault).__name__}）"
-    assert summary["not_run"] == ["T2", "T3", "T4"]
+    assert summary["not_run"] == ["T2", "T3", "T4", "T5"]
     # The task's fixed flow ran before; no flow of a later task started.
     assert sorted(path.name for path in (folder / "runs").iterdir()) == ["T1-agent.json", "T1-baseline.json"]
 
@@ -697,7 +698,7 @@ def test_usage_the_reservation_does_not_cover_pauses_the_approval_and_stops_the_
     (entry,) = record(folder, "T1", "agent")["decisions"]
 
     assert len(service.calls) == 1 and entry["paused"] == summary["gate"]["paused"] == paused
-    assert summary["stopped"] == f"批准已暂停（{paused}）" and summary["not_run"] == ["T2", "T3", "T4"]
+    assert summary["stopped"] == f"批准已暂停（{paused}）" and summary["not_run"] == ["T2", "T3", "T4", "T5"]
 
 
 def test_a_decision_over_the_evaluations_limit_is_never_sent_nor_reserved(offline, new_folder):
@@ -708,7 +709,7 @@ def test_a_decision_over_the_evaluations_limit_is_never_sent_nor_reserved(offlin
 
     assert service.calls == [] and first["ledger"] == [] and first["end"] == EndReason.GATE.value
     assert first["actions"][0]["status"] == "not_sent" and first["actions"][0]["reason"].endswith("超过 1000 字节的上限")
-    assert summary["stopped"].startswith("决策请求没有发出") and summary["not_run"] == ["T2", "T3", "T4"]
+    assert summary["stopped"].startswith("决策请求没有发出") and summary["not_run"] == ["T2", "T3", "T4", "T5"]
 
 
 def test_nothing_is_handed_on_once_the_batch_has_stopped():
@@ -767,7 +768,7 @@ def test_a_run_that_fails_keeps_what_it_had_done_is_never_compared_and_stops_the
 
     # The batch stopped there: no later task started, and a failed run is never "not worse".
     assert summary["stopped"] == "T1 的Agent没有正常运行：运行出错（RuntimeError）"
-    assert summary["failed"] == ["T1 的Agent：运行出错（RuntimeError）"] and summary["not_run"] == ["T2", "T3", "T4"]
+    assert summary["failed"] == ["T1 的Agent：运行出错（RuntimeError）"] and summary["not_run"] == ["T2", "T3", "T4", "T5"]
     assert sorted(path.name for path in (folder / "runs").iterdir()) == ["T1-agent.json", "T1-baseline.json"]
     (item,) = summary["comparisons"]
     assert (item["comparable"], item["agent_not_worse"], item["agent_better"]) == (False, False, False)
@@ -793,7 +794,7 @@ def test_a_run_failing_through_the_gate_keeps_its_ledger_and_nothing_more_goes_o
     assert used["unknown_micro_usd"] == failed["ledger"][2]["charged_micro_usd"] > 0
     # Nothing is left reserved, and nothing more went out: the batch stopped at the failure.
     assert (summary["gate"]["requests_used"], summary["gate"]["reserved_micro_usd"]) == (3, 0)
-    assert summary["stopped"] == "决策请求失败（RuntimeError）" and summary["not_run"] == ["T2", "T3", "T4"]
+    assert summary["stopped"] == "决策请求失败（RuntimeError）" and summary["not_run"] == ["T2", "T3", "T4", "T5"]
     assert summary["failed"] == ["T1 的Agent：运行出错（RuntimeError）"]
     assert f"闸门请求 3（已发出或可能已发出 3），核算 1892，费用待核实 {used['unknown_micro_usd']}（1 次）" in (folder / "report.md").read_text(encoding="utf-8")
 
@@ -813,7 +814,7 @@ def test_a_run_the_gate_does_not_let_start_fails_sends_nothing_and_stops_the_bat
     assert service.calls == [] and refused["ledger"] == [] and refused["decisions"] == [] and refused["steps"] == []
     assert (refused["status"], refused["end"]) == ("failed", None)
     assert refused["error"] == "闸门没有放行这次运行（这个服务商不是批准里写明的接收方。）"
-    assert summary["failed"] == [f"T1 的Agent：{refused['error']}"] and summary["not_run"] == ["T2", "T3", "T4"]
+    assert summary["failed"] == [f"T1 的Agent：{refused['error']}"] and summary["not_run"] == ["T2", "T3", "T4", "T5"]
     assert summary["gate"]["requests_used"] == 0 and summary["conclusion"].startswith("运行失败")
     assert "- Agent：运行失败（闸门没有放行这次运行" in (folder / "report.md").read_text(encoding="utf-8")
 
@@ -826,7 +827,7 @@ def test_a_service_not_made_stops_the_batch_before_any_run_and_still_leaves_a_re
     summary = run_batch(folder, live=LiveSetup(live(ReplayService([])).terms, FIXED_RESERVE_V1, unmade))
 
     assert summary["failed"] == [summary["stopped"]] == ["准备评估时出错（AIProviderConfigError）"]
-    assert summary["not_run"] == ["T1", "T2", "T3", "T4"] and summary["comparisons"] == []
+    assert summary["not_run"] == ["T1", "T2", "T3", "T4", "T5"] and summary["comparisons"] == []
     assert list((folder / "runs").iterdir()) == []
     # The gate opened on the folder's own ledger and closed with nothing reserved or sent.
     assert (summary["gate"]["requests_used"], summary["gate"]["reserved_micro_usd"]) == (0, 0)
@@ -876,7 +877,8 @@ def test_judge_3_holds_enough_with_experiences_chosen_to_a_complete_result(offli
     good = record(folder, "T1", "agent")
     claim = "写了“够了”，但没有完整的分析结果"
 
-    assert compare_tasks.JUDGE_VERSION == "3"
+    # Judge 3's hold stays in judge 4 (U3-D5 R1 changed how adjustments are read, nothing of this).
+    assert compare_tasks.JUDGE_VERSION == "4"
     assert (good["personalised"], good["end"], bool(good["results"])) == (True, "enough", True)
     assert claim not in hard_checks(T1, good)
     assert claim in hard_checks(T1, {**good, "results": []})
@@ -938,7 +940,7 @@ def test_b1_t1_shaped_steps_analysing_three_with_one_decision_give_three_results
     assert [result["posting_id"] for result in as_b1["results"]] == ["c-bj-analyst"]
     assert sorted(result["posting_id"] for result in with_q1["results"]) == ["c-bj-analyst", "c-choice", "c-sh-analyst"]
     assert [line.endswith("，新增 0 个岗位") for line in three.observations[4].history] == [False, False, True, True]
-    assert "其中已核对仍在招聘、还没有分析的：4 个；分析次数还剩 3 个。" in three.observations[6].text
+    assert "其中核对时仍公开发布、还没有分析的：4 个；分析次数还剩 3 个。" in three.observations[6].text
 
 
 def test_b1_t3_shaped_steps_end_refused_without_a_result_and_analysing_at_once_gives_results(new_folder):

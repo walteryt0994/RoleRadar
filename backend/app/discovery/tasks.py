@@ -35,6 +35,7 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from enum import StrEnum
 
 from app.discovery.agent import MAX_DECISIONS, Finished, TraceStep
@@ -115,6 +116,13 @@ class DiscoveryTask:
     steps: tuple[TraceStep, ...] = ()
     # What the page entered and reviewed for this search, kept to show it again; the store never reads it.
     draft: object = None
+    # The analyses the user kept from it, by (source id, posting id), set once each when the keep is committed and
+    # never cleared (U3-D3b): one kept and deleted for good since is never kept again from this search.
+    kept_analyses: dict = field(default_factory=dict)
+    # When it started, by the app's clock (U3-D4b-2): which of two searches is the later, for current recommendations.
+    started_at: datetime | None = None
+    # What became of its current recommendations (app.discovery.records.Retention), or None while nothing was said.
+    retention: object = None
 
     @property
     def seconds(self) -> float:
@@ -170,7 +178,9 @@ class DiscoveryTaskStore:
 
             return replace(task) if task else None
 
-    def begin(self, task_id: str, owner_id: str, session: str, fingerprint: str) -> tuple[Start, DiscoveryTask | None]:
+    def begin(
+        self, task_id: str, owner_id: str, session: str, fingerprint: str, *, started_at: datetime | None = None
+    ) -> tuple[Start, DiscoveryTask | None]:
         """Start a task once, with the fingerprint of the confirmation kept for it: the only way to RUNNING."""
         with self._lock:
             self._sweep()
@@ -190,6 +200,7 @@ class DiscoveryTaskStore:
 
             task.stage, task.approval = Stage.RUNNING, SearchApproval(task.fingerprint)
             task.started = task.touched = self.clock()
+            task.started_at = started_at
 
             return Start.STARTED, replace(task)
 
@@ -273,23 +284,37 @@ class DiscoveryTaskStore:
         finished: Finished | None = None,
         problem: str | None = None,
         problems: tuple[str, ...] = (),
-    ) -> None:
+    ) -> DiscoveryTask | None:
         """How the search ended, or why it did not run: said once, by the executor holding the task; anything else is
-        ignored. Taken or dropped under the lock, against the task as it is now (see the module docstring)."""
+        ignored. Taken or dropped under the lock, against the task as it is now (see the module docstring). A copy of
+        the task when this made it DONE, else None: DONE says only that it was said in time, not that it went well."""
         with self._lock:
             task = self._tasks.get(task_id)
 
             if task is None or task.over or worker is None or task.worker != worker:
-                return
+                return None
 
             task.over, task.touched = True, self.clock()
 
             if self._in_time(task):
                 task.stage = Stage.DONE
                 task.finished, task.problem, task.problems = finished, problem, problems
-            elif finished is not None and finished.outcome.end is STOP_ENDS.get(task.cancelled_by):
+
+                return replace(task)
+
+            if finished is not None and finished.outcome.end is STOP_ENDS.get(task.cancelled_by):
                 # Stopped, and the search ended for that very stop: what it had found by then may be shown.
                 task.finished = finished
+
+            return None
+
+    def note_retention(self, task_id: str, retention: object) -> None:
+        """What became of a finished search's current recommendations, for its page (U3-D4b-2): said once."""
+        with self._lock:
+            task = self._tasks.get(task_id)
+
+            if task is not None and task.stage is Stage.DONE and task.retention is None:
+                task.retention = retention
 
     def cancel(self, task_id: str, owner_id: str, session: str) -> DiscoveryTask | None:
         with self._lock:
@@ -303,6 +328,16 @@ class DiscoveryTaskStore:
                 self._cancel(task, "user")
 
             return replace(task)
+
+    def note_kept_analysis(self, task_id: str, owner_id: str, session: str, ref: tuple[str, str], record_id: str) -> None:
+        """Remember an analysis the user kept from this search, by (source id, posting id), once and for good (U3-D3b):
+        one kept and deleted for good since is never kept again from it. A new dict each time, so a copy handed out
+        before never changes under its reader."""
+        with self._lock:
+            task = self._mine(task_id, owner_id, session)
+
+            if task is not None and ref not in task.kept_analyses:
+                task.kept_analyses = {**task.kept_analyses, ref: record_id}
 
     def discard(self, task_id: str, owner_id: str, session: str) -> None:
         """Forget a search still waiting for its confirmation, replaced by a new review: its old page starts nothing."""

@@ -1211,7 +1211,8 @@ def test_postings_only_alike_stay_two_candidates_and_a_stated_job_number_makes_o
 
     assert (kept.ref, apart.ref, outcome.merged) == (ref("c-bj-analyst"), ref("c-bj-analyst-ops"), (ref("c-bj-analyst-repost"),))
     assert kept.deadlines == ((ref("c-bj-analyst"), date(2026, 11, 30)), (ref("c-bj-analyst-repost"), date(2026, 12, 10)))
-    assert "和 [synthetic-careers/c-bj-analyst-ops] 公司、标题、城市相同，但没有可靠依据确认是同一个岗位，分开列出" in kept.notes
+    # One note for the postings alike, its meaning and count first (U3-D6-0 R1, F3), so a summary cutting it short keeps both.
+    assert kept.notes == ("另有 2 个公司、标题、城市都相同的岗位：无可靠依据确认是同一个，分开列出（如 [synthetic-careers/c-bj-analyst-ops]、[synthetic-leads/l-bj-analyst]）",)
     assert [lead.ref for lead in outcome.leads] == [ref("l-bj-analyst", LEADS)]
 
 

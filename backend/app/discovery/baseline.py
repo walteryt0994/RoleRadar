@@ -3,10 +3,12 @@
 It searches the confirmed scope once: at the first source it may ask that gives official postings (else the first
 it may ask), for the scope's first combination, any dimension open to other values left open, with the first
 direction listed (else the first title) as its words; the agent's simulated decider starts the same way. Of what it
-found within the scope it reads and checks the first ones, ideal values first, as many as it may analyse; analyses
-those checked open; and finishes: "enough" when it analysed any, "nothing suitable" otherwise, which the rules turn
-into what it really was (A1 finish), and "enough" when they refuse that. It adjusts nothing: no second search, no
-other words, combination or source, and no reading of the postings leads point to. It makes no decision and so
+found within the scope it reads and checks the first ones, in the order the agent is shown them (rules.relevance,
+U3-D5: plainly in the scope first, ideal values first within), as many as it may analyse; analyses those checked
+open; and finishes: "enough" when it analysed any, "nothing suitable" otherwise, which the rules turn into what it
+really was (A1 finish). When the rules refuse the end it claims, its steps are used up: it ends at its limit, as the
+agent does when its decisions are (Q-L1, U3-D5), never by claiming another end. It adjusts nothing: no second search,
+no other words, combination or source, and no reading of the postings leads point to. It makes no decision and so
 sends none; its steps go through the very tools and checks the agent's do (agent.execute).
 """
 import json
@@ -18,6 +20,7 @@ from app.discovery.agent import (
     TraceStep,
     combinations,
     execute,
+    failed_lines,
     first_words,
     make_action,
     params,
@@ -41,7 +44,10 @@ def run_baseline(run: SearchRun) -> Finished:
 
         result = execute(run, action)
         steps.append(
-            TraceStep(len(steps) + 1, action.tool, params(action), result.outcome.value, summary_line(result.summary), safe_note(action.note), result.reason)
+            TraceStep(
+                len(steps) + 1, action.tool, params(action), result.outcome.value, summary_line(result.summary),
+                safe_note(action.note), result.reason, result.failure, failed_lines(result),
+            )
         )
 
         return result
@@ -63,7 +69,7 @@ def run_baseline(run: SearchRun) -> Finished:
         found = run.found[ref]
 
         if run.personalised and found.detail is not None and found.status is CheckStatus.OPEN:
-            do(make_action(Tool.ANALYZE, postings=[ref], note="固定流程：分析核对过仍在招聘的岗位"))
+            do(make_action(Tool.ANALYZE, postings=[ref], note="固定流程：分析核对时仍公开发布的岗位"))
 
     if not run.stopping():
         analysed = any(found.analysis is not None for found in run.found.values())
@@ -71,7 +77,9 @@ def run_baseline(run: SearchRun) -> Finished:
         result = do(make_action(Tool.FINISH, claim=claim, note="固定流程：结束"))
 
         if result.outcome is Outcome.REFUSED and not run.stopping():
-            do(make_action(Tool.FINISH, claim=EndReason.ENOUGH, note="固定流程：结束理由没有被接受，以够了结束"))
+            # Its steps are used up and no end it may claim is true (Q-L1): it ends at its limit, as the agent does
+            # when its decisions are, never by claiming "enough" without a result.
+            run.end(EndReason.LIMIT)
 
     if not run.stopping():
         raise RuntimeError("the fixed flow stopped before the search ended")
@@ -96,10 +104,17 @@ def _first_search(run: SearchRun) -> dict:
 
 
 def _ranked(run: SearchRun) -> list[Found]:
-    """The official postings found within the scope, one of each posting found twice: ideal values first, then as found."""
+    """The official postings found within the scope, one of each posting found twice, in the order the agent is shown
+    them (U3-D5): plainly in the scope, pending, at odds with what it asks for; ideal values first within; then as
+    found. Its input is the agent's."""
     kept = [run.kept(group) for group in run.groups()]
     usable = [
         found for found in kept if found.screening.status is not Screen.OUT and run.evidence(found) is EvidenceLevel.OFFICIAL
     ]
 
-    return sorted(usable, key=lambda found: (-rules.ideal_hits(run.scope, found.posting), found.order))
+    def order(found: Found):
+        tier, _ = rules.relevance(run.scope, found.screening, found.posting, found.detail.text if found.detail else None)
+
+        return tier, -rules.ideal_hits(run.scope, found.posting), found.order
+
+    return sorted(usable, key=order)

@@ -54,5 +54,6 @@ def test_unexpected_run_error_still_produces_report_and_stops(tmp_path):
 
     folder = tmp_path / "failed"
     summary = compare.run_batch(folder, decider_for=Broken)
-    assert summary["stopped"] and summary["not_run"] == ["T2", "T3", "T4"]
+    # Task set 2 (U3-D5) adds T5: it is not run either.
+    assert summary["stopped"] and summary["not_run"] == ["T2", "T3", "T4", "T5"]
     assert (folder / "report.md").is_file()

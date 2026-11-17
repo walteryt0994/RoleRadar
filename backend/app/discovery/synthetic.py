@@ -20,7 +20,7 @@ asked for, and finds its interns only when the type is among the words
 searched for. It is the frozen case of the A2 pre-check (section 1), where a
 search has to adjust to its own results.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 
 from app.discovery.contracts import CheckAnswer, CheckStatus, EvidenceLevel, Posting, PostingDetail, PostingRef
@@ -33,10 +33,13 @@ BASIS = "合成数据，只在测试和本机预览中使用，不联网"
 CHECKED_ON = "2026-11-06"
 # A careers site whose type filter does not work (U3-A2, below).
 PAGED = "synthetic-paged"
+# A careers site listing full-time roles of unknown type before its internships (U3-D5, below).
+MIXED = "synthetic-mixed"
 ADDRESSES = {
     CAREERS: "https://careers.synthetic.invalid/postings",
     LEADS: "https://leads.synthetic.invalid/items",
     PAGED: "https://paged.synthetic.invalid/postings",
+    MIXED: "https://mixed.synthetic.invalid/postings",
 }
 ENTRIES = (
     SourceEntry(CAREERS, "合成招聘官网", Access.SYNTHETIC, Permission.VERIFIED, EvidenceLevel.OFFICIAL, BASIS, CHECKED_ON),
@@ -271,3 +274,73 @@ class PagedSource(SyntheticSource):
 def paged_register() -> Register:
     """The register of the senior-first case: one official source, its type filter not working."""
     return Register((PAGED_ENTRY,), {PAGED: PagedSource(PAGED, SENIOR_FIRST)})
+
+
+# --- U3-D5: a site listing full-time roles before its internships ------------------------------------------------------
+#
+# As validation B met it (B2, D5 pre-check): the roles first in its list say only "Full-time" for their type, so whether
+# they are internships is pending, and half of them ask for years of experience; its internships come after them. One
+# internship's text is longer than an analysis may send, and one is never answered when read. Its search keeps a
+# posting whose type is not known whatever type is asked for, as Lever's matching does: unknown facts never leave a
+# posting out.
+
+MIXED_ENTRY = SourceEntry(
+    MIXED, "合成招聘官网（全职在前、实习在后）", Access.SYNTHETIC, Permission.VERIFIED, EvidenceLevel.OFFICIAL, BASIS, CHECKED_ON
+)
+MIXED_GRANTS = (MIXED_ENTRY.grant,)
+YEARS = "岗位要求：\n- 3 年以上数据分析工作经验\n- 精通 SQL"
+# Longer than U2 lets one analysis send (app.job_analysis.scope.MAX_POSTING_CHARS): never cut to fit.
+LONG_BODY = "岗位要求：\n- 熟练使用 Python 进行数据处理\n\n" + "工作内容：整理业务数据，制作每周报表，和团队一起复盘指标。\n" * 320
+UNREADABLE = frozenset({"m-intern-unreadable"})
+
+
+def _full_time(number: int) -> SyntheticPosting:
+    item = _posting(MIXED, f"m-full-{number}", "数据分析师", f"合成零售{number}", ("北京",), YEARS if number % 2 else ANALYST)
+
+    return replace(
+        item,
+        posting=replace(item.posting, job_type=None, type_stated="Full-time"),
+        text=item.text.replace(" · 实习\n", " · Full-time\n", 1),
+    )
+
+
+MIXED_POSTINGS = (
+    *(_full_time(number) for number in range(1, 13)),
+    _posting(MIXED, "m-intern-1", "数据分析实习生", "合成数据科技", ("北京",), ANALYST),
+    _posting(MIXED, "m-intern-long", "数据分析实习生", "合成传媒", ("北京",), LONG_BODY),
+    _posting(MIXED, "m-intern-unreadable", "数据分析实习生", "合成物流", ("北京",), SQL_ONLY),
+    _posting(MIXED, "m-intern-2", "数据分析实习生", "合成出行", ("北京",), PYTHON_ONLY),
+)
+
+
+class MixedSource(SyntheticSource):
+    """The site above: a posting of unknown type is kept whatever type is asked for; one posting is never read."""
+
+    def search(self, query: Query, timeout: float) -> tuple[Posting, ...]:
+        self.calls.append(("search", query))
+        self.timeouts.append(timeout)
+        self._fault("search", None)
+        terms = query.keywords.split()
+
+        return tuple(
+            item.posting
+            for item in self._postings.values()
+            if (query.city is None or query.city in item.posting.cities)
+            and (query.job_type is None or item.posting.job_type in (None, query.job_type))
+            and (query.direction is None or query.direction == item.posting.direction)
+            and any(term in item.posting.title for term in terms)
+        )
+
+    def read(self, ref: PostingRef, timeout: float) -> PostingDetail:
+        if ref.posting_id in UNREADABLE:
+            self.calls.append(("read", ref.posting_id))
+            self.timeouts.append(timeout)
+
+            raise SourceTimeout("the synthetic site never answers a read of this posting")
+
+        return super().read(ref, timeout)
+
+
+def mixed_register() -> Register:
+    """The register of the D5 case: one official source, full-time roles listed before its internships."""
+    return Register((MIXED_ENTRY,), {MIXED: MixedSource(MIXED, MIXED_POSTINGS)})

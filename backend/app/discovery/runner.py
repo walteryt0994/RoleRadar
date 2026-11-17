@@ -26,6 +26,13 @@ may be taken (DiscoveryTaskStore.finish).
 
 Progress (U3-A3): each step the agent records goes to the store with the holder's token (DiscoveryTaskStore.progress),
 which keeps it only while the task runs within its time; the running page shows those.
+
+Approvals of validation B (U3-D2-E3): a search with a real model and the real source is given its binding
+(app.discovery.model_live.Binding). Once the search has entered the gate, and before anything is sent, the binding
+claims both approvals for it, once and for good; one it may not claim keeps the search from running
+(APPROVALS + its code), with nothing sent. Then, right before each request is handed on, after the gate's own checks,
+the binding says whether it may go: one it keeps back ends the search at the gate, and nothing is sent after it.
+Analyses tried are noted as metadata through diagnose (app.discovery.tools.SearchRun.note_analysis).
 """
 import logging
 import os
@@ -33,6 +40,7 @@ from collections.abc import Callable, Mapping
 
 from app.ai_provider import AIProvider, AIProviderConnectionError, SendState
 from app.discovery import agent, baseline, tools
+from app.discovery.contracts import EndReason
 from app.discovery.sources import Register
 from app.discovery.tasks import DiscoveryTaskStore, Flow
 from app.job_analysis.service import LiveService, ProviderUnavailable
@@ -47,6 +55,8 @@ START_REFUSED = "start_refused"
 PROVIDER_UNAVAILABLE = "provider_unavailable"
 STOPPED = "stopped"
 INTERNAL_ERROR = "internal_error"
+# The approvals of validation B could not be claimed for the search (followed by the binding's code).
+APPROVALS = "approvals_"
 # What could switch LangSmith tracing on, by the start of a variable's name.
 TRACING_PREFIXES = ("LANGSMITH_", "LANGCHAIN_")
 
@@ -58,6 +68,15 @@ def tracing_variables(environ: Mapping[str, str]) -> tuple[str, ...]:
 
 class ParentStopped(Exception):
     """The parent task may not hand on another request: the search ended or stopped, or the store stopped the task."""
+
+
+class ApprovalsHeld(Exception):
+    """The approvals of validation B may not be used for this search (app.discovery.model_live): code says why, in a
+    word; nothing was sent."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
 
 
 class RequestKeptBack(AIProviderConnectionError):
@@ -85,9 +104,25 @@ class _Sending:
         self._task_id = task_id
         self.run: tools.SearchRun | None = None
         self.sends = Sends()
+        # Validation B's binding (U3-D2-E3), once it holds both approvals for the search: asked last of all.
+        self.binding = None
 
     def hand_on(self, call: Call) -> None:
-        if (self.run is not None and self.run.stopping()) or not self._store.hand_on(self._task_id, call):
+        if self.run is not None and self.run.stopping():
+            raise ParentStopped()
+
+        if self.binding is not None:
+            # Before the store counts it as out: a request kept back here is not out, and ends the search.
+            refusal = self.binding.refusal()
+
+            if refusal is not None:
+                if self.run is not None:
+                    self.run.end(EndReason.GATE)
+                    self.run.gate_note = refusal[1]
+
+                raise ParentStopped()
+
+        if not self._store.hand_on(self._task_id, call):
             raise ParentStopped()
 
     def came_back(self, call: Call, delivered: Delivery) -> None:
@@ -136,11 +171,20 @@ def run_search(
     clock,
     decider_for: Callable[[AIProvider], agent.Decider],
     environ: Mapping[str, str] | None = None,
+    binding=None,
+    diagnose: Callable[[dict], None] | None = None,
+    retain: Callable[[object], None] | None = None,
+    trajectory=None,
 ) -> None:
     """Run a search the store has started, as its one executor; what came of it goes back to the store only.
 
     decider_for(provider) gives the agent's decider: the simulated one, a model's through this provider, or a
-    test's script. The fixed flow takes none.
+    test's script. The fixed flow takes none. binding holds validation B's approvals for this search (bound once
+    the gate is entered, asked before every request); a search under it also ends as soon as its source can send
+    nothing more (tools.SearchRun.sources_stopped), never asking a model whether to. diagnose notes each analysis
+    tried, as metadata. retain, when given, is called once with the task this executor's word made DONE, to hold its
+    current recommendations if the user ticked it (U3-D4b-2). trajectory, when given (the D6 batch's,
+    app.discovery.batch_live.Trajectory), keeps the search's compact trajectory once it ends, whatever came of it.
     """
     claimed = store.claim(task_id)
 
@@ -162,6 +206,11 @@ def run_search(
 
     try:
         with provider_for(task, sending) as provider:
+            if binding is not None:
+                # Inside the gate, before anything is sent: both approvals claimed for this search, or none of it runs.
+                binding.bind()
+                sending.binding = binding
+
             guarded = Guarded(provider)
             run = tools.start(
                 database,
@@ -172,20 +221,38 @@ def run_search(
                 clock=clock,
                 cancel=_Stops(store, task_id),
                 monotonic=store.clock,
+                diagnose=diagnose,
+                stop_with_sources=binding is not None,
             )
             # The search's time is the task's: the same clock, from the same start.
             run.deadline = task.started + task.seconds
             sending.run = run
 
+            if trajectory is not None:
+                trajectory.start(run)
+
             if task.flow is Flow.BASELINE:
                 finished = baseline.run_baseline(run)
             else:
-                finished = agent.run_agent(
-                    run, decider_for(guarded), on_step=lambda step: store.progress(task_id, worker, step)
-                )
+                decider = decider_for(guarded)
+
+                if trajectory is not None:
+                    decider = trajectory.decider(decider)
+
+                def on_step(step):
+                    store.progress(task_id, worker, step)
+
+                    if trajectory is not None:
+                        trajectory.step(step)
+
+                finished = agent.run_agent(run, decider, on_step=on_step)
     except tools.StartRefused as refused:
         # Nothing was sent: the confirmation does not hold as it is now.
         problem, problems = START_REFUSED, refused.problems
+    except ApprovalsHeld as held:
+        # Nothing was sent: an approval of validation B may not be used for this search.
+        logger.error("a search did not start: its approvals may not be used (%s)", held.code)
+        problem = f"{APPROVALS}{held.code}"
     except LiveBlocked as blocked:
         # The gate let the search's task no further before it began (another task, its purpose, closed).
         problem = f"gate_{blocked.reason.value}"
@@ -198,4 +265,19 @@ def run_search(
         logger.error("a search failed unexpectedly (%s)", type(error).__name__)
         problem = INTERNAL_ERROR
 
-    store.finish(task_id, worker=worker, finished=finished, problem=problem, problems=problems)
+    if trajectory is not None:
+        try:
+            trajectory.finish(finished, problem)
+        except Exception as error:  # the search's outcome stands; its trajectory is left out
+            logger.error("a search's trajectory was not kept (%s)", type(error).__name__)
+
+    done = store.finish(task_id, worker=worker, finished=finished, problem=problem, problems=problems)
+
+    if done is not None and retain is not None:
+        # Once, by the one executor whose word made it DONE (U3-D4b-2); whether its recommendations are held is the
+        # retention's to judge again (app.discovery.records.retention_problem), and taking a search twice changes
+        # nothing (JobRecommendationLatest).
+        try:
+            retain(done)
+        except Exception as error:  # the search's outcome stands; what was held is said by the retention, or nothing
+            logger.error("current recommendations were not held (%s)", type(error).__name__)

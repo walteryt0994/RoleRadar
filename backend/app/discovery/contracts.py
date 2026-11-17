@@ -173,6 +173,11 @@ class Posting:
     official: PostingRef | None = None
     # The employer's own number for the job (职位编号), when its source states one.
     identity: str | None = None
+    # Its places and job type as the source wrote them, when it wrote any (U3-D2-2): kept apart from the cities and
+    # the type read from them, so a fact not given and one given but not read are told apart. What is not read stays
+    # here as written, never guessed into a city or a type.
+    places_stated: tuple[str, ...] = ()
+    type_stated: str | None = None
 
 
 @dataclass(frozen=True)
@@ -221,6 +226,20 @@ class Outcome(StrEnum):
 
 
 @dataclass(frozen=True)
+class SearchFix:
+    """A search refused for naming in its keywords what its source matches by a filter (U3-D2-E4 F1), as it may be
+    made again: the same source and filters, the keywords less those words. Never wider than the search refused:
+    nothing left open that it narrowed, nothing of the scope changed. Only told; it is made again by a decision or
+    not at all."""
+
+    source_id: str
+    keywords: str
+    city: str | None
+    job_type: str | None
+    direction: str | None
+
+
+@dataclass(frozen=True)
 class ToolResult:
     tool: Tool
     outcome: Outcome
@@ -230,6 +249,15 @@ class ToolResult:
     # search's own records (SearchRun.outcome), never from here.
     summary: str
     reason: str | None = None
+    # Why a source's call failed, for the pages only (app.discovery.sources.failure_text, U3-D2-E2): fixed words,
+    # never told to the next decision.
+    failure: str | None = None
+    # R10 (U3-D6-3 F3): the postings of a read or a check whose call did not come to an answer taken, each with why
+    # in fixed words, for the pages only: a step's failure belongs to these, never to the step's first line.
+    failed: tuple[tuple[PostingRef, str], ...] = ()
+    # A refused search as it may be made again (U3-D2-E4 F1), when it was refused for keywords its source matches by
+    # a filter and words are left; its summary says the same in words.
+    fix: SearchFix | None = None
 
 
 class EndReason(StrEnum):
@@ -344,6 +372,19 @@ class Result:
     first_checks: tuple[str, ...]
     notes: tuple[str, ...]
     analysis: AnalysisResult
+    # Its places and type as read, and as the source wrote them (U3-D2-3): pages tell a fact not given from one
+    # given and not read.
+    cities: tuple[str, ...] = ()
+    job_type: str | None = None
+    places_stated: tuple[str, ...] = ()
+    type_stated: str | None = None
+    # Its checks as the search ended (U3-D3a F1), each said as it is and none guessed from another: its status then
+    # (OPEN for a result), what its source answered at checked_at, and when its latest check got no answer, if one did.
+    status: CheckStatus | None = None
+    answered_status: CheckStatus | None = None
+    check_failed_at: datetime | None = None
+    # When its analysis was taken, by the search's clock (U3-D3b): what a saved analysis says of when it was made.
+    analysed_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -365,6 +406,16 @@ class Lead:
     checked_at: datetime | None
     why: str
     notes: tuple[str, ...] = ()
+    # Its type as read, and its places and type as the source wrote them (U3-D2-3), as for a result.
+    job_type: str | None = None
+    places_stated: tuple[str, ...] = ()
+    type_stated: str | None = None
+    # Its checks as the search ended (U3-D3a F1), as for a result: its status then (OPEN, CLOSED, UNKNOWN, or None if
+    # never checked), what its source answered at checked_at (a lead's last answer may have been CLOSED before a check
+    # without an answer), and when its latest check got no answer. Never read from why.
+    status: CheckStatus | None = None
+    answered_status: CheckStatus | None = None
+    check_failed_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -380,6 +431,12 @@ class SearchRecord:
     back only its own postings, so these are a source anomaly: never taken,
     only counted, no id of theirs kept. A search that got them back did not
     find nothing either.
+
+    For a source answering from its whole list (U3-D2-1): listed, how many
+    postings that list held as read; partial, that it was read only in part,
+    so what was found is taken and the combination is not covered; reused,
+    that it was answered from the list read earlier in the same search, with
+    nothing asked of the source again.
     """
 
     source_id: str
@@ -389,6 +446,22 @@ class SearchRecord:
     outcome: Outcome
     unverifiable: int = 0
     foreign: int = 0
+    listed: int | None = None
+    partial: bool = False
+    reused: bool = False
+    # Why a failed search failed, as the pages say it (app.discovery.sources.failure_text, U3-D2-E2).
+    failure: str | None = None
+
+
+@dataclass(frozen=True)
+class PartialRead:
+    """A source whose list a search read only in part (U3-D2-1): how many of its postings were read, and the
+    combinations of the scope searched there, none of which that source covered."""
+
+    source_id: str
+    source: str
+    read: int
+    combinations: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -417,6 +490,27 @@ class SearchOutcome:
     unjudged: tuple[str, ...]
     searches: tuple[SearchRecord, ...]
     refusals: tuple[str, ...]
+    # Sources whose lists were read only in part (U3-D2-1): never taken away by a complete search elsewhere. While
+    # any is here the scope was not covered, and nothing suitable is said only of what was searched.
+    partial: tuple[PartialRead, ...] = ()
+    # Why the analyses left out as blocked were stopped (U3-D2-E3): each reason as its codes, comma-joined (the
+    # outbound rules' kinds, too_long, outbound_limit, outbound_blocked, gate_<reason>), with how many postings it
+    # stopped. Pages say each as it is, never one reason for all.
+    blocked: tuple[tuple[str, int], ...] = ()
+    # Why the search's own approvals let a request no further, in words, when that ended the search; and why the gate
+    # did, as its reason's value (U3-D2-E3).
+    gate_note: str | None = None
+    gate_reason: str | None = None
+    # Why the search ended because its source could send nothing more (validation B, U3-D2-E3 R1): the source and
+    # what stopped it, in words.
+    source_note: str | None = None
+    # How many postings the user skipped this search came across (U3-D3c), each once: found itself, or pointed to by
+    # a lead, when searching or once a lead was read. Neither those nor the leads pointing to them are listed.
+    skipped: int = 0
+    # How many different postings of those not verifiable came back (U3-D5), however many times each did: the number
+    # a page says as postings, unverifiable being how many times they came back. Known by a digest kept in memory
+    # for the search only, never by the id.
+    unverifiable_distinct: int = 0
 
 
 @dataclass(frozen=True)
@@ -442,6 +536,16 @@ class ParentConfirmation:
     sources: tuple[SourceGrant, ...]
     notice_version: str
     limits: Limits = Limits()
+    # The postings the user skipped on these sources (U3-D3c), as the server read them for this user when the search
+    # was reviewed, each once and in order: none is taken, read, checked or analysed, nor is a lead pointing to one.
+    # Nothing else of the user's records is here: no reason, no note.
+    skipped: tuple[PostingRef, ...] = ()
+    # Whether the user ticked 临时留存并跟踪这次的推荐 (U3-D4b-2), as the server let it be offered: only then, and only
+    # if the search ends as it should, are its recommendations held for tracking (app.discovery.records).
+    track_recommendations: bool = False
+    # The D6 batch as it stood when the search was reviewed (app.discovery.batch_live.state_of): what its approvals had
+    # used and had left. Empty for every other set; when given, a confirmation holds only while the batch stands so.
+    batch_state: str = ""
 
 
 def search_fingerprint(confirmation: ParentConfirmation) -> str:
@@ -472,7 +576,14 @@ def search_fingerprint(confirmation: ParentConfirmation) -> str:
         ),
         "notice_version": confirmation.notice_version,
         "limits": asdict(confirmation.limits),
+        "skipped": sorted({(ref.source_id, ref.posting_id) for ref in confirmation.skipped}),
+        "track_recommendations": confirmation.track_recommendations,
     }
+
+    if confirmation.batch_state:
+        # Only a D6 batch's: every other confirmation's fingerprint is as it was before D6.
+        payload["batch_state"] = confirmation.batch_state
+
     encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
 
     return hashlib.sha256(encoded).hexdigest()

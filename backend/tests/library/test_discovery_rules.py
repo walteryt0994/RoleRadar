@@ -154,9 +154,9 @@ def test_what_cannot_be_accepted_is_out_and_two_cities_are_judged_only_by_a_stat
     [
         # Every city it names is one the user takes: in, choice or not.
         (dict(cities=("北京", "上海")), Screening(Screen.IN)),
-        (dict(cities=()), Screening(Screen.PENDING, ("工作地点未写明，待确认",))),
+        (dict(cities=()), Screening(Screen.PENDING, ("工作地点来源没有提供，待确认",))),
         (dict(job_type="全职"), Screening(Screen.OUT, ("求职类型超出条件：全职（不在本次范围）",))),
-        (dict(job_type=None), Screening(Screen.PENDING, ("求职类型未写明，待确认",))),
+        (dict(job_type=None), Screening(Screen.PENDING, ("求职类型来源没有提供，待确认",))),
         # The user left directions open: any, or none stated, is in.
         (dict(direction="数据标注"), Screening(Screen.IN)),
         (dict(direction=None), Screening(Screen.IN)),

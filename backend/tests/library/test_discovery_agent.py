@@ -421,21 +421,21 @@ def test_a_search_with_experiences_is_told_how_many_postings_are_ready_and_how_m
     script = [search(), read("c-bj-analyst", "c-choice"), check("c-bj-analyst", "c-choice"), analyze("c-bj-analyst"), finish()]
     decider = ScriptedDecider(script)
     run_agent(begin(database, clock, confirmation_for(library)), decider)
-    told = [[line for line in o.text.splitlines() if line.startswith("其中已核对仍在招聘")] for o in decider.observations]
+    told = [[line for line in o.text.splitlines() if line.startswith("其中核对时仍公开发布")] for o in decider.observations]
 
     assert told == [
         [],
-        ["其中已核对仍在招聘、还没有分析的：0 个；分析次数还剩 3 个。"],
-        ["其中已核对仍在招聘、还没有分析的：0 个；分析次数还剩 3 个。"],
-        ["其中已核对仍在招聘、还没有分析的：2 个；分析次数还剩 3 个。"],
-        ["其中已核对仍在招聘、还没有分析的：1 个；分析次数还剩 2 个。"],
+        ["其中核对时仍公开发布、还没有分析的：0 个；分析次数还剩 3 个。"],
+        ["其中核对时仍公开发布、还没有分析的：0 个；分析次数还剩 3 个。"],
+        ["其中核对时仍公开发布、还没有分析的：2 个；分析次数还剩 3 个。"],
+        ["其中核对时仍公开发布、还没有分析的：1 个；分析次数还剩 2 个。"],
     ]
 
     # With no experience chosen nothing is analysed, so there is nothing to count.
     alone = ScriptedDecider([search(), read("c-bj-analyst"), check("c-bj-analyst"), finish()])
     run_agent(begin(database, clock, confirmation_for(library, selection=(), preferences=())), alone)
 
-    assert not any("其中已核对仍在招聘" in o.text for o in alone.observations)
+    assert not any("其中核对时仍公开发布" in o.text for o in alone.observations)
 
 
 def test_one_decision_may_analyse_several_postings_each_on_its_own_and_the_instructions_say_so(database, library, clock):
