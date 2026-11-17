@@ -116,6 +116,21 @@ from app.library.projection import (
 from app.match_service import SCORING_VERSION, coverage_score, distinct_requirements
 from app.outbound_review import review
 from app.parser import KNOWN_SKILLS
+from app.requirement_reading import (
+    ALL,
+    EXPECTED,
+    MET,
+    NOT_MET,
+    UNCLEAR,
+    UNREAD,
+    condition,
+    condition_state,
+    named,
+    obliges,
+    reading,
+    strength,
+    without_obligation,
+)
 from app.schemas import SCHEMA_VERSION, JobRequirement, MatchConclusion, NonEmptyStr
 
 # 2 (U2-A2): with preferences chosen, the call also gets the preferences and the posting.
@@ -133,12 +148,64 @@ from app.schemas import SCHEMA_VERSION, JobRequirement, MatchConclusion, NonEmpt
 # 8 (U2-A2 R10): and it is left out only when it is evidently one skill (_one_skill).
 # 9 (U2-A2 R11): evidently one skill means its words and its quote each say one skill in full,
 # in a set way (ONE_SKILL), not merely that they name one.
-ANALYSIS_PROMPT_VERSION = "9"
+# 10 (U3-D6-3 R10, F1): a hard condition or a required skill whose own posting quote only expects
+# or prefers it (app.requirement_reading.strength) is assessed with the uncertain ones, and a
+# requirement whose words ask more firmly than its quote ("must" over "should") is sent and shown
+# in the quote's words (_requirements).
+# 11 (U3-D6-3 R11): "not optional" requires, an expectation said not to hold expects nothing, a
+# denial reaches no further than its plain forms, and a sentence whose softness is unclear (a
+# negation left unread, a soft word on one part only, "Optional Practical Training") keeps its
+# group (app.requirement_reading, part 3), so a firm hard condition ("Valid work authorization is
+# not optional.", "SQL is not preferred but required.") is sent as one again.
+# 12 (U3-D6-3 R12): a quote only expects where its soft words are on the whole of what it asks
+# (app.requirement_reading, part 3, R12), so a hard condition beside a soft clause ("Bachelor's
+# degree in Computer Science, Master's preferred.") or under a soft word on one of its nouns ("Valid
+# work authorization for your preferred office location.") is sent as one again.
+ANALYSIS_PROMPT_VERSION = "12"
 # 2: quotes are read with their context, and a denial is never outweighed.
-EVIDENCE_RULES_VERSION = "2"
+# 3 (U3-D6 R4, app.requirement_reading): a skill requirement whose own words list several items is supported only as
+# far as the cited practice names them (all of them, or one where any one is asked for), the rest kept as unproven;
+# and a posting quote that lays down a condition keeps it: a hard constraint under it is never a conflict while it is
+# unknown, and does not apply when a fact the posting states shows it does not hold.
+# 4 (U3-D6 R5): two items after a lead-in are a list too, and "all of" is never read as "any one" whatever lead-in
+# follows; a list that does not read plainly (all or any? a list in a list?) is supported only when every item is
+# named, or needs confirmation; a condition holds or fails only in one plain, positive form on the work mode, and only
+# by the set line of a source adapter's text (AnalysisRequest.posting_from_source): unless, not, a second condition or
+# a value of another form leave it unknown.
+# 5 (U3-D6 R6): what may list items is never taken for one item. Without a lead-in, two or more plain items are a
+# list however joined ("Python and SQL", "Python, SQL", "Python、SQL"); full-width commas between short terms part
+# items ("熟悉 Python，SQL，Tableau"); what may part items but does not read plainly needs confirmation. One item is
+# left only where nothing may part items, where describing words of a fixed set are joined ("clean, effective code")
+# or where a full-width comma ends in a year bound ("必须掌握 Python，2027 年及以后毕业").
+# 6 (U3-D6 R7): the words before a lead-in that ask for something in their own right are an item too ("machine
+# learning with Python and SQL" lists machine learning), as are those before the first item's names without one;
+# "plus" and " + " join items; a slash between two words that are not one term joins them, neither "and" nor "or".
+# 7 (U3-D6 R8): "one item" only for words that plainly ask for one thing; words read neither as that nor as a list
+# ("Python for data analysis", "Python alongside SQL") are unread, and a passage of practice alone needs confirmation
+# for them; the words before a lead-in keep every stretch that asks for something ("database administration with
+# automation using Python and SQL" lists database administration and automation too).
+# 8 (U3-D6 R9): a passage of practice shows a requirement read as one item only when it names every part of what the
+# requirement asks for, once two or more parts are left of it ("Python SQL", "Microsoft Power BI", "数据分析报表制作");
+# otherwise it needs confirmation. Marks typed either way (curly quotes, dashes, apostrophes, full-width forms) are read
+# as their plain marks, and only Han characters as Chinese, so they no longer get words past the checks.
+# 9 (U3-D6-3 R10): a stretch before a lead-in that is a phrase of its own ("Curiosity about connectivity in cloud
+# systems") makes no items: the words are unread, so practice alone needs confirmation and nothing is listed (F2); and
+# a requirement only expected or preferred by its posting quote is no hard constraint and no required skill (F1).
+# 10 (U3-D6-3 R11): a firm requirement is no longer read as only expected for an "optional" denied ("not optional")
+# or for a denial that reached past a turn ("not preferred but required"); a denial reaches only its plain forms, "no"
+# only where it begins its clause; and a sentence is read as soft only when it plainly is: a negation left unread, a
+# soft word on one part of what is asked ("Bachelor's degree, preferably in Computer Science"), a soft word in another
+# sense ("Optional Practical Training", "an annual bonus") and "need" on its own all keep a requirement in its group.
+# 11 (U3-D6-3 R12): a soft word makes a requirement only expected where it is on the whole of what its quote asks, in
+# fixed places of a clause (its start, "should" after its subject, a soft predicate at its end) and never on two things
+# joined; a soft clause beside a stated one, a soft word inside a clause and a list parted by commas keep the group.
+EVIDENCE_RULES_VERSION = "11"
 # 2 (U2-A2 R5): a relation stands only on the posting's words about the preference's own aspect.
 # 3 (U2-A2 R6): words about another aspect leave it needing confirmation, never "not stated".
-PREFERENCE_RULES_VERSION = "3"
+# 4 (U3-D6 R4): posting words that lay down a condition carry no relation of their own unless a fact the posting
+# states shows the condition holds: on such quotes alone it needs confirmation.
+# 5 (U3-D6 R5): "shows the condition holds" only as EVIDENCE_RULES_VERSION 4 says, so fewer conditions do.
+PREFERENCE_RULES_VERSION = "5"
 ANALYSIS_SCHEMA_NAME = "experience_evidence_analysis"
 
 REQUIREMENTS_START = "<<<REQUIREMENTS_START>>>"
@@ -428,8 +495,10 @@ def analyze_selected_experiences(
     except _Failed as failed:
         return task.result(AnalysisStatus.FAILED, job=job, problem=failed.failure.value)
 
+    # What the local rules may read as the posting's own facts: a source adapter's text only, never pasted words (R5).
+    facts = request.job_posting if request.posting_from_source else ""
     findings = tuple(
-        _finding(requirement_id, group, requirement, assessed[requirement_id])
+        _finding(requirement_id, group, requirement, assessed[requirement_id], facts)
         for requirement_id, group, requirement in requirements
     )
     final, problems = task.read_sources(database)
@@ -456,7 +525,7 @@ def analyze_selected_experiences(
         selection_problems=problems,
         preferences="compared" if preferences else "not_analyzed",
         preference_findings=tuple(
-            _preference_finding(preference_id, preference, compared[preference_id])
+            _preference_finding(preference_id, preference, compared[preference_id], facts)
             for preference_id, preference in preferences
         ),
     )
@@ -644,6 +713,14 @@ def _requirements(record: JobDescriptionRecord, job_posting: str):
     stands word for word in the posting, it is assessed with the uncertain ones: shown, never
     scored, never taken as a hard condition. A skill that quotes or names it does not carry
     it. One worded otherwise than the posting cannot be traced to it, and stays out.
+
+    R10 (U3-D6-3 F1): the group and the words are the parse's, and the quote being in the
+    posting proves neither. A hard condition or a required skill whose own quote only expects
+    or prefers it (strength: "This should be your final internship before graduating.", "is a
+    plus", "not required") is assessed with the uncertain ones (_as_asked), so it is never a
+    hard conflict, a required gap or "招聘条件"; a quote that requires anywhere keeps its
+    group. Any requirement whose words require ("must") over such a quote is sent and shown
+    in the quote's own words (_own_words). Preferred and uncertain ones keep their group.
     """
     job_description = record.job_description
     posting = _normalised(job_posting)
@@ -666,18 +743,46 @@ def _requirements(record: JobDescriptionRecord, job_posting: str):
         for text in extracted
         if text in posting and not _listed(text, carriers)
     ]
+    required, expected_skills = _as_asked(job_description.required_skills)
+    hard, expected_conditions = _as_asked(conditions)
     groups = (
-        (RequirementGroup.REQUIRED, job_description.required_skills),
+        (RequirementGroup.REQUIRED, required),
         (RequirementGroup.PREFERRED, job_description.preferred_skills),
-        (RequirementGroup.HARD_CONSTRAINT, conditions),
-        (RequirementGroup.UNCERTAIN, [*job_description.uncertain_requirements, *unlisted]),
+        (RequirementGroup.HARD_CONSTRAINT, hard),
+        (RequirementGroup.UNCERTAIN, [*job_description.uncertain_requirements, *expected_conditions, *expected_skills, *unlisted]),
     )
 
     return tuple(
-        (f"{GROUP_PREFIXES[group]}{index}", group, requirement)
+        (f"{GROUP_PREFIXES[group]}{index}", group, _own_words(requirement))
         for group, requirements in groups
         for index, requirement in enumerate(distinct_requirements(requirements), start=1)
     )
+
+
+def _as_asked(requirements) -> tuple[list[JobRequirement], list[JobRequirement]]:
+    """R10 (U3-D6-3 F1): those of a firm group (hard conditions, required skills) whose own posting quote asks for
+    them as firmly, and apart, those whose quote only expects or prefers them (strength is EXPECTED), which go with
+    the uncertain ones. A quote that requires or states anything plainly keeps its group: only the posting's own
+    softer words move one."""
+    kept, expected = [], []
+
+    for requirement in requirements:
+        (expected if strength(requirement.evidence_text) == EXPECTED else kept).append(requirement)
+
+    return kept, expected
+
+
+def _own_words(requirement: JobRequirement) -> JobRequirement:
+    """R10 (U3-D6-3 F1): a requirement whose words require (obliges: "must", "required") while its quote only expects or
+    prefers ("should", "is a plus") is sent and shown without that firmness: its own words less the words that say it
+    (without_obligation: "Must know Python" -> "Python"), or where those cannot be taken out plainly, the posting's own
+    words ("This must be the candidate's final internship" -> its quote). Otherwise as the parse wrote it."""
+    if strength(requirement.evidence_text) != EXPECTED or not obliges(requirement.text):
+        return requirement
+
+    words = without_obligation(requirement.text) or " ".join(requirement.evidence_text.split())
+
+    return JobRequirement(text=words, evidence_text=requirement.evidence_text)
 
 
 def build_output_format(*, with_preferences: bool = False) -> JsonSchemaFormat:
@@ -844,13 +949,17 @@ def _listed(words: str, conditions) -> bool:
     )
 
 
-def _preference_finding(preference_id, preference, comparison) -> PreferenceFinding:
+def _preference_finding(preference_id, preference, comparison, posting: str = "") -> PreferenceFinding:
     """The local rules for a preference: a firm one goes apart when the posting goes against it.
 
     Only the posting's words about the preference's own aspect can carry a relation, and a
     qualification is never that aspect. Words the model says are about something else leave
     its judgement without a basis: it needs confirming, with those words kept to be checked.
     They do not show the posting is silent, which only the model's own "not stated" says.
+
+    Words that lay down a condition ("If the posting is specified as Onsite, ...") say what
+    holds only if it holds (R4): on such words alone a relation needs confirming, unless a
+    fact the posting states shows the condition holds (app.requirement_reading).
     """
     firm = PREFERENCE_TOPICS[preference.field][3]
     relation, quotes = comparison.relation, tuple(comparison.job_quotes)
@@ -865,6 +974,8 @@ def _preference_finding(preference_id, preference, comparison) -> PreferenceFind
     elif not quotes:
         # A relation the posting's own words do not show is only a guess.
         conclusion, reasons = PreferenceConclusion.NEEDS_CONFIRMATION, ("no_quote",)
+    elif not any(_unconditional(quote, posting) for quote in quotes):
+        conclusion, reasons = PreferenceConclusion.NEEDS_CONFIRMATION, ("conditional_quote",)
     elif relation is PreferenceRelation.CONSISTENT:
         conclusion, reasons = PreferenceConclusion.CONSISTENT, ("consistent",)
     else:
@@ -945,11 +1056,26 @@ def _denials(citations) -> list[EvidenceCitation]:
     ]
 
 
-def _finding(requirement_id, group, requirement, citations) -> RequirementFinding:
+def _finding(requirement_id, group, requirement, citations, posting: str = "") -> RequirementFinding:
+    """A requirement's conclusion by the local rules, with what it rests on.
+
+    R4 (app.requirement_reading): a skill requirement whose own words list several items keeps
+    them, and those the cited practice names; a posting quote that lays down a condition keeps
+    it, whether it holds and the posting's line that shows it (_under_condition).
+    """
+    listed, shown = None, ()
+
     if group is RequirementGroup.HARD_CONSTRAINT:
         conclusion, reasons = _condition_conclusion(citations)
     else:
-        conclusion, reasons = _evidence_conclusion(citations)
+        listed, asks = reading(requirement.text)
+        conclusion, reasons, shown = _evidence_conclusion(citations, listed, asks)
+
+    laid_down = condition(requirement.evidence_text) or ""
+    state, fact = condition_state(laid_down, posting) if laid_down else ("", "")
+
+    if laid_down:
+        conclusion, reasons = _under_condition(group, conclusion, reasons, state)
 
     return RequirementFinding(
         requirement_id=requirement_id,
@@ -959,12 +1085,25 @@ def _finding(requirement_id, group, requirement, citations) -> RequirementFindin
         conclusion=conclusion.value,
         citations=citations,
         reasons=reasons,
+        listed=listed.items if listed else (),
+        listed_mode=listed.mode if listed else "",
+        named=shown,
+        condition=laid_down,
+        condition_state=state,
+        condition_fact=fact,
     )
 
 
-def _evidence_conclusion(citations) -> tuple[EvidenceConclusion, tuple[str, ...]]:
+def _evidence_conclusion(citations, listed=None, asks=()) -> tuple[EvidenceConclusion, tuple[str, ...], tuple[str, ...]]:
     """Support needs a passage of the user's own practice, with nothing in it
-    saying otherwise and nothing cited for the requirement denying it."""
+    saying otherwise and nothing cited for the requirement denying it.
+
+    A requirement listing several items (R4) is supported only as far as that practice names
+    them: every item when all are asked for, one when any one is. Short of that it needs
+    confirming, with the items it does name (the third value) kept apart from those it does not:
+    a passage of practice is never taken to show what it does not name. A requirement read as
+    one item (R9) is supported only when a passage of practice names every part of one of its
+    asks (app.requirement_reading.reading); with no ask, as before."""
     practice = [citation for citation in citations if citation.basis is CitationBasis.PRACTICE and not citation.flags]
     flagged = [citation for citation in citations if citation.basis is CitationBasis.PRACTICE and citation.flags]
     unsure = [
@@ -974,22 +1113,76 @@ def _evidence_conclusion(citations) -> tuple[EvidenceConclusion, tuple[str, ...]
     ]
 
     if practice and _denials(citations):
-        return EvidenceConclusion.NEEDS_CONFIRMATION, ("contradiction",)
+        return EvidenceConclusion.NEEDS_CONFIRMATION, ("contradiction",), ()
+
+    if practice and listed is None:
+        # None only when the words plainly ask for one thing (R6, R8): what may list items comes as a listing, unclear
+        # or not, and what was read as neither comes unread. R9: a short phrase may still be a name or a list ("Microsoft
+        # Power BI", "Python SQL"), so with two or more parts a passage must name them all; short of that it needs
+        # confirming, and nothing says the user lacks it.
+        if not asks or any(named(ask, (citation.quote, *citation.context)) for ask in asks for citation in practice):
+            return EvidenceConclusion.SUPPORTED, ("practice",), ()
+
+        return EvidenceConclusion.NEEDS_CONFIRMATION, ("single_unnamed",), ()
+
+    if practice and listed.mode == UNREAD:
+        # Read neither as one item nor as a list (R8): a passage of practice is no proof of the whole. Its words stay
+        # as they are; no items are made up, and nothing says the user lacks it.
+        return EvidenceConclusion.NEEDS_CONFIRMATION, ("listed_unread",), ()
 
     if practice:
-        return EvidenceConclusion.SUPPORTED, ("practice",)
+        shown = tuple(
+            item for item in listed.items if any(named(item, (citation.quote, *citation.context)) for citation in practice)
+        )
+        # Unclear (R5): only every item named holds however the words are read; with no items told apart, never.
+        whole = (len(shown) == len(listed.items)) if listed.mode in (ALL, UNCLEAR) else bool(shown)
+
+        if listed.items and whole:
+            return EvidenceConclusion.SUPPORTED, ("practice",), shown
+
+        if listed.mode == UNCLEAR:
+            return EvidenceConclusion.NEEDS_CONFIRMATION, ("listed_unclear",), shown
+
+        return EvidenceConclusion.NEEDS_CONFIRMATION, ("listed_partly" if shown else "listed_unnamed",), shown
 
     if flagged or unsure:
         reasons = {f"flag:{flag}" for citation in flagged for flag in citation.flags}
         reasons |= {citation.basis.value for citation in unsure}
 
-        return EvidenceConclusion.NEEDS_CONFIRMATION, tuple(sorted(reasons))
+        return EvidenceConclusion.NEEDS_CONFIRMATION, tuple(sorted(reasons)), ()
 
     if citations:
         # Only plans, other people's work or what was not done: no support.
-        return EvidenceConclusion.NO_EVIDENCE, tuple(sorted({citation.basis.value for citation in citations}))
+        return EvidenceConclusion.NO_EVIDENCE, tuple(sorted({citation.basis.value for citation in citations})), ()
 
-    return EvidenceConclusion.NO_EVIDENCE, ("no_material",)
+    return EvidenceConclusion.NO_EVIDENCE, ("no_material",), ()
+
+
+def _under_condition(group, conclusion, reasons, state):
+    """A requirement whose posting quote lays down a condition (R4): it is never held more firmly
+    than its condition allows. Met, by a fact the posting states: as judged. Not met: a hard
+    constraint does not apply. Unknown: a hard constraint is never a conflict, only something to
+    confirm; anything else keeps its judgement of the material, with the condition said beside it."""
+    if state == MET:
+        return conclusion, ("condition_met", *reasons)
+
+    if group is not RequirementGroup.HARD_CONSTRAINT:
+        return conclusion, (f"condition_{state}", *reasons)
+
+    if state == NOT_MET:
+        return ConditionConclusion.NOT_APPLICABLE, ("condition_not_met",)
+
+    if conclusion is ConditionConclusion.CONFLICT:
+        return ConditionConclusion.NEEDS_CONFIRMATION, ("condition_unknown", *reasons)
+
+    return conclusion, ("condition_unknown", *reasons)
+
+
+def _unconditional(quote: str, posting: str) -> bool:
+    """Whether posting words state something as it is: they lay down no condition, or one the posting shows holds."""
+    laid_down = condition(quote)
+
+    return laid_down is None or condition_state(laid_down, posting)[0] == MET
 
 
 def _condition_conclusion(citations) -> tuple[ConditionConclusion, tuple[str, ...]]:

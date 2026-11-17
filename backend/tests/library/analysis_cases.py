@@ -41,12 +41,19 @@ Python and Tableau repeated as hard conditions word for word, and the
 model's own citations for the three requirements that remain. A skill and a
 graduation condition quoted from one line. Two hard conditions quoted from
 one line. No earlier expectation changed.
+
+CASE_VERSION 8 (U3-D6 R8): the real Sol case 2 expected "Proficiency in
+Python for data analysis" supported by a passage of Python data cleaning.
+The local reading now reads "Python for data analysis" as neither one item
+nor a list (unread): one passage of practice is no proof that it covers the
+data analysis too, so it needs confirmation (Codex's R7 review), and the
+skill coverage is 0 instead of 40. No other expectation changed.
 """
 import json
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-CASE_VERSION = "7"
+CASE_VERSION = "8"
 CONSISTENT = "consistent"
 DIFFERENT = "different"
 NOT_STATED = "not_stated"
@@ -516,7 +523,8 @@ CASES = (
     ),
     SemanticCase(
         name="real_sol_case2_skills_repeated_as_hard_conditions",
-        why="GPT-5.6 Sol 真实解析的原样回放：Python、Tableau 两条要求连同原句被同时放进必备技能和硬条件。同一要求只按技能评价一次：Python 有支持；Tableau 是队友做的，未找到支持材料；AWS 只是自述，待确认；技能覆盖 40。不再出现重复的“符合”“待确认”。分析部分回放的是模型对剩下三条要求的真实引用。",
+        why="GPT-5.6 Sol 真实解析的原样回放：Python、Tableau 两条要求连同原句被同时放进必备技能和硬条件。同一要求只按技能评价一次：Python 有支持；Tableau 是队友做的，未找到支持材料；AWS 只是自述，待确认；技能覆盖 40。不再出现重复的“符合”“待确认”。分析部分回放的是模型对剩下三条要求的真实引用。"
+        "（U3-D6 R8 起：“Python for data analysis”这种写法，本机没有认出是一项还是几项，一段用 Python 清洗数据的实践不能单独证明也覆盖了数据分析，所以 R1 改为待确认，技能覆盖 0。）",
         experiences=(
             ("work", {"organization": "Synthetic Consulting", "role": "Data intern", "actions": "用 Python (pandas) 清洗了 survey data，并做了 weekly report。"}),
             ("project", {"title": "Course dashboard (synthetic)", "actions": "My teammate built the Tableau dashboard; I wrote the data dictionary."}),
@@ -541,8 +549,9 @@ CASES = (
                 ("S3", "notes", "I am familiar with AWS but have not used it in a project.", "negated"),
             ],
         },
-        expected={"R1": SUPPORTED, "R2": NO_EVIDENCE, "P1": NEEDS_CONFIRMATION},
-        expected_overall=Decimal("40"),
+        # U3-D6 R8: R1 was SUPPORTED and the overall 40 (see CASE_VERSION 8).
+        expected={"R1": NEEDS_CONFIRMATION, "R2": NO_EVIDENCE, "P1": NEEDS_CONFIRMATION},
+        expected_overall=Decimal("0"),
     ),
     SemanticCase(
         name="skill_and_graduation_quoted_from_one_line",

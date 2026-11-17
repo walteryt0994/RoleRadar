@@ -33,6 +33,7 @@ from app.jd_service import (
     JobDescriptionInvalidJsonError,
     JobDescriptionParseError,
     JobDescriptionSchemaError,
+    build_prompt,
     parse_job_description,
 )
 from app.schemas import SCHEMA_VERSION
@@ -432,6 +433,12 @@ INSTRUCTION_RULES = [
     "hard_constraints records what the posting demands, not a",
     "judgement about any candidate",
     "Do not turn a responsibility into a required skill",
+    "A step of the application process is not a requirement",
+    "resume or CV to submit (in PDF or any other format)",
+    "application questions to answer",
+    "This leaves out only the step itself",
+    "every requirement on the applicant is still recorded as above",
+    "even when the posting writes it beside or inside an application step",
     "Put vague, conditional, or contradictory requirements in",
     "uncertain_requirements",
     "copy an exact phrase from the posting into",
@@ -443,6 +450,58 @@ INSTRUCTION_RULES = [
 @pytest.mark.parametrize("rule", INSTRUCTION_RULES)
 def test_parser_instructions_state_every_extraction_rule(rule):
     assert rule in PARSER_INSTRUCTIONS
+
+
+# U3-D6 close-out: "交 PDF 简历""回答申请问题" were listed as hiring conditions in D6-1 and D6-2 (application steps).
+# The rule takes the step out of every place a requirement can be, and nothing else.
+STEP_RULE_START, STEP_RULE_END = "A step of the application process", "Put vague, conditional"
+REQUIREMENT_FIELDS = (
+    "required_skills", "preferred_skills", "hard_constraints", "uncertain_requirements", "education_requirement", "work_authorization",
+)
+# What stays a requirement however near an application step the posting writes it: skills, education and the rest.
+APPLICANT_REQUIREMENTS = (
+    "a skill", "an education", "a graduation date", "an experience", "a work authorization", "a security clearance",
+)
+
+
+def application_step_rule() -> str:
+    """The rule as the prompt states it, from its first words to the next rule's."""
+    assert STEP_RULE_START in PARSER_INSTRUCTIONS and "This leaves out only the step itself" in PARSER_INSTRUCTIONS
+
+    return PARSER_INSTRUCTIONS[PARSER_INSTRUCTIONS.index(STEP_RULE_START):PARSER_INSTRUCTIONS.index(STEP_RULE_END)]
+
+
+def test_prompt_version_is_the_application_step_one():
+    assert PROMPT_VERSION == "4"
+
+
+def test_application_steps_are_kept_out_of_every_requirement_field():
+    step, keep = application_step_rule().split("This leaves out only the step itself")
+
+    for field in (*REQUIREMENT_FIELDS, "responsibilities"):
+        assert field in step, field
+
+    assert "is never recorded" in step
+
+
+def test_application_step_rule_keeps_every_requirement_on_the_applicant():
+    """The counter-example: a real requirement written in or next to an application step (a degree to show, a date to
+    graduate by, a clearance) stays a requirement, quoted by its own words; only the step goes."""
+    _, keep = application_step_rule().split("This leaves out only the step itself")
+
+    for kind in APPLICANT_REQUIREMENTS:
+        assert kind in keep, kind
+
+    assert "is still recorded as above" in keep
+    assert "quotes the words that state" in keep
+    # It never tells the parse to drop a requirement, only the step.
+    assert "never record" not in keep and "drop" not in keep and "ignore" not in keep
+
+
+def test_application_step_rule_comes_before_the_evidence_rule_and_the_posting():
+    prompt = build_prompt("Submit your resume in PDF format. Must be planning on graduating in 2028.")
+
+    assert prompt.index(application_step_rule()) < prompt.index("For every requirement, copy an exact phrase") < prompt.index(JOB_POSTING_START)
 
 
 def test_parse_job_description_records_the_version_labels(provider):

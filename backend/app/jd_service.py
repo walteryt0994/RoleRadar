@@ -15,7 +15,10 @@ from app.schemas import SCHEMA_VERSION, StructuredJobDescription
 # mandatory one has to be listed in hard_constraints too.
 # 3 (U2-A2 R8): hard_constraints are conditions that are not skills; a required skill is never
 # listed there again, however strongly the posting words it.
-PROMPT_VERSION = "3"
+# 4 (U3-D6 close-out): a step of the application process, such as a resume or CV to submit or
+# application questions to answer, is never recorded as a requirement; every requirement on the
+# applicant stays, even when the posting writes it beside or inside such a step.
+PROMPT_VERSION = "4"
 PARSER_VERSION = "1"
 
 SCHEMA_NAME = "structured_job_description"
@@ -53,6 +56,20 @@ PARSER_INSTRUCTIONS = (
     "hard_constraints records what the posting demands, not a "
     "judgement about any candidate. "
     "Do not turn a responsibility into a required skill. "
+    "A step of the application process is not a requirement: what the "
+    "posting asks applicants to send or do in order to apply, such as a "
+    "resume or CV to submit (in PDF or any other format), a cover letter, "
+    "a transcript or a portfolio to attach, application questions to "
+    "answer, a form to fill in, or a date to apply by, is never recorded "
+    "in required_skills, preferred_skills, hard_constraints, "
+    "uncertain_requirements, education_requirement, work_authorization or "
+    "responsibilities. "
+    "This leaves out only the step itself: every requirement on the "
+    "applicant is still recorded as above, such as a skill, an education, "
+    "a graduation date, an experience, a work authorization or a security "
+    "clearance, even when the posting writes it beside or inside an "
+    "application step, and its evidence_text quotes the words that state "
+    "the requirement. "
     "Put vague, conditional, or contradictory requirements in "
     "uncertain_requirements. "
     "For every requirement, copy an exact phrase from the posting into "
