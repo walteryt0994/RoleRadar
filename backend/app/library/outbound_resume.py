@@ -27,8 +27,9 @@ from app.library.candidates import readable_text
 from app.library.resume_rules import LABEL_FIELDS, LABELLED
 from app.outbound_review import ADDRESS, CONFIDENTIAL, EMAIL, ID_NUMBER, LABELS, MASK, PATTERNS, PHONE, review
 
-# Changing a rule changes this, and with it every confirmation's fingerprint.
-RULES_VERSION = "1"
+# Changing a rule changes this, and with it every confirmation's fingerprint. 2: North American phone numbers
+# and English street addresses (app.outbound_review, U3-D2-2).
+RULES_VERSION = "2"
 LINK = "link"
 NAME = "name"
 CITY = "city"

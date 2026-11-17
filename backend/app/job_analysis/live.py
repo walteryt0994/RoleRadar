@@ -99,9 +99,10 @@ KEY_VARIABLE = "OPENAI_API_KEY"
 # Upper bounds for any approval of this batch: a few synthetic samples.
 MAX_REQUESTS = 20
 # The one exception (U3-B1): an approval whose purposes, fully checked, are discovery alone may allow this many
-# requests, for the frozen comparison's four tasks of at most eight decisions each (app.discovery.compare). Any
-# other purposes, a mix with discovery among them, and the policy read on its own keep MAX_REQUESTS (request_cap).
-MAX_DISCOVERY_REQUESTS = 32
+# requests, for the frozen comparison's tasks of at most eight decisions each (app.discovery.compare): four in U3-B1
+# (32), five since task set 2 added T5 (U3-D5, 40). Any other purposes, a mix with discovery among them, and the
+# policy read on its own keep MAX_REQUESTS (request_cap). An approval still allows only what it says.
+MAX_DISCOVERY_REQUESTS = 40
 MAX_OUTPUT_TOKENS = 4000
 # The one exception (U3-C4): an approval whose purposes, fully checked, are direction alone may set this output
 # limit, for the validation of the direction workflow (app.directions.live_check); anything else keeps

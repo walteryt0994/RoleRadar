@@ -10,7 +10,12 @@ pytest collects tests and while any application module is first imported:
   pytest's --basetemp;
 - OPENAI_*, ROLERADAR_LIVE_*, ROLERADAR_ANALYSIS_MODE and proxy variables
   are removed, and so are LANGSMITH_* and LANGCHAIN_*, which could switch
-  LangSmith tracing on (U3-A2); plugin auto-loading is off (so pytest-cov
+  LangSmith tracing on (U3-A2), and ROLERADAR_DISCOVERY_DEMO and
+  ROLERADAR_SOURCE_*, which could start the app with a real source and an
+  approval of its parent's (U3-D2-E1), and ROLERADAR_BATCH_*, which could
+  start it for a D6 launch with its parent's batch (U3-D6-0 R1),
+  and ROLERADAR_DISCOVERY_MODEL, which
+  could choose validation B's real model (U3-D2-E3); plugin auto-loading is off (so pytest-cov
   cannot rewrite backend/.coverage); no .pyc files or .pytest_cache are written;
 - an audit plugin, loaded at pytest start-up, blocks network connections and
   DNS lookups and records SQLite connections and file writes. After the run
@@ -35,9 +40,12 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 BACKEND_DIR = HERE.parents[1]
 REPO_ROOT = BACKEND_DIR.parent
-REMOVED_PREFIXES = ("OPENAI_", "AZURE_OPENAI_", "ROLERADAR_LIVE_", "LANGSMITH_", "LANGCHAIN_")
+# ROLERADAR_BATCH_ (U3-D6-0 R1): a parent started for a D6 launch hands none of its batch to an isolated run.
+REMOVED_PREFIXES = ("OPENAI_", "AZURE_OPENAI_", "ROLERADAR_LIVE_", "ROLERADAR_SOURCE_", "ROLERADAR_BATCH_", "LANGSMITH_", "LANGCHAIN_")
 REMOVED_NAMES = {
     "ROLERADAR_ANALYSIS_MODE",
+    "ROLERADAR_DISCOVERY_DEMO",
+    "ROLERADAR_DISCOVERY_MODEL",
     "DATABASE_URL",
     "ROLERADAR_LIBRARY_DB_PATH",
     "ROLERADAR_LIBRARY_FILES_DIR",

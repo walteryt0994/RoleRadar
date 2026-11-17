@@ -67,7 +67,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import ROUND_CEILING, Decimal
 from enum import StrEnum
 from pathlib import Path
@@ -455,6 +455,22 @@ class GateStatus:
     reserved_micro_usd: int = 0
     # Kept at a conservative amount because what they cost could not be known: still to be checked.
     unknown_micro_usd: int = 0
+
+
+# The states of a request that are final and counted: what an approval has used for good (U3-D6-0 R1).
+FINAL_STATES = (LiveRequestState.SETTLED, LiveRequestState.OVER, LiveRequestState.UNKNOWN)
+
+
+@dataclass(frozen=True)
+class Standing:
+    """Where an approval stands for good (LiveGate.standing_among): paused or not, and its final requests and their
+    charge, both of which only grow; and every request the ledger holds of it, by id: its state and reservation
+    (U3-D6-0 R2: a request noted as handed on must still be there, whatever came of it)."""
+
+    paused_reason: str | None
+    final_requests: int
+    final_micro_usd: int
+    requests: dict = field(default_factory=dict)
 
 
 def reservation(input_tokens: int, output_tokens: int, prices: PriceBasis, *, counted: bool = False) -> int:
@@ -1102,6 +1118,38 @@ class LiveGate:
             return reserved
 
         return max(reserved, fee + reservation(usage.input_tokens, usage.output_tokens, self.terms.prices))
+
+    def paused_among(self, approval_ids) -> dict[str, str]:
+        """Of the approvals named, those the ledger holds paused, with why (read only). For a batch of two launches
+        (U3-D6): the other launch's approval, paused by its own run or by the recovery of this one."""
+        with self._database.transaction() as db:
+            rows = db.scalars(select(LiveApproval).where(LiveApproval.approval_id.in_(list(approval_ids)))).all()
+
+        return {row.approval_id: row.paused_reason for row in rows if row.paused_reason is not None}
+
+    def standing_among(self, approval_ids) -> dict[str, "Standing"]:
+        """How each approval named stands in the ledger (read only; U3-D6-0 R1): paused or not, and its requests settled
+        or of unknown cost and what they are charged. Those only grow: a reserved request may still be released, so
+        none is counted here. And every request the ledger holds of it, whatever its state, by its id: its state and
+        its reservation (U3-D6-0 R2), so that a request noted before it was handed on can be looked for. Every
+        approval named has one, at nothing for an approval the ledger does not know."""
+        names = list(approval_ids)
+
+        with self._database.transaction() as db:
+            approvals = {row.approval_id: row for row in db.scalars(select(LiveApproval).where(LiveApproval.approval_id.in_(names)))}
+            rows = db.scalars(select(LiveRequest).where(LiveRequest.approval_id.in_(names))).all()
+
+        final = [row for row in rows if row.state in FINAL_STATES]
+
+        return {
+            name: Standing(
+                paused_reason=approvals[name].paused_reason if name in approvals else None,
+                final_requests=sum(1 for row in final if row.approval_id == name),
+                final_micro_usd=sum(row.charged_micro_usd or 0 for row in final if row.approval_id == name),
+                requests={row.id: (str(row.state), row.reserved_micro_usd) for row in rows if row.approval_id == name},
+            )
+            for name in names
+        }
 
     def status(self) -> GateStatus:
         terms = self.terms

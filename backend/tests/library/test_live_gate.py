@@ -691,6 +691,19 @@ def test_a_restart_charges_what_was_left_reserved_and_never_lifts_the_pause(gate
     assert third.status() == second.status()
 
 
+def test_a_gate_tells_which_other_approvals_of_its_ledger_are_paused(gates, ledger):
+    # U3-D6: a batch's two launches share one ledger, each under its own approval.
+    first = gates(terms(approval_id="synthetic-other-approval"))
+    # The other approval's app stops between reserving and settling: this gate's recovery pauses that approval.
+    first._reserve("analysis", "owner-a", WORST)
+    first.close()
+    second = gates()
+
+    assert second.status().paused_reason is None
+    assert second.paused_among(["synthetic-other-approval", "never-seen"]) == {"synthetic-other-approval": "interrupted"}
+    assert second.paused_among([]) == {} and second.paused_among([APPROVAL]) == {}
+
+
 def test_what_was_spent_is_still_spent_after_a_restart(gates):
     first = gates()
     ask(first, SyntheticProvider())
@@ -913,8 +926,8 @@ def asking(purposes, requests) -> dict:
 @pytest.mark.parametrize(
     "purposes, cap",
     [
-        ("discovery", 32),
-        (" discovery ", 32),
+        ("discovery", 40),
+        (" discovery ", 40),
         ("analysis", 20),
         ("structuring", 20),
         ("analysis, discovery", 20),
@@ -963,8 +976,8 @@ def test_an_approval_refuses_a_policy_that_allows_more_than_its_purposes_may(mon
     with pytest.raises(LiveRefused, match="这份批准的用途最多放行 20 次请求"):
         live.load_live_approval(widened, asking("analysis", 20))
 
-    with pytest.raises(LiveRefused, match="这份批准的用途最多放行 32 次请求"):
-        live.load_live_approval(replace(widened, max_requests=33), asking("discovery", 20))
+    with pytest.raises(LiveRefused, match="这份批准的用途最多放行 40 次请求"):
+        live.load_live_approval(replace(widened, max_requests=41), asking("discovery", 20))
 
 
 # --- the output limit an approval may set, by its purposes (U3-C4) --------------------------------------------------
