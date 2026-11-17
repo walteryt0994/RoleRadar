@@ -48,6 +48,7 @@ from app.library.errors import (
     RecordConflict,
     VersionConflict,
 )
+from app.library import job_watches
 from app.library.files import FileStore
 from app.library.models import (
     Attachment,
@@ -57,6 +58,17 @@ from app.library.models import (
     DirectionSource,
     ExperienceItem,
     ExperienceVersion,
+    JobAnalysis,
+    JobAnalysisFeedback,
+    JobAnalysisSource,
+    JobDecision,
+    JobFeedback,
+    JobPosting,
+    JobRecommendation,
+    JobPostingCheck,
+    JobPostingRecheck,
+    JobPostingText,
+    JobSearch,
     JobStatus,
     PurgeJob,
     PurgeReason,
@@ -97,6 +109,9 @@ KINDS = tuple[str, ...]
 # Deleting along only what the user chose from what rests on the record (U3-C1).
 ALONG_REASON = "只能一并删除正在使用、并且确实以这份资料为依据的方向探索；这次什么都没有删除。"
 WENT_ALONG_REASON = "这次方向探索是和它依据的资料一起删除的，只能随那份资料一起恢复或永久删除。"
+# The same for the analyses kept from a search (U3-D3b).
+ANALYSES_ALONG_REASON = "只能一并删除正在使用、并且确实以这份资料为依据的岗位分析；这次什么都没有删除。"
+ANALYSIS_WENT_ALONG_REASON = "这份岗位分析是和它依据的资料一起删除的，只能随那份资料一起恢复或永久删除。"
 SAME_NAME_REASON = (
     "你现在已经有一条同名的方向决定。为了不覆盖它，这条旧的决定不能直接恢复；"
     "如果想换回旧的，请先删除现在这条，再回来恢复。"
@@ -144,11 +159,13 @@ def delete_experience(
     now: datetime,
     kinds: KINDS = EXPERIENCE_CATEGORIES,
     also_explorations: tuple[str, ...] = (),
+    also_analyses: tuple[str, ...] = (),
 ) -> ExperienceItem:
     """Move a record to the bin.
 
-    also_explorations names the saved direction explorations the user chose to delete along (U3-C1); by
-    default none is, and those resting on the record stay, marked, out of new use.
+    also_explorations names the saved direction explorations the user chose to delete along (U3-C1), and
+    also_analyses the kept analyses (U3-D3b); by default none is, and those resting on the record stay, marked,
+    out of new use.
     """
     item = active_item(db, owner_id, item_id, kinds)
     check_revision(item, expected_revision)
@@ -164,6 +181,7 @@ def delete_experience(
         attachment.updated_at = now
 
     _take_explorations_along(db, owner_id, also_explorations, item, None, item, now)
+    _take_analyses_along(db, owner_id, also_analyses, item, None, item, now)
     item.revision += 1
     record_event(db, owner_id, item.id, TargetType.EXPERIENCE, item.id, "deleted", now)
 
@@ -196,6 +214,7 @@ def restore_experience(
         attachment.updated_at = now
 
     _bring_explorations_back(db, owner_id, item.deletion_id, now)
+    _bring_analyses_back(db, owner_id, item.deletion_id, now)
     _cancel_deletion(db, item, now)
     item.revision += 1
     record_event(db, owner_id, item.id, TargetType.EXPERIENCE, item.id, "restored", now)
@@ -221,12 +240,14 @@ def request_experience_purge(
         attachment.updated_at = now
 
     _expire_explorations_now(db, owner_id, item.deletion_id, now)
+    _expire_analyses_now(db, owner_id, item.deletion_id, now)
 
     # The record takes its versions with it, those waiting in the bin on their own included: what the user
     # deleted along with one of them stops being available now too, not only once the clean-up gets to it
-    # (U3-C1 R1). Explorations kept, or deleted on their own, are not touched.
+    # (U3-C1 R1). Explorations and analyses kept, or deleted on their own, are not touched.
     for deletion_id in _open_version_deletions(db, owner_id, item.id):
         _expire_explorations_now(db, owner_id, deletion_id, now)
+        _expire_analyses_now(db, owner_id, deletion_id, now)
 
     job_id = _expire_now(db, item, now)
     item.revision += 1
@@ -314,12 +335,15 @@ def delete_version(
     now: datetime,
     kinds: KINDS = EXPERIENCE_CATEGORIES,
     also_explorations: tuple[str, ...] = (),
+    also_analyses: tuple[str, ...] = (),
 ) -> ExperienceVersion:
-    """Move one history version to the bin; also_explorations as for delete_experience, resting on this version."""
+    """Move one history version to the bin; also_explorations and also_analyses as for delete_experience, resting on
+    this version."""
     item, version = deletable_version(db, owner_id, item_id, version_id, kinds)
     check_version_state(db, version, expected_state)
     _start_deletion(db, owner_id, TargetType.VERSION, version, item, now)
     _take_explorations_along(db, owner_id, also_explorations, item, version, version, now)
+    _take_analyses_along(db, owner_id, also_analyses, item, version, version, now)
     record_event(db, owner_id, item.id, TargetType.VERSION, version.id, "version_deleted", now)
 
     return version
@@ -337,6 +361,7 @@ def restore_version(
     item, version = trashed_version(db, owner_id, item_id, version_id, now, kinds)
     check_version_state(db, version, expected_state)
     _bring_explorations_back(db, owner_id, version.deletion_id, now)
+    _bring_analyses_back(db, owner_id, version.deletion_id, now)
     _cancel_deletion(db, version, now)
     record_event(db, owner_id, item.id, TargetType.VERSION, version.id, "version_restored", now)
 
@@ -355,6 +380,7 @@ def request_version_purge(
     item, version = trashed_version(db, owner_id, item_id, version_id, now, kinds)
     check_version_state(db, version, expected_state)
     _expire_explorations_now(db, owner_id, version.deletion_id, now)
+    _expire_analyses_now(db, owner_id, version.deletion_id, now)
     job_id = _expire_now(db, version, now)
     record_event(
         db, owner_id, item.id, TargetType.VERSION, version.id, "version_purge_requested", now
@@ -668,19 +694,29 @@ def delete_experience_and_chosen(
     now: datetime,
     kinds: KINDS = EXPERIENCE_CATEGORIES,
     chosen: tuple[tuple[str, int], ...] = (),
+    chosen_analyses: tuple[tuple[str, int], ...] = (),
 ) -> ExperienceItem:
-    """delete_experience, with the explorations its page listed and the user chose to delete along.
+    """delete_experience, with the explorations and the kept analyses its page listed and the user chose to delete
+    along.
 
     The record is checked first, as delete_experience checks it, so a page older than the record is answered as it
-    always was; then each chosen exploration (check_chosen_along); then all of it is deleted in this transaction,
-    or none of it. Nothing chosen: only the record, as before.
+    always was; then each chosen exploration (check_chosen_along) and analysis (check_chosen_analyses); then all of
+    it is deleted in this transaction, or none of it. Nothing chosen: only the record, as before.
     """
-    if chosen:
+    if chosen or chosen_analyses:
         check_revision(active_item(db, owner_id, item_id, kinds), expected_revision)
         check_chosen_along(db, owner_id, item_id, None, chosen)
+        check_chosen_analyses(db, owner_id, item_id, None, chosen_analyses)
 
     return delete_experience(
-        db, owner_id, item_id, expected_revision, now, kinds, tuple(exploration_id for exploration_id, _ in chosen)
+        db,
+        owner_id,
+        item_id,
+        expected_revision,
+        now,
+        kinds,
+        tuple(exploration_id for exploration_id, _ in chosen),
+        tuple(analysis_id for analysis_id, _ in chosen_analyses),
     )
 
 
@@ -693,12 +729,15 @@ def delete_version_and_chosen(
     now: datetime,
     kinds: KINDS = EXPERIENCE_CATEGORIES,
     chosen: tuple[tuple[str, int], ...] = (),
+    chosen_analyses: tuple[tuple[str, int], ...] = (),
 ) -> ExperienceVersion:
-    """delete_version, with the explorations resting on this version that its page listed and the user chose."""
-    if chosen:
+    """delete_version, with the explorations and the kept analyses resting on this version that its page listed and
+    the user chose."""
+    if chosen or chosen_analyses:
         _, version = deletable_version(db, owner_id, item_id, version_id, kinds)
         check_version_state(db, version, expected_state)
         check_chosen_along(db, owner_id, item_id, version_id, chosen)
+        check_chosen_analyses(db, owner_id, item_id, version_id, chosen_analyses)
 
     return delete_version(
         db,
@@ -709,6 +748,7 @@ def delete_version_and_chosen(
         now,
         kinds,
         tuple(exploration_id for exploration_id, _ in chosen),
+        tuple(analysis_id for analysis_id, _ in chosen_analyses),
     )
 
 
@@ -737,6 +777,124 @@ def _open_version_deletions(db: Session, owner_id: str, item_id: str) -> list[st
             )
         )
     )
+
+
+# --- analyses kept from a search (U3-D3b): deleted along with what they rest on, as explorations are -----------
+
+
+def _take_analyses_along(
+    db: Session,
+    owner_id: str,
+    analysis_ids: tuple[str, ...],
+    item: ExperienceItem,
+    version: ExperienceVersion | None,
+    deletion,
+    now: datetime,
+) -> None:
+    """Move the kept analyses the user chose into the bin under this deletion (the record's or the version's).
+
+    Each must be in use and rest on the record (on this version, when one is deleted); otherwise nothing is
+    deleted at all, the record included, since the error rolls the transaction back.
+    """
+    for analysis_id in dict.fromkeys(analysis_ids):
+        analysis = db.scalar(
+            select(JobAnalysis).where(
+                JobAnalysis.id == analysis_id,
+                JobAnalysis.owner_id == owner_id,
+                JobAnalysis.deleted_at.is_(None),
+            )
+        )
+
+        if analysis is None or not _rests_on(db, owner_id, analysis_id, item.id, None if version is None else version.id):
+            raise NotAllowed(ANALYSES_ALONG_REASON)
+
+        analysis.deleted_at = now
+        analysis.purge_after = deletion.purge_after
+        analysis.deletion_id = deletion.deletion_id
+        analysis.revision += 1
+        analysis.updated_at = now
+        record_event(db, owner_id, analysis.id, TargetType.JOB_ANALYSIS, analysis.id, "job_analysis_deleted", now)
+
+
+def _rests_on(db: Session, owner_id: str, analysis_id: str, item_id: str, version_id: str | None) -> bool:
+    conditions = [
+        JobAnalysisSource.owner_id == owner_id,
+        JobAnalysisSource.analysis_id == analysis_id,
+        JobAnalysisSource.item_id == item_id,
+    ]
+
+    if version_id is not None:
+        conditions.append(JobAnalysisSource.version_id == version_id)
+
+    return db.scalar(select(JobAnalysisSource.id).where(*conditions).limit(1)) is not None
+
+
+def _analyses_went_along(db: Session, owner_id: str, deletion_id: str | None) -> list[JobAnalysis]:
+    """The kept analyses in the bin under this deletion of a record or a version."""
+    if deletion_id is None:
+        return []
+
+    return list(
+        db.scalars(
+            select(JobAnalysis).where(JobAnalysis.owner_id == owner_id, JobAnalysis.deletion_id == deletion_id)
+        )
+    )
+
+
+def _bring_analyses_back(db: Session, owner_id: str, deletion_id: str | None, now: datetime) -> None:
+    """Restoring a record or a version brings back exactly the analyses deleted along with it."""
+    for analysis in _analyses_went_along(db, owner_id, deletion_id):
+        analysis.deleted_at = None
+        analysis.purge_after = None
+        analysis.deletion_id = None
+        analysis.revision += 1
+        analysis.updated_at = now
+        record_event(db, owner_id, analysis.id, TargetType.JOB_ANALYSIS, analysis.id, "job_analysis_restored", now)
+
+
+def _expire_analyses_now(db: Session, owner_id: str, deletion_id: str | None, now: datetime) -> None:
+    """No restoring, reading or exporting of the analyses that went along with this deletion from this instant on."""
+    for analysis in _analyses_went_along(db, owner_id, deletion_id):
+        if not is_expired(analysis, now):
+            analysis.purge_after = now
+            analysis.revision += 1
+            analysis.updated_at = now
+
+
+def check_chosen_analyses(
+    db: Session,
+    owner_id: str,
+    item_id: str,
+    version_id: str | None,
+    chosen: tuple[tuple[str, int], ...],
+) -> None:
+    """Each kept analysis a deletion page listed and the user chose to delete along, as the page showed it: still the
+    owner's, in use, at that revision and resting on the record (or this version of it); otherwise AlongChanged, and
+    nothing at all is deleted (check_chosen_along, for analyses)."""
+    for analysis_id, revision in chosen:
+        analysis = db.scalar(
+            select(JobAnalysis).where(
+                JobAnalysis.id == analysis_id,
+                JobAnalysis.owner_id == owner_id,
+                JobAnalysis.deleted_at.is_(None),
+            )
+        )
+
+        if analysis is None or analysis.revision != revision or not _rests_on(db, owner_id, analysis_id, item_id, version_id):
+            raise AlongChanged()
+
+
+def analyses_along(db: Session, owner_id: str, deletion_id: str | None, now: datetime) -> list[JobAnalysis]:
+    """The kept analyses deleted along with this deletion of a record or a version, still restorable with it."""
+    return [analysis for analysis in _analyses_went_along(db, owner_id, deletion_id) if not is_expired(analysis, now)]
+
+
+def analyses_purged_with(db: Session, owner_id: str, item: ExperienceItem, now: datetime) -> int:
+    """How many kept analyses purging this binned record makes unrestorable at once: those deleted along with it and
+    with its versions still in the bin, as request_experience_purge expires them."""
+    deletions = (item.deletion_id, *_open_version_deletions(db, owner_id, item.id))
+
+    return sum(len(analyses_along(db, owner_id, deletion_id, now)) for deletion_id in deletions)
 
 
 def active_direction_record(db: Session, owner_id: str, model, record_id: str):
@@ -857,6 +1015,205 @@ def _deleted_on_its_own(db: Session, row, target_type: str) -> bool:
     return job is not None and job.target_type == target_type and job.target_id == row.id
 
 
+# --- postings, search summaries and analyses kept from a search (U3-D3a, D3b) -----------------------------------
+# Records of their own: RESTORE_WINDOW in the recycle bin, then purged by their job. Postings and summaries are deleted
+# only on their own; an analysis also along with an experience or a version it rests on (_take_analyses_along), and
+# then comes back and goes only with that. A posting's checks and feedback, and an analysis's sources and feedback,
+# have no deletion of their own: they are hidden, restored and purged with it.
+
+JOB_TARGETS = {
+    JobPosting: TargetType.JOB_POSTING,
+    JobSearch: TargetType.JOB_SEARCH,
+    JobAnalysis: TargetType.JOB_ANALYSIS,
+}
+SAME_POSTING_REASON = (
+    "你现在已经有这个岗位的一条记录。为了不覆盖它，这条旧记录不能直接恢复；"
+    "如果想换回旧的，请先删除现在这条，再回来恢复。"
+)
+SAME_SEARCH_REASON = (
+    "这次查找的摘要现在已经有一份在用。为了不重复，这份旧的不能直接恢复；"
+    "如果想换回旧的，请先删除现在这份，再回来恢复。"
+)
+
+
+def active_job_record(db: Session, owner_id: str, model, record_id: str):
+    """A kept posting or search summary of this owner, in use."""
+    row = db.scalar(select(model).where(model.id == record_id, model.owner_id == owner_id, model.deleted_at.is_(None)))
+
+    if row is None:
+        raise NotFound()
+
+    return row
+
+
+def trashed_job_record(db: Session, owner_id: str, model, record_id: str, now: datetime):
+    """A kept posting or search summary of this owner in the recycle bin, still restorable."""
+    row = db.scalar(select(model).where(model.id == record_id, model.owner_id == owner_id, model.deleted_at.is_not(None)))
+
+    if row is None or is_expired(row, now):
+        raise NotFound()
+
+    return row
+
+
+def posting_in_use(db: Session, owner_id: str, source_id: str, posting_id: str) -> JobPosting | None:
+    return db.scalar(
+        select(JobPosting).where(
+            JobPosting.owner_id == owner_id,
+            JobPosting.source_id == source_id,
+            JobPosting.posting_id == posting_id,
+            JobPosting.deleted_at.is_(None),
+        )
+    )
+
+
+def search_in_use(db: Session, owner_id: str, search_id: str) -> JobSearch | None:
+    return db.scalar(
+        select(JobSearch).where(
+            JobSearch.owner_id == owner_id, JobSearch.search_id == search_id, JobSearch.deleted_at.is_(None)
+        )
+    )
+
+
+def posting_in_bin(db: Session, owner_id: str, source_id: str, posting_id: str) -> bool:
+    """The user's own kept posting in the recycle bin: holding one in use would keep it from being restored. Moved here
+    unchanged from app.discovery.records (U3-D4c), which still names it, so 每日查新 reads the same."""
+    return (
+        db.scalar(
+            select(JobPosting.id)
+            .where(
+                JobPosting.owner_id == owner_id,
+                JobPosting.source_id == source_id,
+                JobPosting.posting_id == posting_id,
+                JobPosting.deleted_at.is_not(None),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def skipped_postings(db: Session, owner_id: str, source_ids, accesses) -> set[tuple[str, str]]:
+    """The postings this user skipped on these sources (U3-D3c), by source and id: kept postings in use, reached as one
+    of accesses, whose decision is a skip. One undone, changed to another decision or in the recycle bin is not among
+    them. The query of app.discovery.records.skipped_refs, moved here unchanged (U3-D4c) so 每日查新 reads the same."""
+    rows = db.execute(
+        select(JobPosting.source_id, JobPosting.posting_id).where(
+            JobPosting.owner_id == owner_id,
+            JobPosting.deleted_at.is_(None),
+            JobPosting.decision == JobDecision.SKIP.value,
+            JobPosting.source_id.in_(sorted(set(source_ids))),
+            JobPosting.source_access.in_(sorted(accesses)),
+        )
+    )
+
+    return {(source_id, posting_id) for source_id, posting_id in rows}
+
+
+HELD_REASON = "这是临时留存跟踪的推荐，不是你的岗位记录，不进回收站；要移除，请点“不再跟踪”。"
+
+
+def delete_job_record(db: Session, owner_id: str, model, record_id: str, expected_revision: int, now: datetime):
+    row = active_job_record(db, owner_id, model, record_id)
+
+    if model is JobPosting and db.get(JobRecommendation, row.id) is not None:
+        # A current recommendation is not the user's record: it never goes to the bin, and is removed by 不再跟踪
+        # (U3-D4b-2).
+        raise NotAllowed(HELD_REASON)
+
+    check_record_revision(row, expected_revision)
+    target_type = JOB_TARGETS[model]
+    _start_deletion_of_own(db, owner_id, target_type, row, now)
+
+    if model is JobSearch:
+        # Its 每日查新 goes with it, at once and for good (U3-D4c): what it has seen and the new postings it found, never
+        # through the bin; this commit is where it stops, and a summary restored brings none of it back.
+        job_watches.remove_of_search(db, owner_id, row.id)
+
+    row.revision += 1
+    row.updated_at = now
+    record_event(db, owner_id, row.id, target_type, row.id, f"{target_type}_deleted", now)
+
+    return row
+
+
+def restore_job_record(db: Session, owner_id: str, model, record_id: str, expected_revision: int, now: datetime):
+    """Bring one back from the bin while it can be: never over one in use for the same posting or search."""
+    row = trashed_job_record(db, owner_id, model, record_id, now)
+    check_record_revision(row, expected_revision)
+    target_type = JOB_TARGETS[model]
+
+    if model is JobPosting and posting_in_use(db, owner_id, row.source_id, row.posting_id) is not None:
+        raise NotAllowed(SAME_POSTING_REASON)
+
+    if model is JobSearch and search_in_use(db, owner_id, row.search_id) is not None:
+        raise NotAllowed(SAME_SEARCH_REASON)
+
+    if model is JobAnalysis and not _deleted_on_its_own(db, row, target_type):
+        # One that went along with what it rests on comes back, or goes, only with that (U3-D3b).
+        raise NotAllowed(ANALYSIS_WENT_ALONG_REASON)
+
+    _cancel_deletion(db, row, now)
+    row.revision += 1
+    row.updated_at = now
+    record_event(db, owner_id, row.id, target_type, row.id, f"{target_type}_restored", now)
+
+    return row
+
+
+def request_job_record_purge(db: Session, owner_id: str, model, record_id: str, expected_revision: int, now: datetime) -> str:
+    """Make one in the bin unrestorable now, before its deadline; return its purge job id."""
+    row = trashed_job_record(db, owner_id, model, record_id, now)
+    check_record_revision(row, expected_revision)
+    target_type = JOB_TARGETS[model]
+
+    if model is JobAnalysis and not _deleted_on_its_own(db, row, target_type):
+        raise NotAllowed(ANALYSIS_WENT_ALONG_REASON)
+
+    job_id = _expire_now(db, row, now)
+    row.revision += 1
+    row.updated_at = now
+    record_event(db, owner_id, row.id, target_type, row.id, f"{target_type}_purge_requested", now)
+
+    return job_id
+
+
+@dataclass
+class JobBin:
+    """The kept postings, search summaries and analyses in the recycle bin that can still be restored, and the
+    clean-ups of those past restoring (U3-D3a, D3b). Analyses that went with a record or a version come back with it
+    and are not listed here."""
+
+    postings: list[JobPosting] = field(default_factory=list)
+    searches: list[JobSearch] = field(default_factory=list)
+    waiting_cleanups: list[PurgeJob] = field(default_factory=list)
+    finished_cleanups: list[PurgeJob] = field(default_factory=list)
+    analyses: list[JobAnalysis] = field(default_factory=list)
+
+    def __bool__(self) -> bool:
+        return bool(self.postings or self.searches or self.analyses)
+
+
+def job_bin(db: Session, owner_id: str, now: datetime) -> JobBin:
+    binned = {}
+
+    for model in JOB_TARGETS:
+        rows = db.scalars(
+            select(model)
+            .where(model.owner_id == owner_id, model.deleted_at.is_not(None))
+            .order_by(model.deleted_at.desc(), model.id)
+        )
+        binned[model] = [
+            row
+            for row in rows
+            if not is_expired(row, now) and (model is not JobAnalysis or _deleted_on_its_own(db, row, JOB_TARGETS[model]))
+        ]
+
+    waiting, finished = _cleanups(db, owner_id, now, PurgeJob.target_type.in_(tuple(JOB_TARGETS.values())))
+
+    return JobBin(binned[JobPosting], binned[JobSearch], waiting, finished, binned[JobAnalysis])
+
+
 def binned_documents(
     db: Session,
     owner_id: str,
@@ -928,6 +1285,8 @@ class TrashView:
     attachments_with: dict[str, int] = field(default_factory=dict)
     # How many saved direction explorations the user deleted along with each record (restored with it; U3-C3b).
     explorations_with: dict[str, int] = field(default_factory=dict)
+    # And how many kept analyses (U3-D3b).
+    analyses_with: dict[str, int] = field(default_factory=dict)
 
 
 def trash_view(db: Session, owner_id: str, now: datetime) -> TrashView:
@@ -953,6 +1312,7 @@ def trash_view(db: Session, owner_id: str, now: datetime) -> TrashView:
             for item in items
         },
         explorations_with={item.id: len(explorations_along(db, owner_id, item.deletion_id, now)) for item in items},
+        analyses_with={item.id: len(analyses_along(db, owner_id, item.deletion_id, now)) for item in items},
     )
 
 
@@ -1117,6 +1477,9 @@ TARGET_MODELS = {
     TargetType.ATTACHMENT: Attachment,
     TargetType.DIRECTION_EXPLORATION: DirectionExploration,
     TargetType.DIRECTION_DECISION: DirectionDecision,
+    TargetType.JOB_POSTING: JobPosting,
+    TargetType.JOB_SEARCH: JobSearch,
+    TargetType.JOB_ANALYSIS: JobAnalysis,
 }
 
 
@@ -1168,17 +1531,31 @@ def _remove(db: Session, job: PurgeJob, target, now: datetime) -> None:
             own_job.status = JobStatus.DONE
             own_job.completed_at = now
             own_job.updated_at = now
-            # Explorations deleted along with one of its versions go now too, as that version does.
+            # Explorations and analyses deleted along with one of its versions go now too, as that version does.
             _remove_explorations_along(db, job.owner_id, own_job.deletion_id)
+            _remove_analyses_along(db, job.owner_id, own_job.deletion_id)
 
         db.execute(delete(ExperienceVersion).where(ExperienceVersion.item_id == target.id))
         db.execute(delete(Attachment).where(Attachment.item_id == target.id))
 
     if job.target_type in (TargetType.EXPERIENCE, TargetType.VERSION):
         _remove_explorations_along(db, job.owner_id, job.deletion_id)
+        _remove_analyses_along(db, job.owner_id, job.deletion_id)
 
     if job.target_type in DIRECTION_HOLDERS:
         _remove_sources(db, job.owner_id, DIRECTION_HOLDERS[job.target_type], target.id)
+
+    if job.target_type == TargetType.JOB_POSTING:
+        # A kept posting's checks and feedback go with it, and so do the checks made from its record (U3-D4a) and the
+        # text the user pasted for it (U3-D4d).
+        db.execute(delete(JobPostingCheck).where(JobPostingCheck.posting_record_id == target.id))
+        db.execute(delete(JobPostingRecheck).where(JobPostingRecheck.posting_record_id == target.id))
+        db.execute(delete(JobFeedback).where(JobFeedback.posting_record_id == target.id))
+        db.execute(delete(JobPostingText).where(JobPostingText.posting_record_id == target.id))
+
+    if job.target_type == TargetType.JOB_ANALYSIS:
+        # A kept analysis's sources and feedback go with it.
+        _remove_analysis_rows(db, target.id)
 
     db.delete(target)
     db.flush()
@@ -1189,6 +1566,18 @@ def _remove_explorations_along(db: Session, owner_id: str, deletion_id: str) -> 
     for exploration in _went_along(db, owner_id, deletion_id):
         _remove_sources(db, owner_id, SourceHolder.EXPLORATION, exploration.id)
         db.delete(exploration)
+
+
+def _remove_analyses_along(db: Session, owner_id: str, deletion_id: str) -> None:
+    """The analyses deleted along with a record or a version go with it, what they rest on and feedback included."""
+    for analysis in _analyses_went_along(db, owner_id, deletion_id):
+        _remove_analysis_rows(db, analysis.id)
+        db.delete(analysis)
+
+
+def _remove_analysis_rows(db: Session, analysis_id: str) -> None:
+    db.execute(delete(JobAnalysisSource).where(JobAnalysisSource.analysis_id == analysis_id))
+    db.execute(delete(JobAnalysisFeedback).where(JobAnalysisFeedback.analysis_id == analysis_id))
 
 
 def _remove_sources(db: Session, owner_id: str, holder_type: str, holder_id: str) -> None:

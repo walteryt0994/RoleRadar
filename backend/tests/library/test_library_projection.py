@@ -47,9 +47,12 @@ from app.library.service import (
 from library_helpers import PDF, forms_in
 
 SENTINEL = "快照外哨兵-u1d-7f3c"
-# Since U3-C1 direction records resting on a record are counted (none here, so not mentioned); the job analysis
-# and résumés keep no references yet.
-REFERENCE_NOTE = "本经历库尚未建立与岗位分析、简历的关联，无法列出它们是否用过这些内容；这次删除只处理经历库里的内容。"
+# Since U3-C1 direction records resting on a record are counted, and since U3-D3b the job analyses the user kept
+# (none here, so not mentioned); an analysis not kept is never listed, and résumés keep no references yet.
+REFERENCE_NOTE = (
+    "没有保存的岗位分析结果只临时显示，不在这里列出；"
+    "本经历库尚未建立与简历的关联，无法列出简历是否用过这些内容；这次删除只处理经历库里的内容。"
+)
 # Some fields of each category filled in, the others left empty.
 WRITTEN = {
     PROJECT: {"title": "合成项目", "actions": "只写了一句做了什么"},
@@ -393,7 +396,7 @@ def test_references_are_not_established_which_is_not_an_empty_answer(database, o
     with database.transaction() as db:
         status = list_references(db, owner, item_id, clock.now())
 
-    assert status == ReferenceStatus(status="not_established", modules=("analysis", "resume"))
+    assert status == ReferenceStatus(status="not_established", modules=("resume",))
     assert status != [] and status.modules
 
 

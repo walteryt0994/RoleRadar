@@ -40,6 +40,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import ClientDisconnect
 
+from app.analysis_words import LISTED_MODES, listed_parts, requirement_group, requirement_words
 from app.library.attachments import (
     MAX_ATTACHMENTS,
     TYPE_LABELS,
@@ -124,8 +125,11 @@ from app.library.lifecycle import (
     delete_version_and_chosen,
     deletion_scope,
     direction_bin,
+    analyses_along,
+    analyses_purged_with,
     explorations_along,
     explorations_purged_with,
+    job_bin,
     purge_due,
     request_attachment_purge,
     request_experience_purge,
@@ -158,6 +162,7 @@ from app.library.presentation import (
     format_remaining,
     format_short,
     format_size,
+    analysis_note,
     direction_note,
     record_page,
     reference_note,
@@ -168,7 +173,7 @@ from app.library.presentation import (
     version_label,
 )
 from app.library.projection import list_references, list_version_references
-from app.library.references import read_record_refs, record_ref, resting_explorations
+from app.library.references import read_record_refs, record_ref, resting_analyses, resting_explorations
 from app.library.sends import sends_text
 from app.library.service import (
     active_item,
@@ -443,6 +448,12 @@ def build_templates(config: LibraryConfig) -> Jinja2Templates:
         TYPE_LABELS=TYPE_LABELS,
         MAX_ATTACHMENTS=MAX_ATTACHMENTS,
         sends_text=sends_text,
+        # The shared findings rows (_findings.html), on every page that shows an analysis (U3-D6 R4; each row's group,
+        # U3-D6 close-out).
+        requirement_words=requirement_words,
+        requirement_group=requirement_group,
+        listed_parts=listed_parts,
+        LISTED_MODES=LISTED_MODES,
     )
 
     return Jinja2Templates(env=env)
@@ -720,6 +731,7 @@ def confirm_page(
     status_code: int = 200,
     section: str = "library",
     along: "AlongChoice | None" = None,
+    along_analyses: "AlongChoice | None" = None,
 ) -> Response:
     return render(
         request,
@@ -735,6 +747,7 @@ def confirm_page(
             "error": error,
             "section": section,
             "along": along,
+            "along_analyses": along_analyses,
         },
         user=user,
         status_code=status_code,
@@ -1237,6 +1250,8 @@ def experience_list(
         drafts_waiting = drafts_clearing(db, user.id, now)
         # Direction explorations and decisions deleted on their own (U3-C3a): restored or removed by app.directions.web.
         directions = direction_bin(db, user.id, now)
+        # Kept postings and search summaries (U3-D3a): restored or removed by app.discovery.records_web.
+        jobs = job_bin(db, user.id, now)
 
     return render(
         request,
@@ -1247,6 +1262,7 @@ def experience_list(
             "drafts": drafts,
             "drafts_waiting": drafts_waiting,
             "directions": directions,
+            "jobs": jobs,
             "now": now,
             "notice": NOTICES.get(notice),
             **library_sidebar(request, user, items=items, focus=True),
@@ -1512,6 +1528,12 @@ def history_page(
             for version in history.versions
             if version.deleted_at is not None
         }
+        # And the kept analyses (U3-D3b).
+        analyses_with = {
+            version.id: len(analyses_along(db, user.id, version.deletion_id, now))
+            for version in history.versions
+            if version.deleted_at is not None
+        }
 
     return render(
         request,
@@ -1527,6 +1549,7 @@ def history_page(
             "is_current_confirmed": is_current_confirmed,
             "version_states": states,
             "along": along,
+            "analyses_with": analyses_with,
         },
         user=user,
     )
@@ -1575,6 +1598,7 @@ def _version_delete_confirm(request, user, item_id, version_id, error=None, stat
         state = version_state(db, version)
         references = list_version_references(db, user.id, item.id, version.id, now, ALL_KINDS)
         resting = resting_explorations(db, user.id, item.id, version.id)
+        resting_kept = resting_analyses(db, user.id, item.id, version.id)
 
     return confirm_page(
         request,
@@ -1596,6 +1620,7 @@ def _version_delete_confirm(request, user, item_id, version_id, error=None, stat
         error=error,
         status_code=status_code,
         along=_along_choice(resting, "这个版本"),
+        along_analyses=_analyses_choice(resting_kept, "这个版本"),
     )
 
 
@@ -1609,11 +1634,12 @@ def version_delete(
 ):
     rt = runtime(request)
     chosen = _chosen_along(form)
+    chosen_analyses = _chosen_along(form, ANALYSES_VALUE, ANALYSES_TOGGLE)
 
     try:
         with rt.database.transaction() as db:
             delete_version_and_chosen(
-                db, user.id, item_id, version_id, _expected_state(form), rt.now(), ALL_KINDS, chosen
+                db, user.id, item_id, version_id, _expected_state(form), rt.now(), ALL_KINDS, chosen, chosen_analyses
             )
     except AlongChanged:
         return _version_delete_confirm(request, user, item_id, version_id, error=ALONG_CHANGED, status_code=409)
@@ -1651,26 +1677,32 @@ def version_purge_page(
         state = version_state(db, version)
         references = list_version_references(db, user.id, item.id, version.id, rt.now(), ALL_KINDS)
         along = len(explorations_along(db, user.id, version.deletion_id, rt.now()))
+        kept_along = len(analyses_along(db, user.id, version.deletion_id, rt.now()))
 
-    return _version_purge_confirm(request, user, item, version, state, references, along)
+    return _version_purge_confirm(request, user, item, version, state, references, along, kept_along)
 
 
 # Deleting along the explorations resting on what is deleted (U3-C3b): offered only when some do, never ticked,
 # and taken only as the page listed them (lifecycle.check_chosen_along).
 ALONG_CHANGED = (
-    "你打开这个页面之后，下面列出的方向探索有了变化（删除过、恢复过，或者不再以它为依据），所以这次什么都没有删除。"
-    "下面是现在的情况；要一并删除的话，请重新勾选。"
+    "你打开这个页面之后，下面列出的方向探索或岗位分析有了变化（删除过、恢复过、改过，或者不再以它为依据），"
+    "所以这次什么都没有删除。下面是现在的情况；要一并删除的话，请重新勾选。"
 )
+# The kept analyses (U3-D3b) are offered apart from the explorations, under their own names.
+ANALYSES_VALUE, ANALYSES_TOGGLE = "analyses_along", "delete_analyses_along"
 
 
 @dataclass(frozen=True)
 class AlongChoice:
-    """The explorations a deletion page lists, frozen as "<id>.<revision>" pieces, and the choice to delete them along."""
+    """What a deletion page lists to delete along (explorations, or kept analyses), frozen as "<id>.<revision>"
+    pieces, and the choice to delete them along, posted under value_name and toggle_name."""
 
     legend: str
     lines: tuple[str, ...]
     value: str
     label: str
+    value_name: str = "along"
+    toggle_name: str = "delete_along"
 
 
 def _along_choice(explorations, what: str) -> AlongChoice | None:
@@ -1689,19 +1721,40 @@ def _along_choice(explorations, what: str) -> AlongChoice | None:
     )
 
 
-def _purged_along_points(count: int) -> list[str]:
-    """The line a purge page adds for the explorations the user deleted along, which go now too (U3-C3b)."""
-    return [f"一起删除的 {count} 次方向探索也会永久删除。"] if count else []
+def _analyses_choice(analyses, what: str) -> AlongChoice | None:
+    """The kept analyses resting on what is deleted (U3-D3b): offered only when some do, never ticked."""
+    if not analyses:
+        return None
+
+    return AlongChoice(
+        legend=f"以{what}为依据的岗位分析",
+        lines=tuple(
+            f"“{analysis.facts.get('title', '')}”（{analysis.facts.get('company', '')}），保存于 {format_short(analysis.saved_at)}"
+            for analysis in analyses
+        ),
+        value=",".join(record_ref(analysis.id, analysis.revision) for analysis in analyses),
+        label=f"同时把这 {len(analyses)} 份岗位分析移到回收站（恢复{what}时一起恢复）",
+        value_name=ANALYSES_VALUE,
+        toggle_name=ANALYSES_TOGGLE,
+    )
 
 
-def _chosen_along(form: dict[str, str]) -> tuple[tuple[str, int], ...]:
-    """The explorations the user chose to delete along, as the page froze them; none unless the choice is ticked."""
-    choice = form.get("delete_along")
+def _purged_along_points(count: int, analyses: int = 0) -> list[str]:
+    """The lines a purge page adds for the explorations (U3-C3b) and the kept analyses (U3-D3b) the user deleted
+    along, which go now too."""
+    return [f"一起删除的 {count} 次方向探索也会永久删除。"] * bool(count) + [
+        f"一起删除的 {analyses} 份岗位分析也会永久删除。"
+    ] * bool(analyses)
+
+
+def _chosen_along(form: dict[str, str], value_name: str = "along", toggle_name: str = "delete_along") -> tuple[tuple[str, int], ...]:
+    """What the user chose to delete along, as the page froze it; none unless the choice is ticked."""
+    choice = form.get(toggle_name)
 
     if choice is None:
         return ()
 
-    chosen = read_record_refs(form.get("along", "").split(",")) if choice == "yes" else None
+    chosen = read_record_refs(form.get(value_name, "").split(",")) if choice == "yes" else None
 
     if not chosen:
         raise HTTPException(status_code=400)
@@ -1711,12 +1764,12 @@ def _chosen_along(form: dict[str, str]) -> tuple[tuple[str, int], ...]:
 
 def _version_direction_points(references, *, purge: bool = False) -> list[str]:
     """The line a version's deletion pages add when direction records rest on it (U3-C1); none otherwise."""
-    note = direction_note(references, purge=purge, version=True)
+    notes = (direction_note(references, purge=purge, version=True), analysis_note(references, purge=purge, version=True))
 
-    return [note] if note else []
+    return [note for note in notes if note]
 
 
-def _version_purge_confirm(request, user, item, version, state, references, along=0, error=None, status_code=200):
+def _version_purge_confirm(request, user, item, version, state, references, along=0, kept_along=0, error=None, status_code=200):
     return confirm_page(
         request,
         user,
@@ -1724,7 +1777,7 @@ def _version_purge_confirm(request, user, item, version, state, references, alon
         points=[
             "永久删除后无法恢复。",
             f"只删除这一个历史版本，{_owner_noun(item)}的当前内容和其他版本不受影响。",
-            *_purged_along_points(along),
+            *_purged_along_points(along, kept_along),
             "清理会立即开始；如果暂时没有完成，这个版本也已经不能访问或恢复，系统会自动重试。",
             "已经下载到本机的导出文件不受影响。",
             *_version_direction_points(references, purge=True),
@@ -1757,6 +1810,7 @@ def version_purge(
             check_version_state(db, version, expected)
             references = list_version_references(db, user.id, item.id, version.id, rt.now(), ALL_KINDS)
             along = len(explorations_along(db, user.id, version.deletion_id, rt.now()))
+            kept_along = len(analyses_along(db, user.id, version.deletion_id, rt.now()))
 
         return _version_purge_confirm(
             request,
@@ -1766,6 +1820,7 @@ def version_purge(
             expected,
             references,
             along,
+            kept_along,
             error="请先勾选“我了解永久删除后无法恢复”。",
             status_code=422,
         )
@@ -1812,6 +1867,7 @@ def _delete_confirm(request, user, item_id, error=None, status_code=200):
         scope = deletion_scope(db, user.id, item_id, rt.now(), ALL_KINDS)
         references = list_references(db, user.id, item_id, rt.now(), ALL_KINDS)
         resting = resting_explorations(db, user.id, item_id)
+        resting_kept = resting_analyses(db, user.id, item_id)
 
     item = scope.item
     noun = KIND_NOUNS[item.category]
@@ -1867,6 +1923,7 @@ def _delete_confirm(request, user, item_id, error=None, status_code=200):
         error=error,
         status_code=status_code,
         along=_along_choice(resting, KIND_NOUNS[item.category]),
+        along_analyses=_analyses_choice(resting_kept, KIND_NOUNS[item.category]),
     )
 
 
@@ -1879,11 +1936,12 @@ def delete_item(
 ):
     rt = runtime(request)
     chosen = _chosen_along(form)
+    chosen_analyses = _chosen_along(form, ANALYSES_VALUE, ANALYSES_TOGGLE)
 
     try:
         with rt.database.transaction() as db:
             item = delete_experience_and_chosen(
-                db, user.id, item_id, _expected_revision(form), rt.now(), ALL_KINDS, chosen
+                db, user.id, item_id, _expected_revision(form), rt.now(), ALL_KINDS, chosen, chosen_analyses
             )
             category = item.category
     except AlongChanged:
@@ -1920,11 +1978,12 @@ def purge_page(item_id: str, request: Request, user: CurrentUser = Depends(curre
         attachments = attachment_count(db, item)
         references = list_references(db, user.id, item_id, rt.now(), ALL_KINDS)
         along = explorations_purged_with(db, user.id, item, rt.now())
+        kept_along = analyses_purged_with(db, user.id, item, rt.now())
 
-    return _purge_confirm(request, user, item, attachments, references, along)
+    return _purge_confirm(request, user, item, attachments, references, along, kept_along)
 
 
-def _purge_confirm(request, user, item, attachments, references, along=0, error=None, status_code=200):
+def _purge_confirm(request, user, item, attachments, references, along=0, kept_along=0, error=None, status_code=200):
     if item.category in DOCUMENT_KINDS:
         what = f"会删除{KIND_NOUNS[item.category]}的全部内容和全部历史版本。"
     elif attachments:
@@ -1942,7 +2001,7 @@ def _purge_confirm(request, user, item, attachments, references, along=0, error=
         points=[
             "永久删除后无法恢复。",
             what,
-            *_purged_along_points(along),
+            *_purged_along_points(along, kept_along),
             "清理会立即开始；如果暂时没有完成，内容也已经不能访问或恢复，系统会自动重试，并在回收站显示进度。",
             "已经下载到本机的导出文件不受影响。",
             reference_note(references, purge=True),
@@ -1975,6 +2034,7 @@ def purge_item(
             attachments = attachment_count(db, item)
             references = list_references(db, user.id, item_id, rt.now(), ALL_KINDS)
             along = explorations_purged_with(db, user.id, item, rt.now())
+            kept_along = analyses_purged_with(db, user.id, item, rt.now())
 
         return _purge_confirm(
             request,
@@ -1983,6 +2043,7 @@ def purge_item(
             attachments,
             references,
             along,
+            kept_along,
             error="请先勾选“我了解永久删除后无法恢复”。",
             status_code=422,
         )

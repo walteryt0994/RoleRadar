@@ -42,6 +42,8 @@ from app.library.models import (
     SCHEMA_VERSION,
     Attachment,
     AuditEvent,
+    DirectionDecision,
+    DirectionExploration,
     DirectionSource,
     ExperienceItem,
     ExperienceVersion,
@@ -50,6 +52,22 @@ from app.library.models import (
     ImportDraft,
     ImportState,
     ImportStructuring,
+    JobAnalysis,
+    JobAnalysisFeedback,
+    JobAnalysisSource,
+    JobFeedback,
+    JobPosting,
+    JobPostingCheck,
+    JobPostingRecheck,
+    JobSearch,
+    JobUpdateRun,
+    JobUpdateRunCount,
+    JobRecommendation,
+    JobRecommendationLatest,
+    JobPostingText,
+    JobWatch,
+    JobWatchPosting,
+    JobWatchSeen,
     LiveApproval,
     LiveRequest,
     PurgeJob,
@@ -1044,7 +1062,8 @@ def test_export_all_holds_the_kept_imports_and_says_they_are_temporary(app, brow
     readme = files["README.md"].decode("utf-8")
     (entry,) = manifest["imports"]
 
-    assert manifest["format_version"] == 8 and manifest["counts"]["imports"] == 1 and manifest["complete"]
+    # Format 10 since U3-D3b (kept analyses); the imports are counted as before.
+    assert manifest["format_version"] == 14 and manifest["counts"]["imports"] == 1 and manifest["complete"]
     # Format 8 (U3-C1): the direction records are counted too, none here, and data.json says so.
     assert (manifest["counts"]["direction_explorations"], manifest["counts"]["direction_decisions"]) == (0, 0)
     assert data["directions"] == {"explorations": [], "decisions": []}
@@ -1067,10 +1086,17 @@ def test_export_all_says_when_an_import_file_is_missing(app, browser_a):
     assert manifest["complete"] is False and manifest["imports"][0]["original_status"] == "missing"
 
 
-# --- the structure upgrade from versions 3 to 8 ----------------------------------------------------------
+# --- the structure upgrade from versions 3 to 13 ---------------------------------------------------------
 
 # The tables each older structure version lacks, in an order they can be dropped in.
-NEW_IN_9 = ("direction_sources", "direction_decisions", "direction_explorations")
+NEW_IN_16 = ("job_posting_texts",)
+NEW_IN_15 = NEW_IN_16 + ("job_watch_postings", "job_watch_seen", "job_watches")
+NEW_IN_14 = NEW_IN_15 + ("job_recommendation_latest", "job_recommendations")
+NEW_IN_13 = NEW_IN_14 + ("job_update_run_counts",)
+NEW_IN_12 = NEW_IN_13 + ("job_posting_rechecks", "job_update_runs")
+NEW_IN_11 = NEW_IN_12 + ("job_analysis_feedback", "job_analysis_sources", "job_analyses")
+NEW_IN_10 = NEW_IN_11 + ("job_feedback", "job_posting_checks", "job_searches", "job_postings")
+NEW_IN_9 = NEW_IN_10 + ("direction_sources", "direction_decisions", "direction_explorations")
 NEW_IN_8 = NEW_IN_9 + ("live_requests", "live_approvals")
 LACKING = {
     "3": NEW_IN_8 + ("import_drafts", "import_adoptions", "import_candidates", "import_structurings", "resume_imports"),
@@ -1079,6 +1105,20 @@ LACKING = {
     "6": NEW_IN_8 + ("import_drafts",),
     "7": NEW_IN_8,
     "8": NEW_IN_9,
+    # U3-D3a: a version 9 file has the direction records and lacks the kept postings, searches and analyses.
+    "9": NEW_IN_10,
+    # U3-D3b: a version 10 file has the kept postings and searches too, and lacks only the kept analyses.
+    "10": NEW_IN_11,
+    # U3-D4a: a version 11 file has the kept analyses too, and lacks only the checks made from a record and their runs.
+    "11": NEW_IN_12,
+    # U3-D4b-1: a version 12 file has the checks made from a record and their runs, and lacks only the batch counts.
+    "12": NEW_IN_13,
+    # U3-D4b-2: a version 13 file has the batch counts too, and lacks only the current recommendations held.
+    "13": NEW_IN_14,
+    # U3-D4c: a version 14 file has the current recommendations too, and lacks only 每日查新.
+    "14": NEW_IN_15,
+    # U3-D4d: a version 15 file has 每日查新 too, and lacks only the texts of postings the user pasted.
+    "15": NEW_IN_16,
 }
 OLDER_VERSIONS = list(LACKING)
 
@@ -1086,13 +1126,26 @@ OLDER_VERSIONS = list(LACKING)
 def older_file(path: Path, clock, version: str = "3") -> dict:
     """A library of an older structure version, with a row in each of its tables; returns its row counts.
 
-    Versions 4 to 9 only add tables, so the current file without them and
+    Versions 4 to 16 only add tables, so the current file without them and
     with the older version number is that version's file. From version 4 on
     the file holds a resume import, from version 5 on its candidates too:
     one waiting, one edited, one left out; from version 6 on it also says
     where the edited one was adopted, from version 7 on the import is saved
-    as a draft, and a version 8 file also has an approval of real AI
-    requests with one settled request in its ledger.
+    as a draft, from version 8 on it also has an approval of real AI
+    requests with one settled request in its ledger, from version 9 on also
+    a saved direction exploration, a decision on it and what they rest on
+    (U3-D3a: what the upgrade to 10 must keep as it was), and a version 10
+    file also a kept posting with a check and feedback, and a kept search
+    summary (U3-D3b: what the upgrade to 11 must keep as it was), and a version
+    11 file also a kept analysis with what it rests on and feedback on it
+    (U3-D4a: what the upgrade to 12 must keep as it was), and a version 12
+    file also a check of a kept posting made from its record and its run
+    (U3-D4b-1: what the upgrade to 13 must keep as it was), and a version 13
+    file also the counts of that run (U3-D4b-2: what the upgrade to 14 must keep
+    as it was), and a version 14 file also a current recommendation held and the
+    latest search ticked for it (U3-D4c: what the upgrade to 15 must keep as it was),
+    and a version 15 file also a watch on the kept summary, a posting it has seen
+    and a new one it found (U3-D4d: what the upgrade to 16 must keep as it was).
     """
     engine = make_engine(path)
     create_schema(engine)
@@ -1137,7 +1190,7 @@ def older_file(path: Path, clock, version: str = "3") -> dict:
         )
         db.add(AuditEvent(owner_id=user, item_id=item, object_type="experience", object_id=item, action="created", at=now))
 
-        if version in ("4", "5", "6", "7", "8"):
+        if version in ("4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"):
             imported = str(uuid.uuid4())
             db.add(
                 ResumeImport(
@@ -1149,7 +1202,7 @@ def older_file(path: Path, clock, version: str = "3") -> dict:
                 )
             )
 
-        if version in ("5", "6", "7", "8"):
+        if version in ("5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"):
             db.flush()
             db.add(
                 ImportStructuring(
@@ -1163,7 +1216,7 @@ def older_file(path: Path, clock, version: str = "3") -> dict:
                 (("pending", None), ("pending", {"title": "改过的合成标题"}), ("excluded", None)), start=1
             ):
                 candidate = str(uuid.uuid4())
-                adopted = version in ("6", "7", "8") and edits is not None
+                adopted = version in ("6", "7", "8", "9", "10", "11", "12", "13", "14", "15") and edits is not None
                 db.add(
                     ImportCandidate(
                         id=candidate, import_id=imported, owner_id=user, position=position, kind="other",
@@ -1181,11 +1234,141 @@ def older_file(path: Path, clock, version: str = "3") -> dict:
                         )
                     )
 
-        if version in ("7", "8"):
+        if version in ("7", "8", "9", "10", "11", "12", "13", "14", "15"):
             db.flush()
             db.add(ImportDraft(import_id=imported, owner_id=user, saved_at=now, deleted_at=None, purge_after=None))
 
-        if version == "8":
+        if version in ("9", "10", "11", "12", "13", "14", "15"):
+            exploration, decision = str(uuid.uuid4()), str(uuid.uuid4())
+            db.add(
+                DirectionExploration(
+                    id=exploration, owner_id=user, result_id=str(uuid.uuid4()), content={"directions": [{"name": "合成方向"}]},
+                    generation={"provider": "simulation"}, revision=1, saved_at=now, updated_at=now, **gone,
+                )
+            )
+            db.add(
+                DirectionDecision(
+                    id=decision, owner_id=user, name="合成方向", name_key="合成方向", state="keep", basis="saved_exploration",
+                    exploration_id=exploration, revision=1, created_at=now, updated_at=now, **gone,
+                )
+            )
+            db.add(
+                DirectionSource(
+                    id=str(uuid.uuid4()), owner_id=user, holder_type="exploration", holder_id=exploration, kind="experience",
+                    item_id=item, version_id=version_id, fields=["title"],
+                )
+            )
+
+        if version in ("10", "11", "12", "13", "14", "15"):
+            posting = str(uuid.uuid4())
+            db.add(
+                JobPosting(
+                    id=posting, owner_id=user, source_id="synthetic-board", posting_id="SYN-1", source_access="synthetic",
+                    facts={"title": "合成岗位"}, search_id="synthetic-search", decision="favorite", reasons=[], note=None,
+                    decided_at=now, revision=1, kept_at=now, updated_at=now, **gone,
+                )
+            )
+            db.flush()
+            db.add(
+                JobPostingCheck(
+                    id=str(uuid.uuid4()), owner_id=user, posting_record_id=posting, search_id="synthetic-search",
+                    status="open", checked_at=now, recorded_at=now,
+                )
+            )
+            db.add(
+                JobFeedback(
+                    id=str(uuid.uuid4()), owner_id=user, posting_record_id=posting, search_id="synthetic-search",
+                    field="city", reason="wrong", note=None, created_at=now,
+                )
+            )
+            summary = str(uuid.uuid4())
+            db.add(
+                JobSearch(
+                    id=summary, owner_id=user, search_id="synthetic-search", summary={"version": 2}, revision=1,
+                    kept_at=now, updated_at=now, **gone,
+                )
+            )
+
+        if version in ("11", "12", "13", "14", "15"):
+            analysis = str(uuid.uuid4())
+            db.add(
+                JobAnalysis(
+                    id=analysis, owner_id=user, search_id="synthetic-search", source_id="synthetic-board", posting_id="SYN-1",
+                    source_access="synthetic", facts={"title": "合成岗位"}, content={"category": "worth"},
+                    generation={"provider": "simulation"}, content_sha256="d" * 64, analysed_at=now, revision=1,
+                    saved_at=now, updated_at=now, **gone,
+                )
+            )
+            db.flush()
+            db.add(
+                JobAnalysisSource(
+                    id=str(uuid.uuid4()), owner_id=user, analysis_id=analysis, kind="experience", item_id=item,
+                    version_id=version_id, fields=["title"],
+                )
+            )
+            db.add(
+                JobAnalysisFeedback(
+                    id=str(uuid.uuid4()), owner_id=user, analysis_id=analysis, target="category", target_ref=None,
+                    reason="wrong", note=None, created_at=now,
+                )
+            )
+
+        if version in ("12", "13", "14", "15"):
+            run = str(uuid.uuid4())
+            db.add(
+                JobUpdateRun(
+                    id=run, owner_id=user, trigger="recheck", calls=2, outcome="done", reason=None, started_at=now, finished_at=now,
+                )
+            )
+            db.flush()
+            db.add(
+                JobPostingRecheck(
+                    id=str(uuid.uuid4()), owner_id=user, posting_record_id=posting, run_id=run, status="open", reason=None,
+                    evidence=None, facts={"title": "合成岗位"}, content_sha256="e" * 64, changes=[], checked_at=now, recorded_at=now,
+                )
+            )
+
+            if version in ("13", "14", "15"):
+                db.add(
+                    JobUpdateRunCount(
+                        run_id=run, owner_id=user, due=1, selected=1, succeeded=1, failed=0, discarded=0, skipped=0, unreached=0,
+                    )
+                )
+
+            if version in ("14", "15"):
+                db.add(
+                    JobRecommendation(
+                        posting_record_id=posting, owner_id=user, search_id="synthetic-search", recommended_at=now,
+                        until=now + timedelta(days=7),
+                    )
+                )
+                db.add(JobRecommendationLatest(owner_id=user, search_id="synthetic-search", search_started_at=now, decided_at=now))
+
+            if version == "15":
+                watch = str(uuid.uuid4())
+                db.add(
+                    JobWatch(
+                        id=watch, owner_id=user, search_record_id=summary, notice_version="watch-1", baselined=[], baseline_at=now,
+                        run_token=None, last_trigger="manual", last_started_at=now, last_finished_at=now, last_outcome="complete",
+                        last_reason=None, last_calls=1, last_counts={}, attempted_at=now, completed_at=now, created_at=now, updated_at=now,
+                    )
+                )
+                db.flush()
+                db.add(
+                    JobWatchSeen(
+                        watch_id=watch, source_id="synthetic-board", posting_id="SYN-2", owner_id=user, job_key=None,
+                        first_seen_at=now, last_seen_at=now,
+                    )
+                )
+                db.add(
+                    JobWatchPosting(
+                        id=str(uuid.uuid4()), owner_id=user, watch_id=watch, source_id="synthetic-board", posting_id="SYN-2",
+                        facts={"title": "合成岗位"}, screening={}, partial_read=None, position=1, found_at=now,
+                        until=now + timedelta(days=14),
+                    )
+                )
+
+        if version in ("8", "9", "10", "11", "12", "13", "14", "15"):
             db.add(LiveApproval(approval_id="synthetic-approval", terms={"model": "synthetic"}, created_at=now, paused_at=None, paused_reason=None))
             db.flush()
             db.add(
@@ -1284,10 +1467,11 @@ def test_upgrading_an_older_file_keeps_every_row_and_its_identity(make_config, t
     assert after == counts and set(new.values()) == {0}
     assert rows_of(path, before) == before
     assert version == "3" or counts["resume_imports"] == 1
-    assert version not in ("5", "6", "7", "8") or counts["import_candidates"] == 3
-    assert version not in ("6", "7", "8") or counts["import_adoptions"] == 1
-    assert version not in ("7", "8") or counts["import_drafts"] == 1
-    assert version != "8" or (counts["live_approvals"], counts["live_requests"]) == (1, 1)
+    assert version not in ("5", "6", "7", "8", "9") or counts["import_candidates"] == 3
+    assert version not in ("6", "7", "8", "9") or counts["import_adoptions"] == 1
+    assert version not in ("7", "8", "9") or counts["import_drafts"] == 1
+    assert version not in ("8", "9") or (counts["live_approvals"], counts["live_requests"]) == (1, 1)
+    assert version != "9" or (counts["direction_explorations"], counts["direction_decisions"], counts["direction_sources"]) == (1, 1, 1)
     assert tables_of(path) == set(LibraryBase.metadata.tables)
     # Running it again changes nothing, and the app opens the file.
     digest = digest_of(path)
@@ -1309,7 +1493,11 @@ def test_an_upgraded_file_has_the_structure_of_a_new_one(tmp_path, clock, versio
 
 @pytest.mark.parametrize(
     ("version", "failing"),
-    [("3", ResumeImport), ("4", ImportCandidate), ("5", ImportAdoption), ("6", ImportDraft), ("7", LiveRequest), ("8", DirectionSource)],
+    [
+        ("3", ResumeImport), ("4", ImportCandidate), ("5", ImportAdoption), ("6", ImportDraft), ("7", LiveRequest),
+        ("8", DirectionSource), ("9", JobSearch), ("10", JobAnalysisSource), ("11", JobPostingRecheck), ("12", JobUpdateRunCount),
+        ("13", JobRecommendationLatest), ("14", JobWatchPosting), ("15", JobPostingText),
+    ],
 )
 def test_a_failed_upgrade_leaves_the_file_as_it_was(tmp_path, clock, monkeypatch, capsys, version, failing):
     path = tmp_path / "library.db"
@@ -1328,7 +1516,10 @@ def test_a_failed_upgrade_leaves_the_file_as_it_was(tmp_path, clock, monkeypatch
     assert meta_of(path)["schema_version"] == version and set(counts) == tables_of(path)
 
 
-@pytest.mark.parametrize(("version", "table"), [("6", "import_drafts"), ("7", "live_approvals"), ("8", "direction_explorations")])
+@pytest.mark.parametrize(
+    ("version", "table"),
+    [("6", "import_drafts"), ("7", "live_approvals"), ("8", "direction_explorations"), ("9", "job_postings"), ("10", "job_analyses")],
+)
 def test_a_file_that_already_has_a_new_table_is_refused_untouched(tmp_path, clock, version, table):
     path = tmp_path / "library.db"
     older_file(path, clock, version)
@@ -1342,7 +1533,8 @@ def test_a_file_that_already_has_a_new_table_is_refused_untouched(tmp_path, cloc
     assert digest_of(path) == digest
 
 
-@pytest.mark.parametrize("version", ["2", "10"])
+# 16 became the current version (U3-D4d): 17 stands for one this program does not know.
+@pytest.mark.parametrize("version", ["2", "17"])
 def test_other_versions_are_refused_untouched(tmp_path, clock, version):
     path = tmp_path / "library.db"
     older_file(path, clock)

@@ -70,6 +70,15 @@ def test_zip_export_has_readme_data_manifest_and_one_file_per_experience(browser
         "experiences": 2, "profile": 0, "preferences": 0, "recycle_bin": 0, "attachments": 0, "imports": 0,
         # Format 8 (U3-C1): saved direction explorations and decisions, none here.
         "direction_explorations": 0, "direction_decisions": 0, "direction_recycle_bin": 0,
+        # Format 9 (U3-D3a): postings and search summaries kept from a search, none here; format 10 (U3-D3b) the
+        # kept analyses, none here either.
+        "job_postings": 0, "job_searches": 0, "job_analyses": 0, "job_recycle_bin": 0,
+        # Format 12 (U3-D4b-2): current recommendations held for tracking, none here.
+        "job_recommendations": 0,
+        # Format 13 (U3-D4c): 每日查新 and its new postings, none here.
+        "job_watches": 0, "job_watch_postings": 0,
+        # Format 14 (U3-D4d): the texts of postings the user pasted and kept, none here.
+        "job_posting_texts": 0,
     }
 
     folder = folders.pop()

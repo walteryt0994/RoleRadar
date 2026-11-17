@@ -33,7 +33,8 @@ class Conflict(LibraryError):
 
 
 class RecordConflict(LibraryError):
-    """A direction exploration or decision was asked to change by someone who saw an earlier state of it (U3-C1)."""
+    """A direction exploration or decision (U3-C1), or a kept posting or search summary (U3-D3a), was asked to change
+    by someone who saw an earlier state of it."""
 
     def __init__(self, record_id: str):
         super().__init__("record state conflict")

@@ -29,6 +29,9 @@
     {% if along.get(version.id) %}
     <span class="muted small">连同 {{ along[version.id] }} 次方向探索，恢复这个版本时一起恢复</span>
     {% endif %}
+    {% if analyses_with is defined and analyses_with.get(version.id) %}
+    <span class="muted small">连同 {{ analyses_with[version.id] }} 份岗位分析，恢复这个版本时一起恢复</span>
+    {% endif %}
     <div class="row-actions">
       <form method="post" action="/experiences/{{ item.id }}/versions/{{ version.id }}/restore" class="inline">
         {{ m.csrf() }}

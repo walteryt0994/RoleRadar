@@ -15,20 +15,20 @@
   {% for name, value in hidden.items() %}
   <input type="hidden" name="{{ name }}" value="{{ value }}">
   {% endfor %}
-  {% if along is defined and along %}
-  {# U3-C3b: never ticked when shown; only the explorations listed here, as listed, can go along. Pages that pass
-     nothing for it (other modules' confirmations) show no such block. #}
+  {# U3-C3b, D3b: never ticked when shown; only the explorations, or the kept analyses, listed here, as listed, can go
+     along, each under its own names. Pages that pass nothing for them (other modules' confirmations) show no such block. #}
+  {% for choice in [along if along is defined else none, along_analyses if along_analyses is defined else none] if choice %}
   <fieldset class="along-choice">
-    <legend>{{ along.legend }}</legend>
+    <legend>{{ choice.legend }}</legend>
     <ul class="points">
-      {% for line in along.lines %}
+      {% for line in choice.lines %}
       <li>{{ line }}</li>
       {% endfor %}
     </ul>
-    <input type="hidden" name="along" value="{{ along.value }}">
-    <label class="check"><input type="checkbox" name="delete_along" value="yes"> {{ along.label }}</label>
+    <input type="hidden" name="{{ choice.value_name }}" value="{{ choice.value }}">
+    <label class="check"><input type="checkbox" name="{{ choice.toggle_name }}" value="yes"> {{ choice.label }}</label>
   </fieldset>
-  {% endif %}
+  {% endfor %}
   {% if acknowledge %}
   <label class="ack"><input type="checkbox" name="acknowledge" value="yes" required> {{ acknowledge }}</label>
   {% endif %}

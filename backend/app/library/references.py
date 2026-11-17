@@ -1,4 +1,4 @@
-"""How what a direction record rests on stands now, and which records rest on what (U3-C1).
+"""How what a direction record or a kept analysis rests on stands now, and which records rest on what (U3-C1, D3b).
 
 A saved direction exploration or a direction decision names the records it rests on (DirectionSource): an
 experience or the job preferences, the version used and the fields it was used for. Nothing there is ever
@@ -18,6 +18,9 @@ Something resting on several sources stands as the worst of them, and on none as
 current may be used for anything new: restoring one source does not bring a record back into use while
 another still keeps it out. A decision the user made their own choice stands as personal whatever it
 rested on before, and one made on a saved exploration also stands as that exploration does.
+
+A kept analysis (U3-D3b) names what it rests on in the same shape (JobAnalysisSource) and stands as the worst of its
+sources too; it is only ever looked at, never used for anything new.
 
 Every lookup is filtered by the owner, so another user's ids are simply not found.
 """
@@ -39,6 +42,8 @@ from app.library.models import (
     ExperienceItem,
     ExperienceVersion,
     ItemState,
+    JobAnalysis,
+    JobAnalysisSource,
     SourceHolder,
     SourceKind,
     VersionKind,
@@ -151,7 +156,7 @@ def _field(content: dict, name: str) -> str:
     return value if isinstance(value, str) else ""
 
 
-def source_state(db: Session, owner_id: str, row: DirectionSource, now: datetime) -> SourceState:
+def source_state(db: Session, owner_id: str, row: "DirectionSource | JobAnalysisSource", now: datetime) -> SourceState:
     return state_of(db, owner_id, row.kind, row.item_id, row.version_id, row.fields or [], now)
 
 
@@ -314,3 +319,40 @@ def read_record_refs(texts) -> tuple[tuple[str, int], ...] | None:
         refs[ref[0]] = ref[1]
 
     return tuple(refs.items())
+
+
+# --- analyses kept from a search (U3-D3b) ------------------------------------------------------------------------------
+
+
+def analysis_sources(db: Session, owner_id: str, analysis_id: str) -> list[JobAnalysisSource]:
+    return list(
+        db.scalars(
+            select(JobAnalysisSource)
+            .where(JobAnalysisSource.owner_id == owner_id, JobAnalysisSource.analysis_id == analysis_id)
+            .order_by(JobAnalysisSource.kind, JobAnalysisSource.item_id, JobAnalysisSource.id)
+        )
+    )
+
+
+def analysis_state(db: Session, owner_id: str, analysis_id: str, now: datetime) -> SourceState:
+    """How a kept analysis stands now: the worst of what it rests on."""
+    return worst(source_state(db, owner_id, row, now) for row in analysis_sources(db, owner_id, analysis_id))
+
+
+def resting_analyses(db: Session, owner_id: str, item_id: str, version_id: str | None = None) -> list[JobAnalysis]:
+    """The kept analyses in use resting on a record, or on this version of it, oldest first: what a deletion page
+    lists and offers to delete along, as resting_explorations for explorations."""
+    conditions = [JobAnalysisSource.owner_id == owner_id, JobAnalysisSource.item_id == item_id]
+
+    if version_id is not None:
+        conditions.append(JobAnalysisSource.version_id == version_id)
+
+    wanted = {row.analysis_id for row in db.scalars(select(JobAnalysisSource).where(*conditions))}
+
+    return list(
+        db.scalars(
+            select(JobAnalysis)
+            .where(JobAnalysis.owner_id == owner_id, JobAnalysis.id.in_(wanted), JobAnalysis.deleted_at.is_(None))
+            .order_by(JobAnalysis.saved_at, JobAnalysis.id)
+        )
+    )

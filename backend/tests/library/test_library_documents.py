@@ -541,9 +541,11 @@ def test_a_new_file_gets_every_table_and_the_version_at_once(tmp_path):
     engine.dispose()
 
     assert tables == set(LibraryBase.metadata.tables)
-    assert meta["schema_version"] == SCHEMA_VERSION == "9"
+    assert meta["schema_version"] == SCHEMA_VERSION == "16"
     # Version 9 (U3-C1): the saved direction explorations, the decisions and what each rests on.
     assert {"direction_explorations", "direction_decisions", "direction_sources"} <= tables
+    # Version 10 (U3-D3a): the postings and search summaries the user kept, and a posting's checks and feedback.
+    assert {"job_postings", "job_posting_checks", "job_feedback", "job_searches"} <= tables
     # The id that ties the file to its attachment folder.
     assert set(meta) == {"schema_version", "library_id"}
     assert len(meta["library_id"]) == 36
@@ -631,7 +633,7 @@ def test_processes_opening_one_new_file_together_all_start(tmp_path, monkeypatch
     assert errors == []
     # Created once: one version and one library id, not one of each per start.
     assert [key for key, _ in rows] == ["library_id", "schema_version"]
-    assert rows[1][1] == "9"
+    assert rows[1][1] == "16"
 
 
 def test_a_file_that_is_not_sqlite_is_refused_and_left_untouched(tmp_path):

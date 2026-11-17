@@ -35,12 +35,14 @@ from sqlalchemy.orm import Session
 from app.library.content import CATEGORY_FIELDS, EXPERIENCE_CATEGORIES, PREFERENCES
 from app.library.errors import InconsistentRecord, NotFound
 from app.library.models import ExperienceItem, ExperienceVersion, ItemState, VersionKind
-from app.library.references import referencing
+from app.library.references import referencing, resting_analyses
 from app.library.service import is_expired, new_id
 
 NOT_ESTABLISHED = "not_established"
 # The modules that use records but keep no references to them yet: the job analysis (U2) and résumés (U4).
-DOWNSTREAM_MODULES = ("analysis", "resume")
+# The modules that keep no references to the library yet. Job analyses do since U3-D3b for those the user kept (an
+# analysis not kept is temporary and never listed); resumes do not.
+DOWNSTREAM_MODULES = ("resume",)
 
 
 @dataclass(frozen=True)
@@ -257,13 +259,15 @@ class ReferenceStatus:
     library yet, so it cannot tell whether they used the record. That is not
     the same as knowing that they did not. explorations and decisions are
     the saved direction explorations and the decisions in use that rest on
-    the record (U3-C1): known, so listed, and none means none.
+    the record (U3-C1), and analyses the kept job analyses in use (U3-D3b):
+    known, so listed, and none means none.
     """
 
     status: str
     modules: tuple[str, ...]
     explorations: tuple[str, ...] = ()
     decisions: tuple[str, ...] = ()
+    analyses: tuple[str, ...] = ()
 
 
 def list_references(
@@ -296,6 +300,7 @@ def list_references(
         modules=DOWNSTREAM_MODULES,
         explorations=directions.explorations,
         decisions=directions.decisions,
+        analyses=tuple(analysis.id for analysis in resting_analyses(db, owner_id, item.id)),
     )
 
 
@@ -330,4 +335,5 @@ def list_version_references(
         modules=DOWNSTREAM_MODULES,
         explorations=directions.explorations,
         decisions=directions.decisions,
+        analyses=tuple(analysis.id for analysis in resting_analyses(db, owner_id, item_id, version.id)),
     )

@@ -3,12 +3,21 @@
 Version 4 added resume_imports (U2-B1); version 5 added import_structurings
 and import_candidates (U2-B2a); version 6 added import_adoptions (U2-B2b);
 version 7 added import_drafts (U2-B3a); version 8 added live_approvals and
-live_requests, the ledger of real AI requests (U2-C1); version 9 adds
+live_requests, the ledger of real AI requests (U2-C1); version 9 added
 direction_explorations, direction_decisions and direction_sources, the saved
-direction explorations and decisions and what each rests on (U3-C1). An
-upgrade passes every step from the file's version: a version 3 file gets all
-ten tables, a version 4 file the last nine, a version 5 file the last seven,
-a version 6 file the last six, a version 7 file the last five, a version 8
+direction explorations and decisions and what each rests on (U3-C1); version
+10 added job_postings, job_posting_checks, job_feedback and job_searches, the
+postings and search summaries the user kept (U3-D3a); version 11 adds
+job_analyses, job_analysis_sources and job_analysis_feedback, the analyses the
+user kept, what each rests on and feedback on them (U3-D3b); version 14 adds
+job_recommendations and job_recommendation_latest, the postings held only as
+current recommendations and the latest search ticked for them (U3-D4b-2); version 15 adds job_watches,
+job_watch_seen and job_watch_postings, 每日查新 on a kept search summary (U3-D4c); version 16 adds
+job_posting_texts, the text of a posting the user pasted and added to 我的岗位 (U3-D4d). An upgrade passes
+every step from the file's version: a version 3 file gets all seventeen
+tables, a version 4 file the last sixteen, a version 5 file the last fourteen,
+a version 6 file the last thirteen, a version 7 file the last twelve, a
+version 8 file the last ten, a version 9 file the last seven, a version 10
 file the last three.
 Nothing already in the file changes; the new tables are created
 empty, with their indexes. The upgrade is an explicit command, never a part
@@ -20,7 +29,7 @@ backed up:
 
 Before anything changes, the file must exist, pass the same path checks as
 the app's database (never the legacy RoleRadar database, never inside the
-repository), be a library database of version 3 to 8 with its library id
+repository), be a library database of version 3 to 10 with its library id
 and without any table the upgrade would create, and pass SQLite's quick
 check. The upgrade is one transaction that takes the write lock first: it
 creates the tables and then sets the version, so any failure leaves the
@@ -52,6 +61,22 @@ from app.library.models import (
     ImportCandidate,
     ImportDraft,
     ImportStructuring,
+    JobAnalysis,
+    JobAnalysisFeedback,
+    JobAnalysisSource,
+    JobFeedback,
+    JobPosting,
+    JobPostingCheck,
+    JobPostingRecheck,
+    JobPostingText,
+    JobRecommendation,
+    JobRecommendationLatest,
+    JobSearch,
+    JobUpdateRun,
+    JobUpdateRunCount,
+    JobWatch,
+    JobWatchPosting,
+    JobWatchSeen,
     LibraryMeta,
     LiveApproval,
     LiveRequest,
@@ -66,6 +91,18 @@ STEPS: tuple[tuple[str, tuple[Table, ...]], ...] = (
     ("7", (ImportDraft.__table__,)),
     ("8", (LiveApproval.__table__, LiveRequest.__table__)),
     ("9", (DirectionExploration.__table__, DirectionDecision.__table__, DirectionSource.__table__)),
+    ("10", (JobPosting.__table__, JobPostingCheck.__table__, JobFeedback.__table__, JobSearch.__table__)),
+    ("11", (JobAnalysis.__table__, JobAnalysisSource.__table__, JobAnalysisFeedback.__table__)),
+    # A check of a kept posting names the run that made it, so the runs come first (U3-D4a).
+    ("12", (JobUpdateRun.__table__, JobPostingRecheck.__table__)),
+    # What each batch of checks came to, in counts (U3-D4b-1).
+    ("13", (JobUpdateRunCount.__table__,)),
+    # Postings held only as current recommendations, and the latest search ticked for them (U3-D4b-2).
+    ("14", (JobRecommendation.__table__, JobRecommendationLatest.__table__)),
+    # 每日查新 on a kept search summary: the watch first, then what it has seen and the new postings it found (U3-D4c).
+    ("15", (JobWatch.__table__, JobWatchSeen.__table__, JobWatchPosting.__table__)),
+    # The text of a posting the user pasted and added to 我的岗位, with its record (U3-D4d).
+    ("16", (JobPostingText.__table__,)),
 )
 REFUSED, FAILED = 2, 1
 FROM_VERSIONS = " 或 ".join(UPGRADABLE_SCHEMA_VERSIONS)

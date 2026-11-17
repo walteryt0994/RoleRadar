@@ -33,7 +33,13 @@ the imports include those saved as drafts and drafts in the recycle bin
 restores, saves or adopts nothing. Since U3-C1 the package also holds the
 saved direction explorations and direction decisions, in use and still
 restorable, each saying how what it rests on stands now: in data.json and,
-readable, in directions.md (see direction_export.py).
+readable, in directions.md (see direction_export.py). Since U3-D3a it also
+holds the postings and search summaries the user kept from a search, in use
+and still restorable: their whitelisted facts, checks, decisions and
+feedback, in data.json and, readable, in jobs.md (see job_export.py). Since
+U3-D3b also the analyses the user kept from a search, as they were kept
+(quotes whole, with what each was read with then), each saying how what it
+rests on stands now.
 """
 import hashlib
 import json
@@ -62,6 +68,7 @@ from app.library.content import (
 )
 from app.library.attachments import TYPE_LABELS
 from app.library.direction_export import DirectionExport, collect_directions, directions_markdown
+from app.library.job_export import JobExport, collect_job_records, jobs_markdown
 from app.library.errors import ChangedFile, FileStoreError, MissingFile
 from app.library.files import CHUNK_BYTES, IMPORTS, FileStore
 from app.library.imports import draft_of, import_text, kept_imports
@@ -94,7 +101,13 @@ EXPORT_FORMAT = "roleradar-library-export"
 # 6: where adopted candidates went, and on each record the imports that wrote it (U2-B2b).
 # 7: imports saved as drafts and drafts in the recycle bin, each with how it is kept (U2-B3a).
 # 8: saved direction explorations and direction decisions, each with how what it rests on stands (U3-C1).
-EXPORT_FORMAT_VERSION = 8
+# 9: postings and search summaries kept from a search, with their checks, decisions and feedback (U3-D3a).
+# 10: analyses kept from a search, with what each rests on and the feedback on them (U3-D3b).
+# 11: on each kept posting, the checks made from its record (U3-D4a): never the posting's text.
+# 12: current recommendations held for tracking, apart from 我的岗位, with when each was held and until when (U3-D4b-2).
+# 13: 每日查新 on a kept summary: its state and last run, the postings it has seen and its new ones (U3-D4c).
+# 14: postings the user added themselves (U3-D4d): how each came (supplied), and the text of one they pasted (user_text).
+EXPORT_FORMAT_VERSION = 14
 SHARE_WARNING = (
     "注意：这份文件包含你的私有备注或联系方式。导出文件离开 RoleRadar 后不再受平台的权限保护；"
     "分享或发送之前，请先检查并删掉不想让别人看到的内容。"
@@ -150,6 +163,8 @@ class ExportContent:
     reviews: dict[str, dict] = field(default_factory=dict)
     # Saved direction explorations and direction decisions, in use and restorable (U3-C1).
     directions: DirectionExport = field(default_factory=DirectionExport)
+    # Postings and search summaries kept from a search, in use and restorable (U3-D3a).
+    jobs: JobExport = field(default_factory=JobExport)
 
 
 @dataclass
@@ -403,6 +418,7 @@ def collect_export(db: Session, owner_id: str, now: datetime) -> ExportContent:
         drafts=drafts,
         reviews=reviews,
         directions=collect_directions(db, owner_id, now),
+        jobs=collect_job_records(db, owner_id, now),
     )
 
 
@@ -569,11 +585,21 @@ def _write_zip(content: ExportContent, files: FileStore, owner_label: str, now: 
                 "explorations": content.directions.explorations,
                 "decisions": content.directions.decisions,
             },
+            "job_records": {
+                "postings": content.jobs.postings,
+                "searches": content.jobs.searches,
+                "analyses": content.jobs.analyses,
+                "recommendations": content.jobs.recommendations,
+                "watches": content.jobs.watches,
+            },
         }
         texts["data.json"] = _json_bytes(data)
 
         if content.directions.explorations or content.directions.decisions:
             texts["directions.md"] = directions_markdown(content.directions, now).encode("utf-8")
+
+        if content.jobs:
+            texts["jobs.md"] = jobs_markdown(content.jobs, now).encode("utf-8")
 
         texts["README.md"] = _readme(
             owner_label,
@@ -582,6 +608,7 @@ def _write_zip(content: ExportContent, files: FileStore, owner_label: str, now: 
             manifest_attachments,
             [(row, entry, content.drafts.get(row.id)) for row, entry in zip(content.imports, manifest_imports)],
             content.directions,
+            content.jobs,
         ).encode("utf-8")
         texts["manifest.json"] = _json_bytes(
             {
@@ -597,6 +624,7 @@ def _write_zip(content: ExportContent, files: FileStore, owner_label: str, now: 
                     "attachments": sum(1 for entry in manifest_attachments if entry["status"] == INCLUDED),
                     "imports": len(content.imports),
                     **content.directions.counts(),
+                    **content.jobs.counts(),
                 },
                 "not_included": list(NOT_INCLUDED),
                 "attachments": manifest_attachments,
@@ -728,8 +756,10 @@ def _readme(
     attachments: list[dict],
     imports: list[tuple[ResumeImport, dict, ImportDraft | None]],
     directions: DirectionExport | None = None,
+    jobs: JobExport | None = None,
 ) -> str:
     directions = directions or DirectionExport()
+    jobs = jobs or JobExport()
     included = [entry for entry in attachments if entry["status"] == INCLUDED]
     left_out = [entry for entry in attachments if entry["status"] != INCLUDED]
     imports_left_out = [entry for _, entry, _ in imports if entry["original_status"] not in (None, INCLUDED)]
@@ -773,6 +803,18 @@ def _readme(
             f"- `directions.md`：你保存的方向探索 {counts['direction_explorations']} 次、方向决定 "
             f"{counts['direction_decisions']} 条，以及回收站里还能恢复的 {counts['direction_recycle_bin']} 条；"
             "每条都写明它依据的资料现在的状态。方向探索是当时的结果，不会随资料改动而改写。"
+        )
+
+    if jobs:
+        counts = jobs.counts()
+        lines.append(
+            f"- `jobs.md`：你在找岗位结果里加入我的岗位的岗位 {counts['job_postings']} 个、分析 {counts['job_analyses']} 份、"
+            f"查找摘要 {counts['job_searches']} 份，回收站里还能恢复的 {counts['job_recycle_bin']} 条，"
+            f"以及按你的勾选临时留存跟踪、到期自动删除的推荐 {counts['job_recommendations']} 个，"
+            f"每日查新 {counts['job_watches']} 个和它们还在保留期内的新增岗位 {counts['job_watch_postings']} 个，"
+            f"你粘贴并加入我的岗位的原文 {counts['job_posting_texts']} 份（按你保存前确认的样子写在岗位下面）；"
+            "岗位的事实是保存时那次查找里的公开信息，来源核对的时间和保存时间分开写；分析按保存时的样子写出，"
+            "并写明它依据的经历现在的状态。"
         )
 
     lines += [

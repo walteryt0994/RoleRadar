@@ -8,11 +8,20 @@ from app.analysis_contracts import (
     SIMULATION_PROVIDER,
     AnalysisFailure,
     AnalysisStatus,
-    ConditionConclusion,
-    EvidenceConclusion,
-    PreferenceConclusion,
     RejectionReason,
-    RequirementGroup,
+)
+# The words of an analysis's judgments are said from one place (U3-D3b F1), so the pages and a kept analysis's export
+# say the same; the names stay here for the pages that read them.
+from app.analysis_words import (  # noqa: F401
+    BASIS_LABELS,
+    CONDITION_LABELS,
+    EVIDENCE_LABELS,
+    GROUP_HEADINGS,
+    PREFERENCE_LABELS,
+    REASONS,
+    conclusion_label,
+    preference_label,
+    reason_labels,
 )
 from app.job_analysis.service import LIVE_NOTICE
 from app.job_analysis.tasks import Step
@@ -24,59 +33,6 @@ STEP_LABELS = {
     Step.CHECKING: "核对资料",
     Step.PARSING: "解析岗位",
     Step.ANALYSING: "分析经历",
-}
-EVIDENCE_LABELS = {
-    EvidenceConclusion.SUPPORTED: "有经历支持",
-    EvidenceConclusion.NEEDS_CONFIRMATION: "待确认",
-    EvidenceConclusion.NO_EVIDENCE: "目前未找到支持材料",
-}
-CONDITION_LABELS = {
-    ConditionConclusion.MET: "符合",
-    ConditionConclusion.CONFLICT: "冲突",
-    ConditionConclusion.NEEDS_CONFIRMATION: "待确认",
-    ConditionConclusion.UNKNOWN: "未知",
-}
-PREFERENCE_LABELS = {
-    PreferenceConclusion.CONSISTENT: "一致",
-    PreferenceConclusion.DIFFERENT: "不一致",
-    PreferenceConclusion.CONFLICT: "冲突",
-    PreferenceConclusion.NEEDS_CONFIRMATION: "待确认",
-    PreferenceConclusion.NOT_STATED: "岗位未说明",
-}
-REASONS = {
-    "practice": "写明了你自己做过",
-    "claim": "只写了熟悉或掌握，没有写做过什么",
-    "plan": "写的是打算学或打算做",
-    "other_person": "写的是别人做的",
-    "negated": "写明没有做过或没有用过",
-    "fact": "写明的事实",
-    "conflict": "写明的事实和要求不符",
-    "contradiction": "所选经历里有相互矛盾的说法",
-    "no_material": "所选经历里没有相关内容",
-    "flag:plan": "引文所在的句子提到“计划”或“打算”",
-    "flag:other_person": "引文所在的句子提到了别人",
-    "flag:negated": "引文所在的句子有否定的说法",
-    "flag:claim": "引文所在的句子只是说熟悉或掌握",
-    "consistent": "岗位原文与偏好一致",
-    "conflicts": "岗位原文与偏好相反",
-    "unclear": "岗位原文提到了，但看不出是否符合",
-    "no_quote": "没有岗位原文能说明",
-    "other_aspect": "引用的岗位原文说的是别的方面，不能作为这一项的依据",
-    "not_stated": "岗位未明确说明这一条件",
-}
-BASIS_LABELS = {
-    "practice": "实践",
-    "claim": "自述",
-    "plan": "计划",
-    "other_person": "他人",
-    "negated": "否定",
-    "fact": "事实",
-    "conflict": "不符的事实",
-}
-GROUP_HEADINGS = {
-    RequirementGroup.REQUIRED: "必要要求",
-    RequirementGroup.PREFERRED: "加分项",
-    RequirementGroup.UNCERTAIN: "写得不明确的要求",
 }
 SELECTION_PROBLEMS = {
     UNAVAILABLE: "已删除或找不到",
@@ -221,21 +177,6 @@ def score_text(value) -> str:
 
 def found_labels(kinds) -> str:
     return "、".join(FOUND_LABELS[kind] for kind in kinds)
-
-
-def conclusion_label(finding) -> str:
-    if finding.group is RequirementGroup.HARD_CONSTRAINT:
-        return CONDITION_LABELS[ConditionConclusion(finding.conclusion)]
-
-    return EVIDENCE_LABELS[EvidenceConclusion(finding.conclusion)]
-
-
-def preference_label(finding) -> str:
-    return PREFERENCE_LABELS[PreferenceConclusion(finding.conclusion)]
-
-
-def reason_labels(reasons) -> list[str]:
-    return [REASONS.get(reason, reason) for reason in reasons]
 
 
 def outcome_message(result) -> str | None:

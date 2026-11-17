@@ -652,6 +652,8 @@ dialog h2 { margin-top: 0; }
 .result-alert { padding: 10px 14px; font-weight: 600; background: var(--white); border: 1px solid var(--ink); border-radius: var(--radius-control); box-shadow: inset 0 0 0 1px var(--ink); }
 .finding > summary { gap: 12px; }
 .finding-text { min-width: 0; overflow-wrap: anywhere; }
+/* The group a requirement belongs to, above its words, on every page that shows an analysis (U3-D6 close-out). */
+.finding-group { display: block; margin-bottom: 2px; font-size: 13px; font-weight: 400; color: var(--ink-soft); }
 .finding-verdict { flex: none; padding: 1px 10px; font-size: 14px; font-weight: 600; background: var(--tag); border-radius: var(--radius-tag); }
 .finding-label { display: flex; flex-wrap: wrap; gap: 2px 12px; margin: 12px 0 6px; font-size: 13px; color: var(--ink-soft); }
 .quote { margin: 0; padding: 10px 14px; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--outcome); border-radius: 10px; }
@@ -704,6 +706,11 @@ dialog h2 { margin-top: 0; }
 .lead { padding: 12px 0; border-bottom: 1px solid var(--line); }
 .lead p { margin: 0 0 4px; overflow-wrap: anywhere; }
 .lead-times { font-size: 13px; color: var(--ink-soft); }
+/* 岗位记录 (U3-D3a): whether a posting was kept, and the way to keep it, under its facts. */
+.kept-line { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 8px 0 4px; font-size: 14px; }
+.kept-line span { color: var(--ink-soft); }
+.keep-choice { margin: 8px 0; }
+.keep-form { margin-top: 8px; }
 
 @media (max-width: 719px) {
   .discover-result { padding: 14px 14px 4px; }

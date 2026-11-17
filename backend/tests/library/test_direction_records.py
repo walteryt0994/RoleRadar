@@ -855,7 +855,8 @@ def test_the_export_holds_what_is_kept_with_how_it_stands_and_nothing_purged(dat
     files = exported(database, a, clock, tmp_path)
     data, manifest = json.loads(files["data.json"]), json.loads(files["manifest.json"])
 
-    assert data["format_version"] == manifest["format_version"] == EXPORT_FORMAT_VERSION == 8
+    # Format 10 since U3-D3b (kept analyses); the direction records are as format 8 had them.
+    assert data["format_version"] == manifest["format_version"] == EXPORT_FORMAT_VERSION == 14
     explorations = {entry["id"]: entry for entry in data["directions"]["explorations"]}
     assert set(explorations) == {kept, binned}
     assert (explorations[kept]["kept_as"], explorations[binned]["kept_as"], explorations[binned]["deleted_along"]) == ("in_use", "recycle_bin", False)
@@ -899,7 +900,9 @@ def test_the_deletion_pages_say_what_rests_on_a_record_and_delete_only_it(app, b
 
     page = browser_a.get(f"/experiences/{item_id}/delete").text
     assert "有 1 次已保存的方向探索、1 条方向决定以它为依据：默认不会一起删除" in page
-    assert "尚未建立与岗位分析、简历的关联" in page and "目前没有已保存的方向探索" not in page
+    # Since U3-D3b kept job analyses are known too: only resumes are not, and analyses not kept are never listed.
+    assert "尚未建立与简历的关联" in page and "没有保存的岗位分析结果只临时显示" in page
+    assert "目前没有已保存的方向探索" not in page
 
     assert browser_a.submit(f"/experiences/{item_id}/delete", f"/experiences/{item_id}/delete").status_code == 303
     assert row(database, DirectionExploration, exploration_id).deleted_at is None

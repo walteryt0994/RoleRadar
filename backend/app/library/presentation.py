@@ -317,8 +317,34 @@ def reference_note(references, *, purge: bool = False) -> str:
 
     return (
         f"{direction_note(references, purge=purge)}"
-        f"本经历库尚未建立与{modules}的关联，无法列出它们是否用过这些内容；这次删除只处理经历库里的内容。"
+        f"{analysis_note(references, purge=purge)}"
+        "没有保存的岗位分析结果只临时显示，不在这里列出；"
+        f"本经历库尚未建立与{modules}的关联，无法列出{modules}是否用过这些内容；这次删除只处理经历库里的内容。"
     )
+
+
+def analysis_note(references, *, purge: bool = False, version: bool = False) -> str:
+    """What deleting a record, or one version of it, does to the analyses kept from a search resting on it (U3-D3b).
+
+    As for explorations: nothing of them is deleted along by default; they stay to be looked at, their basis marked,
+    and are never used for anything new. Purging the record does not remove the quotes and the context they hold,
+    and the page says so. With none resting on it, nothing is said.
+    """
+    count = len(references.analyses)
+
+    if not count:
+        return ""
+
+    what = "这个版本" if version else "它"
+    note = (
+        f"有 {count} 份已保存的岗位分析以{what}为依据：默认不会一起删除，它们保留供回看，"
+        "并标出依据现在的状态，不会用于新的分析或找岗。"
+    )
+
+    if purge:
+        note += "这些分析里保存的引文和判断时读的上下文不会随之清除；需要的话，请另外删除那些分析。"
+
+    return note
 
 
 def direction_note(references, *, purge: bool = False, version: bool = False) -> str:

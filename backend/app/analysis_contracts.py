@@ -85,6 +85,11 @@ class AnalysisRequest:
     preferences: tuple[SelectedPreference, ...] = ()
     # The version of what the page told the user before they confirmed.
     notice_version: str = ""
+    # U3-D6 R5: the posting text was built by a source adapter, so the set lines of its head are the source's own
+    # fields (app.requirement_reading.posted_work_mode). A search's analyses set it (app.discovery.tools.child_request);
+    # a posting the user pasted never does, however its words look. It changes only what the local rules may read as
+    # a fact of the posting, never what goes out or to whom, so a confirmation's fingerprint does not include it.
+    posting_from_source: bool = False
 
 
 def task_fingerprint(request: AnalysisRequest) -> str:
@@ -233,6 +238,8 @@ class ConditionConclusion(StrEnum):
     NEEDS_CONFIRMATION = "needs_confirmation"
     # The chosen material does not say: never guessed.
     UNKNOWN = "unknown"
+    # U3-D6 R4: the posting's quote lays down a condition, and a fact the posting states shows it does not hold.
+    NOT_APPLICABLE = "not_applicable"
 
 
 class PreferenceRelation(StrEnum):
@@ -345,6 +352,17 @@ class RequirementFinding:
     conclusion: str
     citations: tuple[EvidenceCitation, ...]
     reasons: tuple[str, ...]
+    # U3-D6 R4 (app.requirement_reading), all empty where they do not apply and in what was kept before:
+    # the items a skill requirement's own words list, whether all or any one is asked for ("all", "any"),
+    # and those the cited practice names;
+    listed: tuple[str, ...] = ()
+    listed_mode: str = ""
+    named: tuple[str, ...] = ()
+    # the condition the posting's quote lays down, word for word; whether it holds ("met", "not_met",
+    # "unknown"); and the posting's own line that shows it, when one does.
+    condition: str = ""
+    condition_state: str = ""
+    condition_fact: str = ""
 
 
 @dataclass(frozen=True)
