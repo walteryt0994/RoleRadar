@@ -22,6 +22,7 @@ from app.analysis_contracts import SIMULATION_PROVIDER
 from app.discovery import synthetic
 from app.discovery.agent import Finished, ScriptedDecider, TraceStep, make_action
 from app.discovery.contracts import EndReason, Tool
+from app.discovery.sources import Register
 from app.discovery.synthetic import CAREERS
 from app.discovery.tasks import MAX_STEPS, DiscoveryTaskStore, Stage
 from app.discovery.web import NOTICE_VERSION
@@ -48,7 +49,7 @@ PREFERENCES = dict(
 PROJECT = dict(title="校园订单看板（合成）", actions="用 Python 清洗订单数据，并用 SQL 汇总每周销量。", outcome="看板在课程展示中使用。")
 # What the scope's open questions are answered with unless a test says otherwise.
 CHOSEN = dict(targets="数据分析实习生", city_others="excluded", job_type_others="excluded", direction_others="included")
-PREVIEW = "合成预览：岗位是合成样例，不是真实招聘；每一步由本机固定规则模拟决定，不是 AI。"
+PREVIEW = "离线演示（合成预览）：岗位是合成样例，不是真实招聘；核对时间和结果由本机模拟，不是实时信息；每一步由本机固定规则模拟决定，不是 AI。"
 
 
 class Ticks:
@@ -323,8 +324,9 @@ def test_a_search_runs_on_synthetic_postings_with_simulated_decisions_and_says_s
     assert "本机模拟服务处理的请求：6 次（模拟，没有联网，不产生费用）" in text and "可能已发出" not in found
 
     for page in (browser_a.get(BASE).text, reviewed, found):
-        # Nothing is called a recommendation, nothing synthetic is linked, nothing applies anywhere.
-        assert "推荐" not in page
+        # Nothing is called a recommendation, nothing synthetic is linked, nothing applies anywhere. The one place the
+        # word is used is the option, unticked here, to hold this search's recommendations for tracking (U3-D4b-2).
+        assert "推荐" not in page.replace("临时留存并跟踪这次的推荐", "").replace("最多 3 条推荐", "")
         assert not re.search(r'href="[^"]*\.invalid', page)
         assert not re.search(r"<button[^>]*>[^<]*(申请|投递)", page)
 
@@ -335,7 +337,7 @@ def test_ideal_cities_come_first_and_acceptable_ones_still_show(app, browser_a, 
     scripted(searches, search("上海"), search("北京"), finish(EndReason.SCOPE_DONE))
     url = search_of(review(browser_a, sources=[library]))
     confirm(browser_a, url)
-    leads = section(browser_a.get(url).text, "未分析线索")
+    leads = section(browser_a.get(url).text, "初筛候选")
     titles = re.findall(r'<span>(合成[^<]+)</span><span>(北京|上海)', leads)
 
     # Shanghai was searched first, and still comes after every Beijing posting.
@@ -445,7 +447,8 @@ def test_the_running_page_shows_each_step_as_it_is_taken_and_cancelling_adds_non
     assert "第 1 步 · 检索岗位 · 完成" in running and "取消查找" in running
     # Only what the page needs: no token, session, fingerprint or material.
     assert set(body) == {"stage", "status", "steps"} and body["stage"] == "running"
-    assert [set(step) for step in body["steps"]] == [{"title", "params", "summary", "note"}]
+    # R10 (U3-D6-3 F3): and which postings of a step came to no answer, a reference and fixed words, on a line apart.
+    assert [set(step) for step in body["steps"]] == [{"title", "params", "summary", "failed", "note"}]
     assert body["steps"][0]["title"] == "第 1 步 · 检索岗位 · 完成"
     assert body["status"].startswith("正在查找：已完成 1 步。本机模拟服务处理的请求：")
     task = stored(app, browser_a, url)
@@ -672,3 +675,28 @@ def test_a_search_is_its_users_and_sessions_and_every_post_carries_the_sessions_
     held.release.set()
 
     assert task.cancel.is_set() and task_id(url) not in app.state.discovery.store._tasks
+
+
+def test_postings_not_verifiable_are_said_as_postings_once_each_with_how_often_they_came_back(app, browser_a, library, inline, searches):
+    """U3-D5: one posting given back by both searches is one posting, said with how many times it came back; its id is
+    never shown."""
+    first = synthetic.POSTINGS[0]
+    odd = replace(first, posting=replace(first.posting, ref=ref("hr@example.invalid"), identity=None), listed=True)
+    searches.sources = replace(
+        searches.sources,
+        make_register=lambda task: Register(
+            synthetic.ENTRIES,
+            {
+                CAREERS: synthetic.SyntheticSource(CAREERS, (*synthetic.POSTINGS, odd)),
+                synthetic.LEADS: synthetic.SyntheticSource(synthetic.LEADS, synthetic.LEAD_POSTINGS),
+            },
+        ),
+    )
+    scripted(searches, search("北京"), search("上海"), finish(EndReason.SCOPE_DONE))
+    url = search_of(review(browser_a, sources=[library]))
+    confirm(browser_a, url)
+    page = browser_a.get(url).text
+    text = text_of(page)
+
+    assert "编号无法核验，没有采用：1 个（同一个编号会在几次检索里重复出现，各次检索共返回 2 次）" in text
+    assert "hr@example.invalid" not in page

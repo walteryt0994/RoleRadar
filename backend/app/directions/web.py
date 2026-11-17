@@ -113,6 +113,9 @@ class DirectionsRuntime:
     # The app's real service, when its approval covers direction exploration (install_directions); shared with the
     # analysis pages, which close it. Otherwise the simulation answers.
     live: LiveService | None = None
+    # The D6 batch of the direction launch (app.discovery.batch_live): each exploration one operation of it, its
+    # approval claimed for the batch and asked before each request. None for every other start.
+    batch: object = None
 
     @property
     def recipient(self):
@@ -130,6 +133,9 @@ class DirectionsRuntime:
     def provider_for(self, task, sending):
         """The task's provider as a context (runner.run_task): the real service's behind its gate, else the
         simulation's, counted by the store either way."""
+        if self.live is not None and self.batch is not None:
+            return _batched(self.live, self.batch, task, sending)
+
         if self.live is not None:
             return _gated(self.live, task, sending)
 
@@ -146,7 +152,29 @@ class DirectionsRuntime:
         except StorageError:
             return "ledger"
 
+        if refusal is None and self.batch is not None and self.batch.problem() is not None:
+            return "batch"
+
         return None if refusal is None else refusal.value
+
+    def start_problem(self, owner_id: str) -> str | None:
+        """Why the user's exploration may not start now, in words, if it may not: refusal()'s, then under the D6 batch
+        whether one exploration fits what is left (batch_live.Batch.availability), said without writing, claiming or
+        sending anything (D6-1 R3, L3). The review shows it in place of its start button; the batch's begin() asks
+        again, under its lock, when the user confirms."""
+        refusal = self.refusal()
+
+        if refusal is not None:
+            return presentation.REFUSALS.get(refusal)
+
+        if self.live is None or self.batch is None:
+            return None
+
+        from app.discovery.batch_live import OperationKind
+
+        short = self.batch.availability(OperationKind.DIRECTION, owner_id)
+
+        return None if short is None else f"{short[1]}；这次没有开始，什么都没有发送。"
 
     def service_status(self) -> dict | None:
         """The approval's figures now, for a real service's pages: all its requests, never one exploration's cost;
@@ -234,6 +262,75 @@ def _gated(live: LiveService, task, sending):
         raise ServiceUnavailable() from None
 
 
+class _BatchChecked(AIProvider):
+    """An exploration's provider under the D6 batch: each request asked of the batch first (batch_live.Binding)."""
+
+    def __init__(self, provider: AIProvider, binding):
+        self._provider = provider
+        self._binding = binding
+
+    def identity(self):
+        return self._provider.identity()
+
+    def generate_text(self, prompt, max_output_tokens=None, reasoning_effort=None, json_schema_format=None):
+        refusal = self._binding.refusal()
+
+        if refusal is not None:
+            # Nothing went out: the batch keeps it back (stopped, LIVE_STOP, the day, the claim, a pause).
+            raise ServiceRefused("batch")
+
+        return self._provider.generate_text(
+            prompt,
+            max_output_tokens=max_output_tokens,
+            reasoning_effort=reasoning_effort,
+            json_schema_format=json_schema_format,
+        )
+
+
+class _BatchSending:
+    """An exploration's sending under the D6 batch (the Sending of app.live_gate): right before the gate hands a
+    request on, its reservation made, the batch is asked again (batch_live.Binding.refusal), which notes the request
+    in HOME by its id and reservation before it goes (D6-0 R2), as the discovery runner's sending does; a refusal keeps
+    it back, its reservation released by the gate (nothing went out). Then the task's own sending counts it."""
+
+    def __init__(self, sending, binding):
+        self._sending = sending
+        self._binding = binding
+
+    def hand_on(self, call) -> None:
+        if self._binding.refusal() is not None:
+            raise ServiceRefused("batch")
+
+        if self._sending is not None:
+            self._sending.hand_on(call)
+
+    def came_back(self, call, delivered) -> None:
+        if self._sending is not None:
+            self._sending.came_back(call, delivered)
+
+
+@contextmanager
+def _batched(live: LiveService, batch, task, sending):
+    """A direction task's provider behind the gate, under the D6 batch: its approval claimed for the batch inside the
+    gate before anything is sent; each request asked of the batch before the gate reserves it (_BatchChecked) and
+    again right before it is handed on (_BatchSending); the batch's operation ended whatever came of it."""
+    from app.discovery.batch_live import Binding
+    from app.discovery.runner import ApprovalsHeld
+
+    binding = Binding(batch, batch.operation(task.id))
+
+    try:
+        with _gated(live, task, _BatchSending(sending, binding)) as provider:
+            try:
+                binding.bind()
+            except ApprovalsHeld:
+                raise ServiceRefused("batch") from None
+
+            yield _BatchChecked(provider, binding)
+    finally:
+        binding.release()
+
+
 def check_live_terms(terms) -> None:
     """ConfigError when an approval names direction exploration for a service its processing notice does not cover
     (presentation.LIVE_NOTICE_COVERS): the app then refuses to start, never quietly simulating (web_main)."""
@@ -254,6 +351,7 @@ def install_directions(
     clock=None,
     executor=None,
     live: LiveService | None = None,
+    batch=None,
 ) -> DirectionsRuntime:
     """The direction pages; live is the app's real service, taken only when its approval covers direction
     exploration (checked before the app opened it, check_live_terms), else the simulation answers."""
@@ -266,6 +364,7 @@ def install_directions(
         simulation_delay=simulation_delay,
         sweep_seconds=sweep_seconds,
         live=live if live is not None and Purpose.DIRECTION.value in live.gate.terms.purposes else None,
+        batch=batch,
     )
     app.state.directions = directions
     # Logging out, or signing in as someone else, ends the session's tasks.
@@ -472,7 +571,8 @@ def review_page(request: Request, user: CurrentUser, task, *, notice=None, error
             "NOTICE": presentation.notice_rows(task.request),
             "live": presentation.is_live(task.request.recipient),
             "service": _service_of(request, task),
-            "refusal": presentation.REFUSALS.get(directions_of(request).refusal()),
+            # Under the D6 batch also when one exploration does not fit what is left (D6-1 R3, L3).
+            "refusal": directions_of(request).start_problem(user.id),
             "SEND": SEND,
             "LEFT_OUT": LEFT_OUT,
             "BLOCKED": BLOCKED,
@@ -523,11 +623,39 @@ def confirm(task_id: str, request: Request, user: CurrentUser = Depends(current_
         # Nothing starts; the gate would refuse it again before anything went out.
         return review_page(request, user, task, error=presentation.REFUSALS[refusal], status_code=409)
 
+    operation = None
+
+    if directions.batch is not None:
+        # The D6 batch's operation for this exploration: begun before it starts, or nothing starts (D6 plan, 3.2).
+        from app.discovery.batch_live import BatchRefused, OperationKind
+
+        try:
+            operation = directions.batch.begin(OperationKind.DIRECTION, user.id, task.id, task.cancel)
+        except BatchRefused as refused:
+            return review_page(request, user, task, error=f"{refused}，所以没有开始，什么都没有发送。", status_code=409)
+
     outcome, started = directions.store.begin(task.id, user.id, user.token_hash, form.get("fingerprint", ""))
+
+    if outcome is not Start.STARTED and operation is not None:
+        directions.batch.end(operation, "not_started")
 
     if outcome is Start.STARTED:
         rt = runtime(request)
-        directions.executor.submit(run_task, directions.store, rt.database, rt.clock, started.id, directions.provider_for)
+
+        try:
+            queued = directions.executor.submit(run_task, directions.store, rt.database, rt.clock, started.id, directions.provider_for)
+        except Exception:
+            if operation is not None:
+                directions.batch.end(operation, "not_queued")
+
+            raise
+
+        if operation is not None and queued is not None:
+            # The batch's operation ends whatever came of the exploration: run, failed, cancelled or never run.
+            queued.add_done_callback(lambda done: directions.batch.end(operation))
+        elif operation is not None:
+            # Run at once (an inline executor): it has ended.
+            directions.batch.end(operation)
 
         return see_other(f"{BASE}/tasks/{started.id}")
 

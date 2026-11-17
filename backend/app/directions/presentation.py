@@ -105,6 +105,7 @@ REJECTED = {
     "gate_input": "这次请求的输入超过了批准允许的上限，所以没有发送。",
     "gate_payload": "这次请求的内容超过了预算策略允许的大小，所以没有发送。",
     "gate_count": "发送前的计数没有完成，所以没有发送探索请求。",
+    "gate_batch": "D6 这一批不能再发送（已经停止、过了运行日、出现停止文件、模型批准暂停或占用记录对不上），所以没有发送。",
 }
 REJECTED_OTHERWISE = "这次请求不完整，所以没有发送。请重新核对。"
 FAILED = {
@@ -129,6 +130,7 @@ REFUSALS = {
     "paused": "这批批准已暂停，不能再发送；继续需要新的批准。这次没有开始，什么都没有发送。",
     "requests": "这批批准的请求次数已经用完，不能再发送；继续需要新的批准。这次没有开始，什么都没有发送。",
     "ledger": "现在读不出真实服务的费用记录，所以没有开始，什么都没有发送。请稍后再试。",
+    "batch": "D6 这一批已经不能再发送（已经停止、过了运行日、出现停止文件或模型批准暂停），所以没有开始，什么都没有发送。",
 }
 # Why an approval is paused (app.live_gate), in the words of the analysis pages, and what kind of trouble it is.
 PAUSE_REASONS = {

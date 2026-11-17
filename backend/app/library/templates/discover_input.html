@@ -121,6 +121,12 @@
         <label class="check"><input type="checkbox" name="use_preferences" value="yes"{% if inputs.use_preferences %} checked{% endif %}>分析时参考我的其他求职偏好</label>
         <p class="hint">城市、求职类型和岗位方向按左边的范围核对，不随分析发送。{% if analysed_preferences %}其他偏好在核对时可以逐项去掉；{% else %}你还没有填写其他偏好；{% endif %}没有选择经历时不参考偏好。</p>
       </div>
+      {% if SOURCE_SET.keep %}
+      <div class="job-option">
+        <label class="check"><input type="checkbox" name="track_recommendations" value="yes"{% if inputs.track %} checked{% endif %}>临时留存并跟踪这次的推荐</label>
+        <p class="hint">默认不勾，每次查找单独选择。勾选后，查找正常结束时，系统临时留存最多 3 条推荐的公开信息和核对结果 {{ KEEP_DAYS }} 天，到期自动删除；它们不是“我的岗位”。只在选了经历时有效；下一步的核对页会写明细节。</p>
+      </div>
+      {% endif %}
       <div class="form-actions">
         <button type="submit" class="primary">核对查找内容</button>
       </div>

@@ -9,6 +9,7 @@ starts a search, even when the review made again fails (C precheck, 19.3). Names
 scope whole, never split and never ideal; the preferences are never written. Everything runs on the synthetic
 sources and the local simulation, and nothing leaves the process.
 """
+import html
 import re
 import uuid
 from dataclasses import replace
@@ -288,7 +289,8 @@ def test_a_kept_name_holding_separators_stays_one_value_and_never_becomes_ideal(
     scope = stored(app, browser_a, url).confirmation.scope.direction
 
     assert scope.values == ("数据分析", "数据分析/商业分析") and scope.ideal == ("数据分析",)
-    assert "“数据分析/商业分析”" in text_of(browser_a.get(url).text)
+    # One value, written as the decision prompt writes values (U3-D6): never read as two.
+    assert '"数据分析/商业分析"' in html.unescape(text_of(browser_a.get(url).text))
 
     with database_of(app).transaction() as db:
         assert db.get(ExperienceItem, world.prefs).revision == before

@@ -122,6 +122,7 @@
         ["step-title", taken[index].title],
         ["step-params", taken[index].params],
         ["step-summary", taken[index].summary],
+        ["step-failed", taken[index].failed],
         ["step-note", taken[index].note],
       ].forEach(function (part) {
         if (part[1]) {

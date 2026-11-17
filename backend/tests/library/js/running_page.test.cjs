@@ -236,6 +236,20 @@ test("a running search shows its new steps, and an older answer with fewer steps
   assert.equal(page.fetches(), 2);
 });
 
+// R10 (U3-D6-3 F3): which postings of a step came to no answer, on a line of its own, never after its first line.
+test("a step that names postings with no answer shows them on a line of their own", async () => {
+  const page = load();
+  const failed = "这一步其中 1 个岗位没有结果：synthetic-careers/c-choice（来源没有在时限内回答）";
+  const step = { title: "第 3 步 · 核对是否仍公开发布 · 完成", params: "岗位 synthetic-careers/c-bj-analyst、synthetic-careers/c-choice", summary: "- [synthetic-careers/c-bj-analyst] 核对时仍公开发布，截止 未提供", failed, note: "说明：核对状态" };
+
+  page.tick();
+  await page.answer({ ...RUNNING, steps: [step] });
+
+  assert.deepEqual(page.list.children.map((item) => item.children.map((part) => [part.className, part.textContent])), [
+    [["step-title", step.title], ["step-params", step.params], ["step-summary", step.summary], ["step-failed", failed], ["step-note", step.note]],
+  ]);
+});
+
 test("the job analysis page's own status still reads as before", async () => {
   const page = load({ steps: false });
 

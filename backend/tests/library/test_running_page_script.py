@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 
 SUITE = Path(__file__).resolve().parent / "js" / "running_page.test.cjs"
-# The cases in the suite: all must run and pass, none skipped.
-CASES = 20
+# The cases in the suite: all must run and pass, none skipped. R10 (U3-D6-3 F3): one more, a step's no-answer line.
+CASES = 21
 # Where node usually is, for a run whose PATH was emptied (env -i).
 NODE_PLACES = ("/usr/local/bin/node", "/opt/homebrew/bin/node")
 

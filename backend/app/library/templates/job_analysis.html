@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% from "_findings.html" import finding_row, analysis_body with context %}
+{% block title %}{{ facts.title }}：已保存的分析{% endblock %}
+{# A kept analysis (U3-D3b): as its result page showed it, from what was kept, never read again from the experiences as
+   they are now; how what it rests on stands now is said apart, and it is only looked at, never used for anything new. #}
+{% block layout %}
+<main id="main" class="job-page job-reading" tabindex="-1">
+  {% if notice %}
+  <p class="notice" role="status">{{ notice }}</p>
+  {% endif %}
+  <header class="job-head">
+    <h1>{{ facts.title }}</h1>
+    <p class="job-mode">{% if synthetic %}本机合成数据，不是真实招聘。{% endif %}这是你保存的一份分析：按保存时那次查找里的岗位和你当时的经历得出，不是最新情况，只供回看，不会用于新的分析或找岗。</p>
+  </header>
+  {% if error %}
+  <p class="error" role="alert">{{ error }}</p>
+  {% endif %}
+
+  {% if stale_since %}
+  <p class="warning" role="status">这个岗位在 {{ stale_since }} 从岗位记录再核对时，读到的正文和这份分析用的版本不同，结论可能过时。分析本身没有改；要重新分析，请重新查找这个岗位，会再次确认发送哪些内容。</p>
+  {% endif %}
+
+  <section class="review-section" aria-labelledby="basis-title">
+    <h2 id="basis-title">依据现在的状态</h2>
+    <p class="{% if basis.worst == 'current' %}hint{% else %}warning{% endif %}">{{ basis_text(basis.worst) }}。</p>
+    <ul class="points">
+      {% for line in source_lines %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+    <p class="hint">经历的名称按现在读出，只用来指认是哪一段；下面的原话和分析时读的那句话都是保存时存下的，不会按现在的版本重新解释。</p>
+  </section>
+
+  <section class="review-section" aria-labelledby="result-title">
+    <h2 id="result-title">分析结果</h2>
+    <p class="review-meta"><span>{{ facts.company }}</span><span>{{ facts.source_name }}</span><span>岗位编号 {{ record.posting_id }}</span><span>{{ category_text }}</span></p>
+    {% if content.first_checks %}
+    <p class="result-label">申请前先确认</p>
+    <ul class="points">
+      {% for line in content.first_checks %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% if content.notes %}
+    <ul class="points">
+      {% for note in content.notes %}
+      <li>{{ note }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {{ analysis_body(analysis) }}
+    <p class="hint">“目前未找到支持材料”只说明所选的经历里没有写到，不代表你不会。</p>
+  </section>
+
+  <section class="review-section" aria-labelledby="facts-title">
+    <h2 id="facts-title">岗位事实和生成信息</h2>
+    <dl class="facts">
+      <div><dt>来源</dt><dd>{{ facts.source_name }}，岗位编号 {{ record.posting_id }}（{{ EVIDENCE_WORDS.get(facts.evidence, facts.evidence) }}）</dd></div>
+      <div><dt>地点</dt><dd>{{ facts.cities|join("、") or "未认出" }}{% if facts.places_stated %}（来源原文：{{ facts.places_stated|join("、") }}）{% endif %}</dd></div>
+      <div><dt>类型</dt><dd>{{ facts.job_type or "未认出" }}{% if facts.type_stated %}（来源原文：{{ facts.type_stated }}）{% endif %}</dd></div>
+      <div><dt>来源核对</dt><dd>{{ CHECK_WORDS.get(facts.check.status, facts.check.status) }}{% if facts.check.answered_at %}（来源回答于 {{ iso_local(facts.check.answered_at) }}）{% endif %}</dd></div>
+      {% if facts.url %}
+      <div><dt>原始链接</dt><dd class="plain-address">{{ facts.url }}（页面不提供链接）</dd></div>
+      {% endif %}
+      <div><dt>分析于</dt><dd>{% if record.analysed_at %}{{ record.analysed_at|localtime }}{% else %}未记录{% endif %}（那次查找做分析的时间）</dd></div>
+      <div><dt>保存于</dt><dd>{{ record.saved_at|localtime }}（你保存的时间）</dd></div>
+      <div><dt>分析服务</dt><dd>{{ generation.recipient.provider }} / {{ generation.recipient.model }}{% if generation.analysis_mode == "simulation" %}（本机模拟，不是 AI）{% endif %}；请求 {{ generation.requests_sent }} 次</dd></div>
+      <div><dt>版本</dt><dd>找岗规则 {{ generation.rules_version }}；处理说明 {{ generation.notice_version }}{% if generation.analysis %}；分析提示 {{ generation.analysis.analysis_prompt_version }}、规则 {{ generation.analysis.rules_version }}{% endif %}{% if generation.job %}；岗位解析提示 {{ generation.job.prompt_version }}{% endif %}</dd></div>
+      <div><dt>岗位正文版本</dt><dd>指纹 {{ record.content_sha256[:12] }}…（只用来认出分析的是哪一版正文，不能还原正文，也不当证据）</dd></div>
+      <div><dt>来自的查找</dt><dd>{% if summary %}<a href="/job-records/searches/{{ summary.id }}">查看这次查找的摘要</a>{% else %}这次查找的摘要没有保存，或已删除{% endif %}</dd></div>
+      <div><dt>岗位记录</dt><dd>{% if posting %}<a href="/job-records/postings/{{ posting.id }}">查看这个岗位的记录</a>{% else %}这个岗位没有单独保存，或已删除{% endif %}</dd></div>
+    </dl>
+  </section>
+
+  <section class="review-section" aria-labelledby="feedback-title">
+    <h2 id="feedback-title">指出的不准</h2>
+    {% if feedback %}
+    <ul class="points">
+      {% for item in feedback %}
+      <li>{{ analysis_feedback_label(item.target, item.reason) }}{% if item.target_ref %}（{{ dict(parts).get(item.target ~ ":" ~ item.target_ref, item.target_ref) }}）{% endif %}{% if item.note %}：{{ item.note }}{% endif %}（{{ item.created_at|shorttime }}）</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="empty">还没有。</p>
+    {% endif %}
+    <form method="post" action="/job-records/analyses/{{ record.id }}/feedback" class="keep-form">
+      {{ m.csrf() }}
+      <input type="hidden" name="revision" value="{{ record.revision }}">
+      <label for="part">哪一部分</label>
+      <select id="part" name="part">
+        {% for value, label in parts %}
+        <option value="{{ value }}">{{ label }}</option>
+        {% endfor %}
+      </select>
+      <label for="analysis_reason">哪里不准</label>
+      <select id="analysis_reason" name="analysis_reason">
+        {% for value, label in ANALYSIS_REASONS %}
+        <option value="{{ value }}">{{ label }}</option>
+        {% endfor %}
+      </select>
+      <label for="note">备注（可不填，最多 {{ NOTE_CHARS }} 字）</label>
+      <textarea id="note" name="note" rows="2" maxlength="{{ NOTE_CHARS }}"></textarea>
+      <button type="submit" class="secondary">记下来</button>
+      <p class="hint">只记在本机的岗位记录里，不发给任何服务，也不会改动这份分析或以后的查找。</p>
+    </form>
+  </section>
+
+  <div class="actions">
+    <a href="/job-records">返回岗位记录</a>
+    <a class="danger-link" href="/job-records/analyses/{{ record.id }}/delete">删除这份分析…</a>
+  </div>
+</main>
+{% endblock %}

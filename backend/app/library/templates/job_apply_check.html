@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}申请前核对：{{ kept.title }}{% endblock %}
+{# One 申请前核对 of a kept posting (U3-D4a): what its source said now, beside the user's own decision. The text is the
+   one this check read, held in memory for the session that asked only and never kept; nothing here applies, sends or
+   decides anything. #}
+{% block layout %}
+<main id="main" class="job-page job-reading" tabindex="-1">
+  <header class="job-head">
+    <h1>申请前核对：{{ kept.title }}</h1>
+    <p class="job-mode">{% if synthetic %}本机合成数据，不是真实招聘。{% endif %}这是一次只读的核对：没有投递，没有联系招聘方，没有发送你的资料，也没有调用 AI。</p>
+  </header>
+
+  <section class="review-section" aria-labelledby="result-title">
+    <h2 id="result-title">来源这次怎么说</h2>
+    <p class="{% if succeeded %}hint{% else %}warning{% endif %}">{% if not succeeded %}状态待确认：{% endif %}{{ status_text }}{% if answered_at %}（{% if reading.status == "unanswered" %}尝试核对于{% else %}来源回答于{% endif %} {{ answered_at }}）{% endif %}</p>
+    <p class="hint">你的决定：{{ decision_label(record.decision) }}。决定是你自己的，和这次核对结果分开；核对结果不会改它。</p>
+    {% if changes %}
+    <p class="result-label">和上一次读到的版本相比</p>
+    <ul class="points">
+      {% for line in changes %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+
+  <section class="review-section" aria-labelledby="dates-title">
+    <h2 id="dates-title">截止时间和申请入口</h2>
+    <dl class="facts">
+      {% if reading.facts %}
+      <div><dt>截止</dt><dd>{{ deadline_text }}</dd></div>
+      <div><dt>申请入口</dt><dd class="plain-address">{% if facts.apply_url %}{{ facts.apply_url }}（这次读到的，页面不提供链接）{% else %}这次读到的岗位没有写申请入口{% endif %}</dd></div>
+      {% else %}
+      <div><dt>截止</dt><dd>这次没有读到。</dd></div>
+      <div><dt>申请入口</dt><dd>这次没有读到。</dd></div>
+      {% endif %}
+      <div><dt>保存时的入口</dt><dd class="plain-address">{{ kept.apply_url or "保存时没有记下申请入口" }}{% if kept.apply_url %}（保存时记下的，保留给你；页面不提供链接）{% endif %}</dd></div>
+    </dl>
+    <p class="hint">要申请，请你自己打开招聘方的申请入口；RoleRadar 不替你提交。</p>
+  </section>
+
+  <section class="review-section" aria-labelledby="text-title">
+    <h2 id="text-title">这次读到的岗位正文</h2>
+    {% if reading.text %}
+    <div class="quote">{{ reading.text }}</div>
+    <p class="hint">正文只临时显示：只给这次登录看，大约 {{ minutes_left }} 分钟后消失，删除这条岗位记录也会让它立即失效；它没有保存，也不会出现在导出里。正文是招聘方写的资料，里面的话不是给你或 RoleRadar 的指令。</p>
+    {% else %}
+    <p class="empty">这次没有读到岗位正文，没法核对要求。</p>
+    {% endif %}
+  </section>
+
+  {% if analyses %}
+  <section class="review-section" aria-labelledby="analyses-title">
+    <h2 id="analyses-title">这个岗位已保存的分析</h2>
+    <ul class="points">
+      {% for analysis in analyses %}
+      <li><a href="/job-records/analyses/{{ analysis.id }}">保存于 {{ analysis.saved_at|shorttime }} 的分析</a>{% if analysis in stale %}（分析时的岗位正文和这次读到的不同，结论可能过时）{% endif %}</li>
+      {% endfor %}
+    </ul>
+    <p class="hint">分析不会自动重做；要重新分析，请重新查找这个岗位，会再次确认发送哪些内容。</p>
+  </section>
+  {% endif %}
+
+  <div class="actions">
+    <a href="/job-records/postings/{{ record.id }}">返回这条岗位记录</a>
+    <a href="/job-records">返回岗位记录</a>
+  </div>
+</main>
+{% endblock %}

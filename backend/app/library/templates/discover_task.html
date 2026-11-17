@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
 {% import "_icons.html" as i %}
-{% from "_findings.html" import finding_row with context %}
+{% from "_findings.html" import finding_row, analysis_body with context %}
 {% set area = "jobs" %}
 {% set section = "discover" %}
 {% block title %}{% if task.stage == "running" %}正在查找{% elif task.stage == "cancelled" %}查找已停止{% else %}找岗位结果{% endif %}{% endblock %}
@@ -12,8 +12,40 @@
   <p class="step-title">{{ step.title }}</p>
   {% if step.params %}<p class="step-params">{{ step.params }}</p>{% endif %}
   {% if step.summary %}<p class="step-summary">{{ step.summary }}</p>{% endif %}
+  {% if step.failed %}<p class="step-failed">{{ step.failed }}</p>{% endif %}
   {% if step.note %}<p class="step-note">{{ step.note }}</p>{% endif %}
 </li>
+{% endmacro %}
+
+{# Whether the user kept this posting, and the way to keep it or decide on it (U3-D3a): only from a source the server
+   lets keep, and only when the user asks. #}
+{% macro kept_line(ref) %}
+{% set mine = kept.get((ref.source_id, ref.posting_id)) %}
+{% if mine or keepable or (kept_analyses is defined and kept_analyses.get((ref.source_id, ref.posting_id))) %}
+<p class="kept-line">
+  {% set hold = held.get(mine.id) if mine and held is defined else none %}
+  {% if hold %}<span>{% if hold[0] == "closed" %}已关闭的推荐（临时留存，到 {{ hold[1].until|shorttime }} 删除）{% else %}临时留存跟踪中（到 {{ hold[1].until|shorttime }} 自动删除），还没加入我的岗位{% endif %}</span> <a href="/job-records/postings/{{ mine.id }}">查看记录</a>{% elif mine %}<span>已加入我的岗位：{{ decision_label(mine.decision) }}</span> <a href="/job-records/postings/{{ mine.id }}">查看记录</a>{% endif %}
+  {% set analysis_kept = kept_analyses.get((ref.source_id, ref.posting_id)) if kept_analyses is defined else none %}
+  {% if analysis_kept and not analysis_kept.deleted_at %}<span>分析已保存</span> <a href="/job-records/analyses/{{ analysis_kept.id }}">查看分析</a>{% elif analysis_kept %}<span>分析在回收站里</span>{% endif %}
+  {% if keepable %}<a href="/discover/tasks/{{ task.id }}/keep?source={{ ref.source_id|urlencode }}&amp;posting={{ ref.posting_id|urlencode }}">{% if mine and not hold %}改决定或指出不准…{% else %}加入我的岗位或做决定…{% endif %}</a>{% endif %}
+</p>
+{% endif %}
+{% endmacro %}
+
+{# The search's summary, kept only when the user asks (U3-D3a). #}
+{% macro summary_line() %}
+{% if task.finished and keepable %}
+{% if kept_summary %}
+<p class="hint">这次查找的摘要已保存。<a href="/job-records/searches/{{ kept_summary.id }}">查看摘要</a></p>
+{% else %}
+<form method="post" action="/discover/tasks/{{ task.id }}/summary" class="inline">
+  {{ m.csrf() }}
+  <input type="hidden" name="record" value="">
+  <input type="hidden" name="revision" value="">
+  <button type="submit" class="secondary">保存这次查找的摘要</button>
+</form>
+{% endif %}
+{% endif %}
 {% endmacro %}
 
 {# A posting analysed in full: where it came from, its three times, what to confirm first, then the analysis. #}
@@ -37,51 +69,21 @@
   </ul>
   {% endif %}
   <dl class="facts">
+    <div><dt>地点</dt><dd>{{ place_text(result) }}</dd></div>
+    <div><dt>类型</dt><dd>{{ type_text(result) }}</dd></div>
     <div><dt>发布</dt><dd>{{ stated(result.posted_on) }}</dd></div>
     <div><dt>截止</dt><dd>{{ deadlines_text(result.deadlines) }}</dd></div>
-    <div><dt>核对</dt><dd>{{ checked_text(result.checked_at) }}</dd></div>
+    <div><dt>核对</dt><dd>核对时仍公开发布 · {{ checked_text(result.checked_at) }}</dd></div>
     <div><dt>证据</dt><dd>{{ evidence_label(result.evidence) }}</dd></div>
-    <div><dt>原始链接</dt><dd class="plain-address">{{ result.url }}（合成示例地址，不能访问）</dd></div>
+    <div><dt>原始链接</dt><dd class="plain-address">{{ result.url }}{{ SOURCE_SET.link_note }}</dd></div>
+    {% if result.apply_url %}
+    <div><dt>申请入口</dt><dd class="plain-address">{{ result.apply_url }}{{ SOURCE_SET.link_note }}</dd></div>
+    {% endif %}
   </dl>
+  {{ kept_line(result.ref) }}
   <details class="fold">
     {{ m.fold_summary("分析依据") }}
-    {% set analysis = result.analysis %}
-    <p class="result-label">招聘条件</p>
-    {% for finding in analysis.findings if finding.group == Group.HARD_CONSTRAINT %}
-    {{ finding_row(finding) }}
-    {% else %}
-    <p class="empty">岗位里没有找到明确的硬性条件。</p>
-    {% endfor %}
-    <p class="result-label">经历支持</p>
-    {% for finding in analysis.findings if finding.group != Group.HARD_CONSTRAINT %}
-    {{ finding_row(finding) }}
-    {% else %}
-    <p class="empty">岗位里没有找到技能要求。</p>
-    {% endfor %}
-    <p class="result-label">工作偏好</p>
-    {% if analysis.preferences != "compared" %}
-    <p class="empty">本次未参考偏好。</p>
-    {% else %}
-    {% for finding in analysis.preference_findings %}
-    {% set topic = PREFERENCE_TOPICS[finding.field] %}
-    <details class="fold finding">
-      <summary><span class="fold-title finding-text">{{ topic[0] }}{% if topic[2] %}（{{ topic[2] }}）{% endif %}</span><span class="finding-verdict">{{ preference_label(finding) }}</span><span class="chevron">{{ i.icon("chevron-right") }}</span></summary>
-      <div class="finding-body">
-        <p class="finding-label">你的偏好</p>
-        <blockquote class="quote">{{ finding.text }}</blockquote>
-        {% for quote in finding.job_quotes %}
-        <p class="finding-label">岗位原文</p>
-        <blockquote class="quote">{{ quote }}</blockquote>
-        {% endfor %}
-        <ul class="reasons">
-          {% for reason in reason_labels(finding.reasons) %}
-          <li>{{ reason }}</li>
-          {% endfor %}
-        </ul>
-      </div>
-    </details>
-    {% endfor %}
-    {% endif %}
+    {{ analysis_body(result.analysis) }}
     <p class="hint">“目前未找到支持材料”只说明所选的经历里没有写到，不代表你不会。</p>
   </details>
 </article>
@@ -95,8 +97,14 @@
 {% if not outcome.personalised %}
 <p class="notice">{{ NOT_PERSONALISED }}。</p>
 {% endif %}
+{% if retention_text %}
+<p class="notice" role="status">{{ retention_text }}</p>
+{% endif %}
 
 <section class="result-section" aria-labelledby="results-title">
+  {% for line in partial_lines %}
+  <p class="warning" role="note">{{ line }}</p>
+  {% endfor %}
   <h2 id="results-title">完整分析结果</h2>
   {% if outcome.results %}
   {% for category, heading, items in results_by_category if items %}
@@ -111,42 +119,51 @@
 </section>
 
 <section class="result-section" aria-labelledby="leads-title">
-  <h2 id="leads-title">未分析线索</h2>
+  <h2 id="leads-title">初筛候选</h2>
   {% if outcome.leads %}
-  <p class="hint">只列公开信息和没有分析的原因，不给结论。</p>
+  <p class="hint">按职位名、地点和类型初筛出来的岗位，还没有分析，不是匹配结论；只列公开信息和没有分析的原因。</p>
   <ul class="lead-list">
     {% for lead in outcome.leads %}
     <li class="lead">
       <p class="pick-title">{{ lead.title }}</p>
-      <p class="review-meta"><span>{{ lead.company }}</span><span>{{ lead.cities|join("、") if lead.cities else "工作地点未写明" }}</span><span>{{ lead.source }}（{{ evidence_label(lead.evidence) }}）</span></p>
+      <p class="review-meta"><span>{{ lead.company }}</span><span>{{ place_text(lead) }}</span><span>{{ type_text(lead) }}</span><span>{{ lead.source }}（{{ evidence_label(lead.evidence) }}）</span></p>
       <p class="lead-times">发布 {{ stated(lead.posted_on) }} · 截止 {{ stated(lead.deadline) }} · 核对 {{ checked_text(lead.checked_at) }}</p>
       <p>没有分析的原因：{{ lead.why }}</p>
       {% for note in lead.notes %}
       <p class="hint">{{ note }}</p>
       {% endfor %}
+      {{ kept_line(lead.ref) }}
     </li>
     {% endfor %}
   </ul>
   {% else %}
-  <p class="empty">没有未分析的线索。</p>
+  <p class="empty">没有初筛候选。</p>
   {% endif %}
   {% if outcome.more_leads %}
-  <p class="hint">另有 {{ outcome.more_leads }} 条线索没有列出。</p>
+  <p class="hint">另有 {{ outcome.more_leads }} 个初筛候选没有列出。</p>
   {% endif %}
 </section>
 
 <section class="result-section" aria-labelledby="unlisted-title">
   <h2 id="unlisted-title">没有列出的岗位</h2>
-  {% if outcome.unlisted or outcome.merged or outcome.unverifiable or outcome.foreign %}
+  {% if outcome.unlisted or outcome.merged or outcome.unverifiable or outcome.foreign or outcome.skipped %}
   <ul class="points">
     {% for reason, refs in outcome.unlisted %}
-    <li>{{ UNLISTED_LABELS[reason] }}：{{ refs|length }} 个</li>
+    <li>{{ UNLISTED_LABELS[reason] }}：{{ refs|length }} 个{% if reason == "blocked" and blocked_lines %}
+      <ul class="points">
+        {% for line in blocked_lines %}
+        <li>{{ line }}</li>
+        {% endfor %}
+      </ul>{% endif %}</li>
     {% endfor %}
     {% if outcome.merged %}
     <li>和保留的那一条是同一个岗位，已合并：{{ outcome.merged|length }} 个</li>
     {% endif %}
+    {% if outcome.skipped %}
+    <li>你跳过的岗位：这次又遇到 {{ outcome.skipped }} 个，连同指向它们的线索都没有列出（按开始查找时的跳过记录；可以在岗位记录里撤销）</li>
+    {% endif %}
     {% if outcome.unverifiable %}
-    <li>编号无法核验，没有采用：{{ outcome.unverifiable }} 个</li>
+    <li>编号无法核验，没有采用：{{ outcome.unverifiable_distinct or outcome.unverifiable }} 个{% if outcome.unverifiable_distinct and outcome.unverifiable > outcome.unverifiable_distinct %}（同一个编号会在几次检索里重复出现，各次检索共返回 {{ outcome.unverifiable }} 次）{% endif %}</li>
     {% endif %}
     {% if outcome.foreign %}
     <li>来源返回了属于别的来源的记录（来源异常），没有采用：{{ outcome.foreign }} 条</li>
@@ -160,8 +177,11 @@
 <section class="result-section" aria-labelledby="searched-title">
   <h2 id="searched-title">这次查了什么</h2>
   <dl class="facts">
-    <div><dt>结束原因</dt><dd>{{ end_label }}</dd></div>
-    <div><dt>来源</dt><dd>{{ source_names }}（本机合成数据，不联网）</dd></div>
+    <div><dt>结束原因</dt><dd>{{ end_label }}{% if end_note %}（{{ end_note }}）{% endif %}</dd></div>
+    <div><dt>来源</dt><dd>{{ source_names }}（{{ SOURCE_SET.source_tag }}）</dd></div>
+    {% if partial_lines %}
+    <div><dt>只读了一部分</dt><dd>{{ partial_lines|join("；") }}</dd></div>
+    {% endif %}
     <div><dt>检索</dt><dd>
       {% if searches %}
       <ul class="plain-list">
@@ -174,7 +194,7 @@
       {% endif %}
     </dd></div>
     {% if outcome.unsearched %}
-    <div><dt>没查的组合</dt><dd>{{ outcome.unsearched|join("；") }}</dd></div>
+    <div><dt>{{ "没有完整查过的组合" if partial_lines else "没查的组合" }}</dt><dd>{{ outcome.unsearched|join("；") }}</dd></div>
     {% endif %}
     {% if outcome.unjudged %}
     <div><dt>没有判断的偏好</dt><dd>{{ outcome.unjudged|join("；") }}</dd></div>
@@ -242,6 +262,7 @@
   {% if task.finished %}
   <p class="hint">下面是查找停止时已经得到的内容，不是完整的查找。</p>
   {{ found_sections() }}
+  {{ summary_line() }}
   {% elif steps %}
   <section class="result-section" aria-labelledby="done-steps-title">
     <h2 id="done-steps-title">停止前完成的步骤</h2>
@@ -276,7 +297,8 @@
   {% else %}
   {{ found_sections() }}
   {% endif %}
-  <p class="hint result-foot">这是临时结果：保留 {{ TASK_TTL_MINUTES }} 分钟，服务重启后需要重做；不会保存，也不会投递。{{ requests }}。</p>
+  <p class="hint result-foot">这是临时结果：保留 {{ TASK_TTL_MINUTES }} 分钟，服务重启后需要重做；{% if task.confirmation.track_recommendations %}除了你勾选的临时留存跟踪，{% endif %}不会自动保存，也不会投递。{% if task.finished and keepable %}需要的话，可以把单个岗位加入我的岗位，或把{% if analyses_keepable %}它的分析、{% endif %}这次查找的摘要保存到岗位记录。{% elif task.finished %}这次查找用到的来源没有保存许可，结果只临时显示。{% endif %}{{ requests }}。</p>
+  {{ summary_line() }}
   <div class="actions">
     <a href="/discover?from={{ task.id }}">修改后重新查找</a>
     <a href="/discover">开始新的查找</a>

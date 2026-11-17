@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}岗位记录{% endblock %}
+{% block layout %}
+<main id="main" class="job-page job-reading" tabindex="-1">
+  {% if notice %}
+  <p class="notice" role="status">{{ notice }}</p>
+  {% endif %}
+  <header class="job-head">
+    <h1>岗位记录</h1>
+    <p class="job-mode">我的岗位，是你在找岗位结果里，或者用“补充岗位”自己加入的岗位；另有你在查找时勾选的“临时留存跟踪”的推荐，到期自动删除，不是我的岗位。分析和查找摘要也只在你保存时才会出现在这里。跳过的岗位，下次查找不再列出（只按同一来源、同一岗位编号）；撤销、改决定或删除记录后会重新列出。你提供原文的岗位不来自任何来源，跳过它不影响查找。</p>
+  </header>
+
+  <p class="actions"><a href="/job-records/supply">补充岗位…</a><span class="hint">在别处看到的岗位：贴链接或原文，先看一遍再决定加不加入。</span></p>
+
+  <section class="review-section" aria-labelledby="refresh-title">
+    <h2 id="refresh-title">核对跟踪中的岗位</h2>
+    <p>跟踪中的岗位：我的岗位里没跳过、也没有明确关闭的（收藏、准备申请、暂缓和还没做决定的），加上当前推荐（临时留存跟踪），{{ refresh.scope }}。现在跟踪 {{ refresh.tracked }} 个{% if refresh.recommended %}（其中当前推荐 {{ refresh.recommended }} 个）{% endif %}。</p>
+    <p>{% if refresh.due %}现在有 {{ refresh.due }} 个超过 24 小时没有核对{% if refresh.never %}（其中 {{ refresh.never }} 个从来没有核对过）{% endif %}。{% else %}现在没有超过 24 小时没核对的岗位。{% endif %}{% if refresh.running %}正在核对…{% endif %}</p>
+    <p class="hint">{% if refresh.auto %}每 24 小时的自动检查已开启：本机应用运行时，每 {{ refresh.every }} 分钟看一次哪些岗位到期。{% else %}每 24 小时的自动检查没有开启。{% endif %}应用关闭期间不会检查，也不会更新；本机检查不等于已经上线的服务。</p>
+    <form method="post" action="/job-records/refresh" class="inline">
+      {{ m.csrf() }}
+      <button type="submit" class="secondary">现在核对</button>
+    </form>
+    <p class="hint">只读公开岗位信息：{{ refresh.limits }}，不重试；跳过 10 分钟内刚核对过的。不发送你的经历和偏好，不调用 AI，不改你的决定。没轮到的岗位保持原来的状态，留到下一轮。</p>
+    {% if refresh.last %}
+    <p class="result-label">上一轮</p>
+    <ul class="points">
+      {% for line in refresh.last %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+
+  {% if watched %}
+  <section class="review-section" aria-labelledby="watched-title" data-reveal>
+    <h2 id="watched-title">每日查新的新增岗位</h2>
+    <p class="hint">{{ watch_auto }} 新增岗位只记公开信息，从第一次读到起保留 {{ KEEP_NEW_DAYS }} 天，不会自动加入我的岗位；打开摘要查看和处理。</p>
+    <ul class="lead-list">
+      {% for summary, watch, count in watched %}
+      <li class="lead">
+        <p class="pick-title"><a href="/job-records/searches/{{ summary.id }}#watch">{{ summary.summary.scope.targets|join("、") or "没有填写岗位名称" }}</a></p>
+        <p class="lead-times">新增 {{ count }} 个 · 开启于 {{ watch.created_at|shorttime }}{% if watch.last_started_at %} · 上次查新开始于 {{ watch.last_started_at|shorttime }}{% else %} · 还没有运行过{% endif %}</p>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if current or closed %}
+  <section class="review-section" aria-labelledby="held-title" data-reveal>
+    <h2 id="held-title">当前推荐（临时留存跟踪）</h2>
+    <p class="hint">按你在查找时的勾选，系统临时留存了这些推荐的公开信息和核对结果，每条到期自动删除，不进回收站；被下一次勾选、更晚开始并且有推荐的查找替换时提前删除。它们还没加入我的岗位：保存、做决定或指出不准，才会加入。</p>
+    {% if current %}
+    <ul class="lead-list">
+      {% for record, hold in current %}
+      {% set facts = record.facts %}
+      <li class="lead">
+        <p class="pick-title"><a href="/job-records/postings/{{ record.id }}">{{ facts.title }}</a></p>
+        <p class="review-meta"><span>{{ facts.company }}</span><span>{{ facts.cities|join("、") or "地点未认出" }}</span><span>{{ facts.job_type or "类型未认出" }}</span><span>{{ facts.source_name }}</span></p>
+        <p class="lead-times">临时留存于 {{ hold.recommended_at|shorttime }} · 到 {{ hold.until|shorttime }} 自动删除 · {{ check_texts[record.id] }}</p>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="empty-state">现在没有跟踪中的推荐。</p>
+    {% endif %}
+    {% if closed %}
+    <p class="result-group">已关闭的推荐（临时留存，到期删除）<span>{{ closed|length }} 个</span></p>
+    <p class="hint">来源已明确关闭：不再跟踪，也不算当前推荐。</p>
+    <ul class="lead-list">
+      {% for record, hold in closed %}
+      {% set facts = record.facts %}
+      <li class="lead">
+        <p class="pick-title"><a href="/job-records/postings/{{ record.id }}">{{ facts.title }}</a></p>
+        <p class="review-meta"><span>{{ facts.company }}</span><span>{{ facts.source_name }}</span></p>
+        <p class="lead-times">{{ check_texts[record.id] }} · 到 {{ hold.until|shorttime }} 删除</p>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  <section class="review-section" aria-labelledby="postings-title" data-reveal>
+    <h2 id="postings-title">我的岗位</h2>
+    {% if has_postings %}
+    {% for label, entries in groups %}
+    {% if entries %}
+    <p class="result-group">{{ label }}<span>{{ entries|length }} 个</span></p>
+    <ul class="lead-list">
+      {% for record in entries %}
+      {% set facts = record.facts %}
+      <li class="lead">
+        <p class="pick-title"><a href="/job-records/postings/{{ record.id }}">{{ facts.title }}</a></p>
+        {% if record.id in pasted %}
+        <p class="review-meta"><span>{{ facts.company }}</span><span>你提供的原文</span><span>用户提供，系统未独立核验</span></p>
+        {% else %}
+        <p class="review-meta"><span>{{ facts.company }}</span><span>{{ facts.cities|join("、") or "地点未认出" }}</span><span>{{ facts.job_type or "类型未认出" }}</span><span>{{ facts.source_name }}</span></p>
+        {% endif %}
+        <p class="lead-times">保存于 {{ record.kept_at|shorttime }} · {{ check_texts[record.id] }}</p>
+        {% if record.decision and record.reasons %}
+        <p class="hint">原因：{{ reason_labels(record.decision, record.reasons)|join("、") }}</p>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% endfor %}
+    {% else %}
+    <p class="empty-state">还没有加入我的岗位的岗位。在找岗位的结果里，点岗位下面的“加入我的岗位或做决定…”，就会记在这里。</p>
+    {% endif %}
+  </section>
+
+  <section class="review-section" aria-labelledby="analyses-title" data-reveal>
+    <h2 id="analyses-title">已保存的分析</h2>
+    {% if analyses %}
+    <ul class="lead-list">
+      {% for record in analyses %}
+      {% set facts = record.facts %}
+      <li class="lead">
+        <p class="pick-title"><a href="/job-records/analyses/{{ record.id }}">{{ facts.title }}</a></p>
+        <p class="review-meta"><span>{{ facts.company }}</span><span>{{ CATEGORY_WORDS.get(record.content.category, record.content.category) }}</span><span>{{ facts.source_name }}</span></p>
+        <p class="lead-times">保存于 {{ record.saved_at|shorttime }} · {{ basis_texts[record.id] }}</p>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="empty-state">还没有保存的分析。在找岗位的结果里，点岗位下面的“保存或做决定…”，再点“保存这份分析”。</p>
+    {% endif %}
+  </section>
+
+  <section class="review-section" aria-labelledby="summaries-title" data-reveal>
+    <h2 id="summaries-title">查找摘要</h2>
+    {% if summaries %}
+    <ul class="lead-list">
+      {% for record in summaries %}
+      <li class="lead">
+        <p class="pick-title"><a href="/job-records/searches/{{ record.id }}">{{ record.summary.scope.targets|join("、") or "没有填写岗位名称" }}</a></p>
+        <p class="review-meta"><span>{{ record.summary.sources|map(attribute="name")|join("、") }}</span><span>完整分析结果 {{ record.summary.counts.results }} 个</span><span>初筛候选 {{ record.summary.counts.leads }} 个</span></p>
+        <p class="lead-times">保存于 {{ record.kept_at|shorttime }}</p>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="empty-state">还没有保存的查找摘要。在找岗位的结果页底部，点“保存这次查找的摘要”。</p>
+    {% endif %}
+  </section>
+</main>
+{% endblock %}

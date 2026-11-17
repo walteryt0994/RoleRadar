@@ -1,0 +1,207 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% import "_job_forms.html" as jf with context %}
+{% block title %}{{ facts.title }}{% endblock %}
+{% block layout %}
+<main id="main" class="job-page job-reading" tabindex="-1">
+  {% if notice %}
+  <p class="notice" role="status">{{ notice }}</p>
+  {% endif %}
+  <header class="job-head">
+    <h1>{{ facts.title }}</h1>
+    <p class="job-mode">{% if synthetic %}本机合成数据，不是真实招聘。{% endif %}{% if pasted %}这是你提供的原文（{{ EVIDENCE_WORDS["user_provided"] }}），{{ via_supplied.at if via_supplied else "" }} 提供；职位名和公司是你填写的。系统没有打开你给的链接，也没有向任何来源核实，不能核对它的招聘状态；准备申请时，请自己到原网站确认。{% elif via_supplied %}这个岗位是你用补充链接加入的，{{ via_supplied.at }} 读到；下面的事实是那时读到的公开信息，不是最新情况。{% elif via_watch %}这个岗位来自每日查新，{{ via_watch }} 第一次读到；下面的事实是那时读到的公开信息，不是最新情况，也没有核对过招聘状态。{% else %}下面的事实是{% if held %}临时留存{% else %}保存{% endif %}时那次查找里看到的公开信息，不是最新情况。{% endif %}</p>
+  </header>
+  {% if held %}
+  <section class="review-section" aria-labelledby="held-title">
+    <h2 id="held-title">{% if held.state == "closed" %}已关闭的推荐（临时留存，到期删除）{% else %}当前推荐（临时留存跟踪）{% endif %}</h2>
+    <p>按你在查找时的勾选，系统临时留存了这条岗位的公开信息和核对结果，到 {{ held.until|localtime }} 自动删除，不进回收站；它还没加入我的岗位。{% if held.state == "closed" %}来源已明确关闭，所以不再跟踪。{% endif %}</p>
+    <p class="hint">加入我的岗位、做决定或指出不准，都会把它加入我的岗位，以后不会到期删除；保存它的分析不会。不再跟踪会马上删除它，以后的查找仍可能再推荐它；不想再看到，请用“跳过”。</p>
+    <form method="post" action="/job-records/postings/{{ record.id }}/add" class="inline">
+      {{ m.csrf() }}
+      <input type="hidden" name="expected_revision" value="{{ record.revision }}">
+      <button type="submit" class="secondary">加入我的岗位</button>
+    </form>
+    <form method="post" action="/job-records/postings/{{ record.id }}/untrack" class="inline">
+      {{ m.csrf() }}
+      <input type="hidden" name="expected_revision" value="{{ record.revision }}">
+      <button type="submit" class="link-button">不再跟踪（马上删除）</button>
+    </form>
+  </section>
+  {% endif %}
+  {% if error %}
+  <p class="error" role="alert">{{ error }}</p>
+  {% endif %}
+
+  {% if pasted %}
+  <section class="review-section" aria-labelledby="facts-title">
+    <h2 id="facts-title">岗位事实</h2>
+    <dl class="facts">
+      <div><dt>公司</dt><dd>{{ facts.company }}（你填写的）</dd></div>
+      <div><dt>来源</dt><dd>你提供的原文（{{ EVIDENCE_WORDS["user_provided"] }}）</dd></div>
+      <div><dt>原始链接</dt><dd class="plain-address">{% if via_supplied and via_supplied.link %}{{ via_supplied.link }}（你提供的，只是文字，系统没有打开过，页面不提供链接）{% else %}没有{% endif %}</dd></div>
+      <div><dt>保存于</dt><dd>{{ record.kept_at|localtime }}（你加入我的岗位的时间）</dd></div>
+    </dl>
+  </section>
+
+  <section class="review-section" aria-labelledby="text-title">
+    <h2 id="text-title">你提供的原文</h2>
+    {% if user_text %}
+    <details class="quote-details">
+      <summary>展开原文（{{ user_text|length }} 字）</summary>
+      <div class="quote">{{ user_text }}</div>
+    </details>
+    <p class="hint">原文按你保存前确认的样子保存，跟着这条记录删除、恢复和导出，不能修改；要改，请删除后重新补充。</p>
+    <p><a href="/job-analysis?record={{ record.id }}">去分析…</a></p>
+    <p class="hint">“去分析”只把原文填进岗位分析页；要在那里选经历、看核对页并确认，才会分析。</p>
+    {% else %}
+    <p class="empty">没有保存原文。</p>
+    {% endif %}
+  </section>
+  {% else %}
+  <section class="review-section" aria-labelledby="facts-title">
+    <h2 id="facts-title">岗位事实</h2>
+    <dl class="facts">
+      <div><dt>公司</dt><dd>{{ facts.company }}</dd></div>
+      <div><dt>来源</dt><dd>{{ facts.source_name }}，岗位编号 {{ record.posting_id }}（{{ EVIDENCE_WORDS.get(facts.evidence, facts.evidence) }}）</dd></div>
+      <div><dt>地点</dt><dd>{{ facts.cities|join("、") or "未认出" }}{% if facts.places_stated %}（来源原文：{{ facts.places_stated|join("、") }}）{% endif %}</dd></div>
+      <div><dt>类型</dt><dd>{{ facts.job_type or "未认出" }}{% if facts.type_stated %}（来源原文：{{ facts.type_stated }}）{% endif %}</dd></div>
+      <div><dt>发布</dt><dd>{{ facts.posted_on or "未提供" }}</dd></div>
+      <div><dt>截止</dt><dd>{% for entry in facts.deadlines %}{{ entry.deadline or "未提供" }}{% if facts.deadlines|length > 1 %}（{{ entry.source_id }}/{{ entry.posting_id }}）{% endif %}{% if not loop.last %}；{% endif %}{% endfor %}</dd></div>
+      {% if facts.url %}
+      <div><dt>原始链接</dt><dd class="plain-address">{{ facts.url }}（页面不提供链接）</dd></div>
+      {% endif %}
+      {% if facts.apply_url %}
+      <div><dt>申请入口</dt><dd class="plain-address">{{ facts.apply_url }}（页面不提供链接）</dd></div>
+      {% endif %}
+      {% if facts.read_at %}
+      <div><dt>读取详情</dt><dd>{{ iso_local(facts.read_at) }}（读取详情时来源回答的时间）</dd></div>
+      {% endif %}
+      {% if held %}
+      <div><dt>临时留存于</dt><dd>{{ record.kept_at|localtime }}（系统按你的勾选留存的时间，不是来源核对的时间）</dd></div>
+      {% else %}
+      <div><dt>保存于</dt><dd>{{ record.kept_at|localtime }}（你加入我的岗位的时间，不是来源核对的时间）</dd></div>
+      {% endif %}
+    </dl>
+  </section>
+  {% endif %}
+
+  <section class="review-section" aria-labelledby="checks-title">
+    <h2 id="checks-title">来源核对记录</h2>
+    <p>{{ check_now }}</p>
+    {% if deadline_note %}
+    <p class="warning">{{ deadline_note }}</p>
+    {% endif %}
+    {% if closure_note %}
+    <p class="hint">{{ closure_note }}</p>
+    {% endif %}
+    {% if latest_read %}
+    <p class="hint">最近一次读到岗位信息：{{ latest_read.checked_at|localtime }}。{% if latest_changes %}和保存时相比：{{ latest_changes|join("；") }}。{% else %}和保存时相比，公开信息没有看到变化。{% endif %}上面“岗位事实”仍是保存时的样子，不会被改。</p>
+    {% endif %}
+    {% if can_check %}
+    <div class="actions">
+      <form method="post" action="/job-records/postings/{{ record.id }}/recheck" class="inline">
+        {{ m.csrf() }}
+        <input type="hidden" name="revision" value="{{ record.revision }}">
+        <button type="submit" class="secondary">再核对一次</button>
+      </form>
+      <form method="post" action="/job-records/postings/{{ record.id }}/apply-check" class="inline">
+        {{ m.csrf() }}
+        <input type="hidden" name="revision" value="{{ record.revision }}">
+        <button type="submit" class="secondary">申请前核对</button>
+      </form>
+    </div>
+    <p class="hint">只读这个岗位的公开信息：最多 3 次来源请求，每次最多 15 秒，不重试。不发送你的经历和偏好，不调用 AI，不改你的决定，也不投递。申请前核对会把这次读到的岗位正文临时给你看 30 分钟，不保存。</p>
+    {% else %}
+    <p class="hint">{{ check_blocked }}</p>
+    {% endif %}
+    {% if history %}
+    <ul class="points">
+      {% for line, origin, changes in history %}
+      <li>{{ line }} · {{ origin }}{% if changes %}<br><span class="hint">和上一次读到的版本相比：{{ changes|join("；") }}</span>{% endif %}</li>
+      {% endfor %}
+    </ul>
+    {% elif pasted %}
+    <p class="empty">你提供的原文没有来源核对记录。</p>
+    {% else %}
+    <p class="empty">保存时那次查找没有核对过它，所以没有记录。</p>
+    {% endif %}
+  </section>
+
+  {% set hidden = {"revision": record.revision} %}
+  <section class="review-section" aria-labelledby="decision-title">
+    <h2 id="decision-title">我的决定</h2>
+    {% if held %}
+    <p class="hint">做决定会把这条推荐加入我的岗位。</p>
+    {% endif %}
+    <p>{{ decision_label(record.decision) }}{% if record.decided_at %} · 决定于 {{ record.decided_at|localtime }}{% endif %}</p>
+    {% if record.decision == "skip" %}
+    {% if pasted %}
+    <p class="hint">这只记下你的决定：这是你提供的原文，不来自任何来源，所以跳过它不影响以后的查找。</p>
+    {% else %}
+    <p class="hint">下次查找不再列出这个岗位，指向它的线索也不列出；撤销跳过、改成别的决定或删除这条记录，下次会重新列出。</p>
+    {% endif %}
+    {% endif %}
+    {% if record.decision == "apply" %}
+    {% if pasted %}
+    <p class="hint">“准备申请”是你自己的决定：不代表已经投递，也不代表岗位已经核实。这是你提供的原文，系统不能核对它；申请前请自己到原网站确认要求、截止时间和申请入口。</p>
+    {% else %}
+    <p class="hint">“准备申请”是你自己的决定：不代表已经投递，也不代表岗位已经核实。申请前可以用上面的“申请前核对”，再读一遍要求、截止时间和申请入口；核对结果不会改这个决定。</p>
+    {% endif %}
+    {% endif %}
+    {% if record.reasons %}
+    <p class="hint">原因：{{ reason_labels(record.decision, record.reasons)|join("、") }}</p>
+    {% endif %}
+    {% if record.note %}
+    <p class="hint">备注：{{ record.note }}</p>
+    {% endif %}
+    {{ jf.decision_forms("/job-records/postings/" ~ record.id ~ "/decide", hidden, record.decision, pasted=pasted) }}
+    {% if record.decision %}
+    <form method="post" action="/job-records/postings/{{ record.id }}/decide" class="inline">
+      {{ m.csrf() }}
+      {{ jf.hidden_fields(dict(hidden, decision="")) }}
+      <button type="submit" class="link-button">撤销决定</button>
+    </form>
+    {% endif %}
+  </section>
+
+  <section class="review-section" aria-labelledby="feedback-title">
+    <h2 id="feedback-title">指出的不准</h2>
+    {% if held %}
+    <p class="hint">指出不准会把这条推荐加入我的岗位。</p>
+    {% endif %}
+    {% if feedback %}
+    <ul class="points">
+      {% for item in feedback %}
+      <li>{{ feedback_label(item.field, item.reason) }}{% if item.note %}：{{ item.note }}{% endif %}（{{ item.created_at|shorttime }}）</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="empty">还没有。</p>
+    {% endif %}
+    {% if pasted %}
+    <p class="hint">职位名和公司是你自己填写的，这里没有系统得出的事实可以指出不准；要改，请删除后重新补充。</p>
+    {% else %}
+    {{ jf.feedback_form("/job-records/postings/" ~ record.id ~ "/feedback", hidden) }}
+    {% endif %}
+  </section>
+
+  {% if analyses %}
+  <section class="review-section" aria-labelledby="analyses-title">
+    <h2 id="analyses-title">这个岗位已保存的分析</h2>
+    <ul class="points">
+      {% for analysis in analyses %}
+      <li><a href="/job-records/analyses/{{ analysis.id }}">保存于 {{ analysis.saved_at|shorttime }} 的分析</a>{% if analysis.id in stale %}（分析时的岗位正文和最近一次读到的不同，结论可能过时）{% endif %}</li>
+      {% endfor %}
+    </ul>
+    <p class="hint">分析单独保存、单独删除，删除这条岗位记录不影响它们。</p>
+  </section>
+  {% endif %}
+
+  <div class="actions">
+    <a href="/job-records">返回岗位记录</a>
+    {% if not held %}
+    <a class="danger-link" href="/job-records/postings/{{ record.id }}/delete">删除这条记录…</a>
+    {% endif %}
+  </div>
+</main>
+{% endblock %}

@@ -111,6 +111,50 @@ DIRECTION_ROUTES = {
     ("GET", "/directions/decisions/{decision_id}/purge"),
     ("POST", "/directions/decisions/{decision_id}/purge"),
 }
+# Keeping postings and search summaries from a finished search, and the records kept (U3-D3a);
+# test_job_record_pages.py checks their access rules.
+JOB_RECORD_ROUTES = {
+    ("GET", "/discover/tasks/{task_id}/keep"),
+    ("POST", "/discover/tasks/{task_id}/keep"),
+    ("POST", "/discover/tasks/{task_id}/summary"),
+    ("GET", "/job-records"),
+    ("GET", "/job-records/postings/{record_id}"),
+    ("POST", "/job-records/postings/{record_id}/decide"),
+    ("POST", "/job-records/postings/{record_id}/feedback"),
+    # A current recommendation held for tracking: added to 我的岗位, or no longer tracked (U3-D4b-2).
+    ("POST", "/job-records/postings/{record_id}/add"),
+    ("POST", "/job-records/postings/{record_id}/untrack"),
+    # Checks of a kept posting from its record (U3-D4a).
+    ("POST", "/job-records/postings/{record_id}/recheck"),
+    ("POST", "/job-records/postings/{record_id}/apply-check"),
+    ("GET", "/job-records/postings/{record_id}/apply-check/{token}"),
+    # A batch of checks of the postings tracked (U3-D4b-1).
+    ("POST", "/job-records/refresh"),
+    ("GET", "/job-records/searches/{record_id}"),
+    # 每日查新 on a kept summary, and its new postings (U3-D4c).
+    ("GET", "/job-records/searches/{record_id}/watch"),
+    ("POST", "/job-records/searches/{record_id}/watch"),
+    ("POST", "/job-records/searches/{record_id}/watch/run"),
+    ("GET", "/job-records/searches/{record_id}/watch/stop"),
+    ("POST", "/job-records/searches/{record_id}/watch/stop"),
+    ("POST", "/job-records/watch-postings/{item_id}/keep"),
+    ("POST", "/job-records/watch-postings/{item_id}/dismiss"),
+    # 补充岗位 (U3-D4d).
+    ("GET", "/job-records/supply"),
+    ("POST", "/job-records/supply/link"),
+    ("POST", "/job-records/supply/text"),
+    ("GET", "/job-records/supply/{token}"),
+    ("POST", "/job-records/supply/{token}/keep"),
+    ("POST", "/job-records/supply/{token}/discard"),
+    # U3-D3b: a kept analysis and the feedback on it.
+    ("GET", "/job-records/analyses/{record_id}"),
+    ("POST", "/job-records/analyses/{record_id}/feedback"),
+    ("GET", "/job-records/{kind}/{record_id}/delete"),
+    ("POST", "/job-records/{kind}/{record_id}/delete"),
+    ("POST", "/job-records/{kind}/{record_id}/restore"),
+    ("GET", "/job-records/{kind}/{record_id}/purge"),
+    ("POST", "/job-records/{kind}/{record_id}/purge"),
+}
 # The resume import pages (U2-B1); test_library_imports.py checks their access rules.
 IMPORT_ROUTES = {
     ("GET", "/imports"),
@@ -286,6 +330,7 @@ def test_every_route_is_either_public_or_listed_as_protected(app):
         | JOB_ROUTES
         | DISCOVERY_ROUTES
         | DIRECTION_ROUTES
+        | JOB_RECORD_ROUTES
         | IMPORT_ROUTES
         | REVIEW_ROUTES
         | STRUCTURING_ROUTES

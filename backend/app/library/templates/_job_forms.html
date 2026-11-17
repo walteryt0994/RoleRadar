@@ -1,0 +1,82 @@
+{# What the user can say of a posting they keep (U3-D3a): a decision with its reasons, or that a fact is not right.
+   hidden names what the page saw (the record's id and revision, or none) and, on a search's page, which posting. #}
+{% import "_macros.html" as m with context %}
+{% macro hidden_fields(hidden) %}
+{% for name, value in hidden.items() %}
+<input type="hidden" name="{{ name }}" value="{{ value }}">
+{% endfor %}
+{% endmacro %}
+
+{# pasted: a posting the user pasted (U3-D4d), which nothing can check: its hints promise no check. #}
+{% macro decision_forms(action, hidden, current=None, pasted=False) %}
+{% for value, label, reasons in DECISIONS %}
+<details class="fold keep-choice"{% if current == value %} open{% endif %}>
+  {{ m.fold_summary(("改为" if current and current != value else "") ~ label ~ ("（现在的决定）" if current == value else "") ~ "…") }}
+  <form method="post" action="{{ action }}" class="keep-form">
+    {{ m.csrf() }}
+    {{ hidden_fields(hidden) }}
+    <input type="hidden" name="decision" value="{{ value }}">
+    {% if reasons %}
+    <fieldset class="choice-group">
+      <legend>原因（选填，可多选）</legend>
+      <ul class="value-list">
+        {% for code, words in reasons %}
+        <li><label class="check"><input type="checkbox" name="reason" value="{{ code }}">{{ words }}</label></li>
+        {% endfor %}
+      </ul>
+    </fieldset>
+    {% endif %}
+    {% if value == "apply" %}
+    {% if pasted %}
+    <p class="hint">只记下你的决定，不投递。这是你提供的原文，系统不能核对它；申请前请自己到原网站确认。</p>
+    {% else %}
+    <p class="hint">只记下你的决定，不投递，也不核对来源；申请前核对在岗位记录页上单独做。</p>
+    {% endif %}
+    {% endif %}
+    {% if value == "skip" and pasted %}
+    <p class="hint">这是你提供的原文，不来自任何来源：跳过只记下你的决定，不影响以后的查找。</p>
+    {% endif %}
+    <div class="field">
+      <label for="note-{{ value }}">备注（选填，最多 {{ NOTE_CHARS }} 字，只存在你的岗位记录里）</label>
+      <textarea id="note-{{ value }}" name="note" rows="2" maxlength="{{ NOTE_CHARS }}"></textarea>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="secondary">{{ label }}</button>
+    </div>
+  </form>
+</details>
+{% endfor %}
+{% endmacro %}
+
+{% macro feedback_form(action, hidden) %}
+<details class="fold keep-choice">
+  {{ m.fold_summary("指出不准…") }}
+  <form method="post" action="{{ action }}" class="keep-form">
+    {{ m.csrf() }}
+    {{ hidden_fields(hidden) }}
+    <fieldset class="choice-group">
+      <legend>哪一项不准</legend>
+      <div class="choice-row">
+        {% for code, words in FEEDBACK_FIELDS %}
+        <label class="check"><input type="radio" name="field" value="{{ code }}"{% if loop.first %} required{% endif %}>{{ words }}</label>
+        {% endfor %}
+      </div>
+    </fieldset>
+    <fieldset class="choice-group">
+      <legend>哪里不准</legend>
+      <div class="choice-row">
+        {% for code, words in FEEDBACK_REASONS %}
+        <label class="check"><input type="radio" name="feedback_reason" value="{{ code }}"{% if loop.first %} required{% endif %}>{{ words }}</label>
+        {% endfor %}
+      </div>
+    </fieldset>
+    <div class="field">
+      <label for="note-feedback">说明（选填，最多 {{ NOTE_CHARS }} 字，只存在你的岗位记录里）</label>
+      <textarea id="note-feedback" name="note" rows="2" maxlength="{{ NOTE_CHARS }}"></textarea>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="secondary">记下不准</button>
+    </div>
+  </form>
+</details>
+{% endmacro %}

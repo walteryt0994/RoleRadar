@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% import "_job_forms.html" as jf with context %}
+{% block title %}保存这个岗位{% endblock %}
+{% block layout %}
+<main id="main" class="job-page job-reading" tabindex="-1">
+  <header class="job-head">
+    <h1>保存这个岗位</h1>
+    <p class="job-mode">只有你点了下面的按钮才会保存。岗位（含决定）和分析各自单独保存，保存一样不会带上另一样，都不含岗位原文。</p>
+  </header>
+  {% if error %}
+  <p class="error" role="alert">{{ error }}</p>
+  {% endif %}
+
+  <section class="review-section" aria-labelledby="posting-title">
+    <h2 id="posting-title">{{ item.title }}</h2>
+    <p class="review-meta"><span>{{ item.company }}</span><span>{{ item.source }}</span><span>岗位编号 {{ item.ref.posting_id }}</span></p>
+    <dl class="facts">
+      <div><dt>地点</dt><dd>{{ place_text(item) }}</dd></div>
+      <div><dt>类型</dt><dd>{{ type_text(item) }}</dd></div>
+      <div><dt>发布</dt><dd>{{ stated(item.posted_on) }}</dd></div>
+      <div><dt>截止</dt><dd>{% if is_result %}{{ deadlines_text(item.deadlines) }}{% else %}{{ stated(item.deadline) }}{% endif %}</dd></div>
+      <div><dt>本次查找时的来源核对</dt><dd>{% for line in check_lines %}{{ line }}{% if not loop.last %}；{% endif %}{% endfor %}</dd></div>
+      <div><dt>证据</dt><dd>{{ evidence_label(item.evidence) }}</dd></div>
+      {% if is_result %}
+      <div><dt>原始链接</dt><dd class="plain-address">{{ item.url }}{{ SOURCE_SET.link_note }}</dd></div>
+      {% endif %}
+    </dl>
+    {% if mine and held %}
+    <p class="notice">这是临时留存跟踪的推荐{% if held[0] == "closed" %}（来源已明确关闭，不再跟踪）{% endif %}：到 {{ held[1].until|localtime }} 自动删除，还没加入我的岗位。保存、做决定或指出不准，都会把它加入我的岗位；保存它的分析不会。<a href="/job-records/postings/{{ mine.id }}">查看记录</a></p>
+    {% elif mine %}
+    <p class="notice">已加入我的岗位：{{ decision_label(mine.decision) }}，保存于 {{ mine.kept_at|localtime }}。<a href="/job-records/postings/{{ mine.id }}">查看记录</a></p>
+    {% endif %}
+  </section>
+
+  {% set hidden = {"source": item.ref.source_id, "posting": item.ref.posting_id, "record": mine.id if mine else "", "revision": mine.revision if mine else ""} %}
+  <section class="review-section" aria-labelledby="decide-title">
+    <h2 id="decide-title">做决定</h2>
+    <p class="hint">收藏、暂缓只是标记，不影响以后的查找。跳过以后，下次查找不再列出这个岗位，指向它的线索也不列出（只按同一来源、同一岗位编号，不影响公司、方向和城市，也不改你的求职偏好）；撤销跳过、改成别的决定或删除这条记录，下次会重新列出。原因和备注只存在本机，不会发给任何服务。</p>
+    {{ jf.decision_forms("/discover/tasks/" ~ task.id ~ "/keep", dict(hidden, action="decide"), mine.decision if mine else None) }}
+    {% if not mine or held %}
+    <form method="post" action="/discover/tasks/{{ task.id }}/keep" class="inline">
+      {{ m.csrf() }}
+      {{ jf.hidden_fields(dict(hidden, action="keep")) }}
+      <button type="submit" class="link-button">只加入我的岗位，先不做决定</button>
+    </form>
+    {% endif %}
+  </section>
+
+  {% if analysis_keep.allowed %}
+  <section class="review-section" aria-labelledby="analysis-title">
+    <h2 id="analysis-title">保存这份分析</h2>
+    {% if analysis_keep.row and not analysis_keep.row.deleted_at %}
+    <p class="notice">这份分析已保存于 {{ analysis_keep.row.saved_at|localtime }}。<a href="/job-records/analyses/{{ analysis_keep.row.id }}">查看分析</a></p>
+    {% elif analysis_keep.row %}
+    <p class="notice">这份分析保存过，现在在回收站里，可以在<a href="/experiences?tab=trash">回收站</a>恢复；不会再保存一份。</p>
+    {% elif analysis_keep.purged %}
+    <p class="notice">这份分析保存以后已经永久删除，不能再从这次结果保存。</p>
+    {% else %}
+    <p class="hint">单独保存这个岗位的分析，不会同时保存岗位、决定或查找摘要。</p>
+    <ul class="points">
+      <li>会存：分类、各条招聘条件的判断和理由、岗位原文引文、所选经历的原话和分析时读的那句话、偏好原话；不存岗位全文和整段经历。</li>
+      <li>依据：{{ analysis_keep.basis|join("；") }}。</li>
+      <li>留多久：留到你删除为止；删除后在回收站留 {{ RESTORE_DAYS }} 天，然后清除。以后经历改了或删了，记录会标出来，不会自动删除，也不会用于新的分析。</li>
+      <li>只存在本机，不发给任何服务。</li>
+    </ul>
+    <form method="post" action="/discover/tasks/{{ task.id }}/keep" class="inline">
+      {{ m.csrf() }}
+      {{ jf.hidden_fields({"source": item.ref.source_id, "posting": item.ref.posting_id, "record": "", "revision": "", "action": "analysis"}) }}
+      <button type="submit" class="secondary">保存这份分析</button>
+    </form>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  <section class="review-section" aria-labelledby="feedback-title">
+    <h2 id="feedback-title">指出不准</h2>
+    <p class="hint">发现公司、职位、地点、类型、日期、核对结果或链接不对，可以记下来；会同时保存这个岗位。</p>
+    {{ jf.feedback_form("/discover/tasks/" ~ task.id ~ "/keep", dict(hidden, action="feedback")) }}
+  </section>
+
+  <div class="actions">
+    <a href="/discover/tasks/{{ task.id }}">返回结果</a>
+    <a href="/job-records">查看岗位记录</a>
+  </div>
+</main>
+{% endblock %}

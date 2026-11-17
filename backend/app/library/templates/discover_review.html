@@ -26,17 +26,34 @@
         {% endfor %}
       </dl>
       <p class="hint">只在这个范围里检索；理想的排在前面，不用来过滤。查找中途不能扩大范围，要改请返回修改。</p>
+      {% if task.confirmation.skipped %}
+      <p class="hint">你跳过的 {{ task.confirmation.skipped|length }} 个岗位这次不会再列出，指向它们的线索也不列出（只按同一来源、同一岗位编号，不影响公司、方向和城市）；可以在<a href="/job-records">岗位记录</a>里撤销。</p>
+      {% endif %}
     </section>
 
     <section class="review-section"{% if not error %} data-reveal{% endif %} aria-labelledby="who-title">
       <h2 id="who-title">交给谁，怎样处理</h2>
       <dl class="facts">
-        <div><dt>岗位来源</dt><dd>{% for name, evidence in sources %}{{ name }}（{{ evidence }}）{% if not loop.last %}、{% endif %}{% endfor %}。都是本机冻结的合成数据，不联网，不打开任何链接。</dd></div>
-        <div><dt>决策</dt><dd>本机模拟决策：RoleRadar 内置的固定规则，不是 AI。</dd></div>
-        <div><dt>分析</dt><dd>{% if material.sources %}本机模拟服务：固定规则，不是 AI。在这台电脑上运行，不联网，不保存请求。{% else %}没有选择经历，不做个性化分析。{% endif %}</dd></div>
+        <div><dt>岗位来源</dt><dd>{% for name, evidence in sources %}{{ name }}（{{ evidence }}）{% if not loop.last %}、{% endif %}{% endfor %}。{{ SOURCE_SET.source_note }}</dd></div>
+        <div><dt>决策</dt><dd>{{ SOURCE_SET.decision_note }}</dd></div>
+        <div><dt>分析</dt><dd>{% if material.sources %}{{ SOURCE_SET.analysis_note }}{% else %}没有选择经历，不做个性化分析。{% endif %}</dd></div>
+        {% for label, text in service_lines %}
+        <div><dt>{{ label }}</dt><dd>{{ text }}</dd></div>
+        {% endfor %}
         <div><dt>上限</dt><dd>检索 {{ limits.searches }} 次、读取 {{ limits.reads }} 个、核对 {{ limits.checks }} 个、分析 {{ limits.analyses }} 个（完整分析结果最多 {{ limits.analyses }} 条）；最多 {{ MAX_DECISIONS }} 步，被拒 {{ limits.refusals }} 次就结束，最长 {{ (limits.seconds // 60)|int }} 分钟。</dd></div>
-        <div><dt>结果</dt><dd>只临时显示 {{ TASK_TTL_MINUTES }} 分钟，服务重启后也会清除；不会存进经历库，不会投递，也不会发给任何人。</dd></div>
+        <div><dt>结果</dt><dd>只临时显示 {{ TASK_TTL_MINUTES }} 分钟，服务重启后也会清除；{% if SOURCE_SET.keep %}{% if tracking.on %}除了下面勾选的临时留存跟踪，不会自动保存。{% else %}不会自动保存。{% endif %}查找结束后，你可以自己把岗位{% if SOURCE_SET.keep_analyses %}、它的分析（含所选经历的原话和分析时读的那句话）{% endif %}或这次查找的摘要保存到岗位记录：保存的内容留到你删除为止，删除后在回收站留 {{ RESTORE_DAYS }} 天。不会投递，也不会发给任何人。{% else %}不会存进经历库，不会投递，也不会发给任何人。{% endif %}</dd></div>
+        {% if tracking.on %}
+        <div><dt>临时留存跟踪</dt><dd>你勾选了“临时留存并跟踪这次的推荐”。{% for line in tracking.terms %}{{ line }}{% endfor %}</dd></div>
+        {% elif tracking.ticked %}
+        <div><dt>临时留存跟踪</dt><dd>{{ tracking.not_offered }}</dd></div>
+        {% endif %}
       </dl>
+      {% if LIVE_NOTICE %}
+      <h3>处理说明</h3>
+      {% for paragraph in LIVE_NOTICE %}
+      <p class="hint">{{ paragraph }}</p>
+      {% endfor %}
+      {% endif %}
     </section>
 
     <section class="review-section"{% if not error %} data-reveal{% endif %} aria-labelledby="sources-title">
@@ -96,7 +113,7 @@
       <ul class="points">
         <li>不检索不能接受的城市、求职类型和岗位方向，也不扩大上面的范围</li>
         <li>不发送基本资料（姓名、电话、邮箱、所在城市）、私有备注和附件，以及没有勾选或被拦下的栏目</li>
-        <li>不联网，不打开岗位里的链接，不投递，不保存结果</li>
+        <li>{{ SOURCE_SET.kept_note }}{% if SOURCE_SET.keep %}；{% if tracking.on %}除了勾选的临时留存跟踪（到期自动删除），{% endif %}结果不会自动保存，只有你点了保存才会存{% elif not SOURCE_SET.kept_note.endswith("不保存结果") %}，不保存结果{% endif %}</li>
       </ul>
       <p class="hint">自动检查只认得出常见写法的邮箱、电话、证件号、地址和“保密”一类字样，可能漏掉别的敏感内容，也可能误拦。确认前请自己再看一遍上面的文字。</p>
     </section>
@@ -104,8 +121,11 @@
     {% if tracing %}
     <p class="warning" role="status">环境里设置了可能打开 LangSmith 追踪的变量（{{ tracing|join("、") }}），查找不会开始。请去掉这些变量后重新启动本地网页。</p>
     {% endif %}
+    {% if refusal %}
+    <p class="warning" role="status">{{ refusal }}，现在不能开始查找，什么都不会发送。</p>
+    {% endif %}
     <div class="form-actions review-actions">
-      {% if not tracing %}
+      {% if not tracing and not refusal %}
       <button type="submit" name="action" value="start" class="primary">确认并开始查找</button>
       {% endif %}
       <button type="submit" name="action" value="update" class="secondary">更新核对</button>

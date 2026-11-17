@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}补充岗位{% endblock %}
+{# 补充岗位 (U3-D4d): a link to a posting of a source the app may read now, or a posting's text pasted. A link is only
+   matched as text: the address is never opened. Nothing here saves, analyses or sends anything. #}
+{% block layout %}
+<main id="main" class="job-page job-reading" tabindex="-1">
+  {% if notice %}
+  <p class="notice" role="status">{{ notice }}</p>
+  {% endif %}
+  <header class="job-head">
+    <h1>补充岗位</h1>
+    <p class="job-mode">补充你在别处看到的岗位。贴链接：只有属于已登记、现在允许读取的来源时，才由那个来源自己的接口读一次，你贴的网址本身不会被打开。读不了的，可以粘贴原文。先看一遍要保存的内容，你点“加入我的岗位”才会保存；分析要到岗位分析页确认以后才做。</p>
+  </header>
+
+  <section class="review-section" aria-labelledby="link-title">
+    <h2 id="link-title">贴链接</h2>
+    {% if link_problem %}
+    <p class="error" role="alert">{{ link_problem }}</p>
+    {% endif %}
+    <form method="post" action="/job-records/supply/link">
+      {{ m.csrf() }}
+      <div class="field{% if link_problem %} has-error{% endif %}">
+        <label for="f-link">岗位链接</label>
+        <span class="hint" id="h-link">{% if readable %}现在能读取的来源：{{ readable|join("、") }}。{% else %}这次运行没有能读取的来源，链接认不出时请粘贴原文。{% endif %}只比对链接的文字，不打开它。</span>
+        <input type="text" id="f-link" name="link" value="{{ link }}" maxlength="{{ MAX_LINK_CHARS }}" autocomplete="off" aria-describedby="h-link"{% if link_problem %} aria-invalid="true"{% endif %}>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="primary">认出并读取</button>
+      </div>
+      <p class="hint">读取只读这个岗位的公开信息：最多 3 次来源请求，每次最多 15 秒，不重试。不发送你的经历和偏好，不调用 AI。读到的结果只临时放 30 分钟。</p>
+    </form>
+  </section>
+
+  <section class="review-section" aria-labelledby="text-title">
+    <h2 id="text-title">贴原文</h2>
+    {% if problems %}
+    <ul class="error" role="alert">
+      {% for problem in problems %}
+      <li>{{ problem }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    <p class="hint">这样补充的岗位标“用户提供，系统未独立核验”：系统不打开你给的链接，也不向任何来源核实，所以不能持续核对它的招聘状态。</p>
+    <form method="post" action="/job-records/supply/text">
+      {{ m.csrf() }}
+      <div class="field">
+        <label for="f-title">职位名</label>
+        <input type="text" id="f-title" name="title" value="{{ pasted.title or '' }}" maxlength="{{ MAX_NAME_CHARS }}" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="f-company">公司</label>
+        <input type="text" id="f-company" name="company" value="{{ pasted.company or '' }}" maxlength="{{ MAX_NAME_CHARS }}" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="f-source-link">原始链接（选填）</label>
+        <span class="hint" id="h-source-link">只作为出处的文字保存，不会打开。登录信息和明显是凭证的参数会去掉；保存前会给你看要保存的样子。</span>
+        <input type="text" id="f-source-link" name="link" value="{{ pasted.link or '' }}" maxlength="{{ MAX_LINK_CHARS }}" autocomplete="off" aria-describedby="h-source-link">
+      </div>
+      <div class="field">
+        <label for="f-text">岗位原文</label>
+        <span class="hint" id="h-text">最多 {{ MAX_TEXT_CHARS }} 字。</span>
+        <textarea id="f-text" name="text" rows="12" aria-describedby="h-text">{{ pasted.text or '' }}</textarea>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="primary">下一步：看要保存的内容</button>
+      </div>
+      <p class="hint">下一步只给你看，不保存，也不发送。</p>
+    </form>
+  </section>
+
+  <div class="actions">
+    <a href="/job-records">返回岗位记录</a>
+  </div>
+</main>
+{% endblock %}

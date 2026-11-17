@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}开启每日查新{% endblock %}
+{% block layout %}
+<main id="main" class="job-page job-reading" tabindex="-1">
+  {% if notice %}
+  <p class="notice" role="status">{{ notice }}</p>
+  {% endif %}
+  <header class="job-head">
+    <h1>开启每日查新</h1>
+    <p class="job-mode">按这份查找摘要记下的来源和检索，用固定流程重查，列出以前没见过的岗位。开启前请看一遍下面会做什么、会保存什么。</p>
+  </header>
+
+  <section class="review-section" aria-labelledby="repeat-title">
+    <h2 id="repeat-title">会重查的检索</h2>
+    <ul class="points">
+      {% for line in searches %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+    {# What the start reads, as the running set reads its sources (U3-D6 close-out, F1): offline for the synthetic sets,
+       a real read under the batch's read approval for the D6 board. #}
+    {% for line in source_lines %}
+    <p class="hint">{{ line }}</p>
+    {% endfor %}
+  </section>
+
+  <section class="review-section" aria-labelledby="range-title">
+    <h2 id="range-title">初筛用的范围</h2>
+    <dl class="facts">
+      {% for label, text in scope_lines %}
+      <div><dt>{{ label }}</dt><dd>{{ text }}</dd></div>
+      {% endfor %}
+    </dl>
+    <p class="hint">这是这份摘要当时确认的范围，只在本机初筛用，不发送。查新不读你现在的偏好：你以后改偏好，查新也不变；要按新条件查新，请重新查找、保存摘要，在新摘要上开启，再停掉这个。</p>
+  </section>
+
+  <section class="review-section" aria-labelledby="when-title">
+    <h2 id="when-title">什么时候查</h2>
+    <ul class="points">
+      <li>开启时马上建立基准：那时已经有的岗位都记为见过，不算新增。每次检索第一次得到回答时，也只记基准。</li>
+      <li>{{ auto }}</li>
+      <li>随时可以点“现在查新”；一轮开始后 10 分钟内不重复。</li>
+    </ul>
+  </section>
+
+  <section class="review-section" aria-labelledby="kept-title">
+    <h2 id="kept-title">会保存什么，保存多久</h2>
+    <ul class="points">
+      <li>开启后，系统会自动保存：对这份摘要的引用（查新的条件）、这个查新见过的岗位编号，以及新增岗位的公开信息（职位名、公司、地点、类型、日期、来源）。不保存正文、分析，也不保存你的经历。</li>
+      <li>新增岗位从第一次读到起保留 {{ KEEP_NEW_DAYS }} 天，查看和再次出现都不延长；到期直接删除，不进回收站。它们不会自动加入我的岗位：要留下，请点“加入我的岗位”。</li>
+      <li>查新的条件和见过的岗位编号，保留到你停止它为止。见过的岗位达到 {{ SEEN_THRESHOLD }} 个时，查新停下并提示，不会悄悄删掉旧编号。</li>
+      <li>你跳过的岗位、已经在岗位记录里的、超出条件的、重复的，都不算新增，只计数。</li>
+    </ul>
+  </section>
+
+  <section class="review-section" aria-labelledby="not-title">
+    <h2 id="not-title">不做什么</h2>
+    <ul class="points">
+      <li>不用 AI，不分析，不读也不发送你的经历和偏好；不自动加入我的岗位；不发通知。</li>
+      <li>新增岗位只确认过“在列表里”，没有核对招聘状态；最近一轮没再出现，也不等于已经关闭。</li>
+      <li>停止就是“停止并清除”：查新、见过的岗位编号和还没处理的新增岗位直接删除，不进回收站；删除这份摘要时也会一并清除，恢复摘要不会恢复查新。你加入我的岗位的不受影响。每人最多同时开启 {{ MAX_WATCHES }} 个查新。</li>
+    </ul>
+  </section>
+
+  <form method="post" action="/job-records/searches/{{ record.id }}/watch" class="actions">
+    {{ m.csrf() }}
+    <input type="hidden" name="expected_revision" value="{{ record.revision }}">
+    <input type="hidden" name="notice_version" value="{{ notice_version }}">
+    <button type="submit" class="primary">开启每日查新</button>
+    <a href="/job-records/searches/{{ record.id }}">先不开启</a>
+  </form>
+</main>
+{% endblock %}

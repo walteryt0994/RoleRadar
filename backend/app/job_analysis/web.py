@@ -51,6 +51,7 @@ from app.job_analysis.scope import (
 from app.job_analysis.simulation import RECIPIENT, SimulatedProvider
 from app.job_analysis.tasks import SWEEP_SECONDS, TASK_TTL_SECONDS, Stage, Start, TaskStore, TooManyTasks
 from app.library.content import CATEGORY_LABELS, EXPERIENCE_CATEGORIES
+from app.library import job_texts
 from app.library.errors import NotFound
 from app.library.identity import CurrentUser
 from app.library.projection import current_preferences, project_confirmed_library, read_selected_confirmations
@@ -183,10 +184,15 @@ def checked_fields(
 # --- the input page ------------------------------------------------------------------
 
 
+SUPPLIED_GONE = "补充的岗位原文已经过期或不在了（只在内存里保留 30 分钟，退出登录时也会清掉），没有填入；可以重新补充，或者直接粘贴。"
+SUPPLIED_FILLED = "已填入你补充的岗位原文。选好经历以后，要先看核对页并确认，才会分析；只填入不会发出任何请求。"
+
+
 @router.get(BASE)
 def input_page(request: Request, notice: str = "", user: CurrentUser = Depends(current_user)):
     inputs = TaskInputs(chosen=(), posting="", use_preferences=False)
     origin = request.query_params.get("from", "")
+    said = LIBRARY_NOTICES.get(notice)
 
     if origin:
         task = jobs_of(request).store.get(origin, user.id, user.token_hash)
@@ -194,8 +200,30 @@ def input_page(request: Request, notice: str = "", user: CurrentUser = Depends(c
         if task is not None:
             inputs = task.inputs
 
+    # 去分析 from a posting the user supplied (U3-D4d): its text only, filled in for this page's own choice of
+    # experiences, review and confirmation; filling it in sends nothing. What was read or pasted lasts as long as memory
+    # holds it for this session (app.state.supplied, never imported from the discovery pages); a pasted posting kept
+    # has its text as long as its record is in use and the user's.
+    supplied_token = request.query_params.get("supplied", "")
+    record_id = request.query_params.get("record", "")
+
+    if supplied_token or record_id:
+        text = None
+
+        if supplied_token:
+            holder = getattr(request.app.state, "supplied", None)
+            text = None if holder is None else holder.prefill(supplied_token, user.id, user.token_hash)
+        else:
+            with runtime(request).database.transaction() as db:
+                text = job_texts.text_in_use(db, user.id, record_id)
+
+        if text:
+            inputs = TaskInputs(chosen=(), posting=text, use_preferences=False)
+
+        said = SUPPLIED_FILLED if text else SUPPLIED_GONE
+
     # Saving from the leave dialog of a library form can land here: say what was saved.
-    return input_form(request, user, inputs, notice=LIBRARY_NOTICES.get(notice))
+    return input_form(request, user, inputs, notice=said)
 
 
 def input_form(

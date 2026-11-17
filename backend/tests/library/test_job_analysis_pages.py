@@ -632,6 +632,42 @@ def test_the_result_reads_conditions_support_and_preferences_with_their_sources(
     assert not any(code in text for code in ("needs_confirmation", "no_evidence", "practice", "complete", "{"))
 
 
+# Each requirement row's group and words, as the shared row (_findings.html) writes them (U3-D6 close-out).
+ROW = re.compile(r'<summary><span class="fold-title finding-text"><span class="finding-group">([^<]*)</span>([^<]*)</span>')
+GROUP_WORDS = {"必要要求", "加分项", "写得不明确的要求", "硬性条件"}
+
+
+def row_groups(page: str) -> list[tuple[str, str]]:
+    return [(html.unescape(group), html.unescape(words)) for group, words in ROW.findall(page)]
+
+
+def test_every_requirement_row_names_its_group_as_its_heading_does(inline, app, browser_a):
+    """U3-D6 close-out: a row says its group itself, in the words the page heads the group with, so that two analyses
+    of one posting show where each put a requirement. Every row has one; no row is left without."""
+    item = project(browser_a, actions="用 Python 清洗了订单数据。")
+    school = confirmed(browser_a, "education", school="合成大学", graduation="2025 年 6 月")
+    use_provider(app, AnsweringProvider(scripted(
+        r1=[("S1", "actions", "用 Python 清洗了订单数据", "practice")],
+        h1=[("S2", "graduation", "2025 年 6 月", "conflict")],
+    )))
+    task = task_of(review(browser_a, [item, school]))
+    assert start(browser_a, task).status_code == 303
+    main = main_of(browser_a.get(task).text)
+    conditions = region(main, 'id="conditions-title"', "</section>")
+    skills = region(main, 'id="skills-title"', "</section>")
+
+    # Every requirement row has its group, and only the four groups' words.
+    for part in (conditions, skills):
+        assert len(row_groups(part)) == part.count('<summary><span class="fold-title finding-text">') > 0
+    assert {group for group, _ in row_groups(conditions + skills)} <= GROUP_WORDS
+    # Under the conditions, each row says 硬性条件; under each skill heading, each row says that heading.
+    assert all(group == "硬性条件" for group, _ in row_groups(conditions))
+    for part in skills.split('<h3 class="result-group">')[1:]:
+        heading = html.unescape(part[:part.index("<")])
+        assert row_groups(part) and all(group == heading for group, _ in row_groups(part)), heading
+    assert {"必要要求", "加分项"} <= {group for group, _ in row_groups(skills)}
+
+
 def test_preferences_are_listed_for_review_and_compared_only_when_chosen(inline, browser_a, recorder):
     preferences = {"cities_ideal": "上海", "work_style_no": "频繁出差", "less_content": "大量重复的表格整理"}
     assert browser_a.submit("/job-preferences/edit", "/job-preferences", **preferences).status_code == 303

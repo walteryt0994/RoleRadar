@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}查找摘要{% endblock %}
+{% block layout %}
+<main id="main" class="job-page job-reading" tabindex="-1">
+  {% if notice %}
+  <p class="notice" role="status">{{ notice }}</p>
+  {% endif %}
+  <header class="job-head">
+    <h1>查找摘要</h1>
+    <p class="job-mode">保存于 {{ record.kept_at|localtime }}。只有这次查找的条件、检索记录和计数；不含岗位原文、分析、经历内容、偏好原文和每一步的说明。</p>
+  </header>
+
+  <section class="review-section" aria-labelledby="scope-title">
+    <h2 id="scope-title">检索范围</h2>
+    <dl class="facts">
+      {% for label, text in scope_lines %}
+      <div><dt>{{ label }}</dt><dd>{{ text }}</dd></div>
+      {% endfor %}
+      <div><dt>来源</dt><dd>{{ summary.sources|map(attribute="name")|join("、") }}</dd></div>
+      <div><dt>经历</dt><dd>{% if summary.experiences %}{{ summary.experiences|length }} 段（只记了编号和版本）{% else %}没有选择，不做个性化分析{% endif %}</dd></div>
+      <div><dt>参考的偏好</dt><dd>{{ preference_names|join("、") or "没有" }}</dd></div>
+    </dl>
+  </section>
+
+  <section class="review-section" aria-labelledby="searched-title">
+    <h2 id="searched-title">这次查了什么</h2>
+    <dl class="facts">
+      <div><dt>结束原因</dt><dd>{{ end_label }}{% if summary.stage == "cancelled" %}（查找中途停止）{% endif %}</dd></div>
+      <div><dt>检索</dt><dd>
+        {% if search_lines %}
+        <ul class="plain-list">
+          {% for line in search_lines %}
+          <li>{{ line }}</li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        没有检索。
+        {% endif %}
+      </dd></div>
+      {% if summary.unsearched %}
+      <div><dt>没有完整查过的组合</dt><dd>{{ summary.unsearched|join("；") }}</dd></div>
+      {% endif %}
+      {% if summary.unjudged %}
+      <div><dt>没有判断的偏好</dt><dd>{{ summary.unjudged|join("；") }}</dd></div>
+      {% endif %}
+      <div><dt>结果</dt><dd>完整分析结果 {{ summary.counts.results }} 个，初筛候选 {{ summary.counts.leads }} 个；被拒的动作 {{ summary.counts.refusals }} 次{% if summary.counts.get("skipped") %}；你跳过的岗位又遇到 {{ summary.counts.skipped }} 个，没有列出{% endif %}</dd></div>
+      <div><dt>步骤</dt><dd>决策 {{ summary.steps.decisions }} 次{% if step_lines %}：{{ step_lines|join("；") }}{% endif %}</dd></div>
+      <div><dt>请求</dt><dd>{{ requests_line }}</dd></div>
+    </dl>
+  </section>
+
+  <section class="review-section" id="watch" aria-labelledby="watch-title">
+    <h2 id="watch-title">每日查新</h2>
+    {% if not watch.on %}
+    <p>按这份摘要记下的来源和检索，用固定流程重查，在本机按这份摘要当时的范围初筛，列出以前没见过的岗位。不用 AI，不分析，不读也不发送你的经历和偏好。</p>
+    <p class="hint">{{ watch.auto }}</p>
+    {% if watch.problem %}
+    <p class="hint">{{ watch.problem }}</p>
+    {% else %}
+    <p><a class="button secondary" href="/job-records/searches/{{ record.id }}/watch">每天查新…</a></p>
+    {% endif %}
+    {% else %}
+    {% set w = watch.watch %}
+    <dl class="facts">
+      <div><dt>状态</dt><dd>开启于 {{ w.created_at|localtime }}；基准{{ watch.baseline }}{% if watch.running %}；正在运行{% endif %}</dd></div>
+      <div><dt>重查的检索</dt><dd>
+        <ul class="plain-list">
+          {% for line in watch.searches %}
+          <li>{{ line }}</li>
+          {% endfor %}
+        </ul>
+      </dd></div>
+      <div><dt>见过的岗位</dt><dd>{{ watch.seen }} 个{% if watch.full %}：达到 {{ watch.SEEN_THRESHOLD }} 个，查新已停下；要继续，请停止并清除以后重新开启（会重新建立基准）{% endif %}</dd></div>
+    </dl>
+    <p class="hint">{{ watch.auto }}</p>
+    <ul class="points">
+      {% for line in watch.lines %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+    <div class="actions">
+      {% if not watch.full %}
+      <form method="post" action="/job-records/searches/{{ record.id }}/watch/run" class="inline">
+        {{ m.csrf() }}
+        <input type="hidden" name="watch_id" value="{{ w.id }}">
+        <button type="submit" class="secondary">现在查新</button>
+      </form>
+      {% endif %}
+      <a class="danger-link" href="/job-records/searches/{{ record.id }}/watch/stop">停止并清除…</a>
+    </div>
+    <p class="result-group">新增岗位<span>{{ watch.total }} 个</span></p>
+    <p class="hint">新增岗位只记公开信息，从第一次读到起保留 {{ watch.KEEP_NEW_DAYS }} 天，查看不延长；没有分析，也没有核对招聘状态。最近一轮没再出现，不等于已经关闭。要看原文和申请入口，先加入我的岗位，再用“再核对一次”。</p>
+    {% if watch["items"] %}
+    <ul class="lead-list">
+      {% for item, last_seen in watch["items"] %}
+      {% set facts = item.facts %}
+      <li class="lead">
+        <p class="pick-title">{{ facts.title }}</p>
+        <p class="review-meta"><span>{{ facts.company }}</span><span>{{ facts.cities|join("、") or (facts.places_stated|join("、")) or "地点未写" }}</span><span>{{ facts.job_type or facts.type_stated or "类型未写" }}</span><span>{{ facts.source_name }}（{{ watch.EVIDENCE_WORDS.get(facts.evidence, facts.evidence) }}）</span></p>
+        {% if item.screening.reasons %}
+        <p class="hint">待确认：{{ item.screening.reasons|join("；") }}</p>
+        {% endif %}
+        {% if item.partial_read is not none %}
+        <p class="hint">这次第一次读到；它的来源列表只读了前 {{ item.partial_read }} 个，不能确定是新发布的。</p>
+        {% endif %}
+        <p class="lead-times">第一次读到 {{ item.found_at|shorttime }}{% if last_seen %} · 最近一次在列表里 {{ last_seen|shorttime }}{% endif %} · 保留到 {{ item.until|shorttime }}</p>
+        <div class="actions">
+          <form method="post" action="/job-records/watch-postings/{{ item.id }}/keep" class="inline">
+            {{ m.csrf() }}
+            <button type="submit" class="secondary">加入我的岗位</button>
+          </form>
+          <form method="post" action="/job-records/watch-postings/{{ item.id }}/dismiss" class="inline">
+            {{ m.csrf() }}
+            <button type="submit" class="link-button">不再显示</button>
+          </form>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% if watch.pages > 1 %}
+    <p class="hint">第 {{ watch.page }}/{{ watch.pages }} 页，每页 20 个{% if watch.page > 1 %} · <a href="/job-records/searches/{{ record.id }}?page={{ watch.page - 1 }}#watch">上一页</a>{% endif %}{% if watch.page < watch.pages %} · <a href="/job-records/searches/{{ record.id }}?page={{ watch.page + 1 }}#watch">下一页</a>{% endif %}</p>
+    {% endif %}
+    {% else %}
+    <p class="empty-state">现在没有新增岗位。</p>
+    {% endif %}
+    {% endif %}
+  </section>
+
+  {% if analyses %}
+  <section class="review-section" aria-labelledby="analyses-title">
+    <h2 id="analyses-title">这次查找保存的分析</h2>
+    <ul class="points">
+      {% for analysis in analyses %}
+      <li><a href="/job-records/analyses/{{ analysis.id }}">{{ analysis.facts.title }}（{{ analysis.facts.company }}）</a></li>
+      {% endfor %}
+    </ul>
+    <p class="hint">分析单独保存、单独删除，删除这份摘要不影响它们。</p>
+  </section>
+  {% endif %}
+
+  <div class="actions">
+    <a href="/job-records">返回岗位记录</a>
+    <a class="danger-link" href="/job-records/searches/{{ record.id }}/delete">删除这份摘要…</a>
+  </div>
+</main>
+{% endblock %}
