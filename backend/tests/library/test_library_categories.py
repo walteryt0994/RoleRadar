@@ -13,6 +13,9 @@ import pytest
 from sqlalchemy import select
 
 from app.library.content import (
+    BODY,
+    BODY_SOURCES,
+    compose_body,
     CATEGORY_FIELDS,
     CATEGORY_LABELS,
     EDUCATION,
@@ -22,7 +25,7 @@ from app.library.content import (
     WORK,
 )
 from app.library.models import ExperienceItem, ExperienceVersion
-from app.library.presentation import CATEGORY_GROUPS, READINGS
+from app.library.presentation import CATEGORY_GROUPS, READINGS, field_label
 from library_helpers import form_for, forms_in, item_id_from
 
 SENTINEL = "类别哨兵-5e2a"
@@ -104,11 +107,21 @@ def test_every_field_round_trips_through_form_page_and_export(app, browser_a, ca
     page = browser_a.get(f"/experiences/{item_id}").text
     markdown = browser_a.get(f"/experiences/{item_id}/export.md").content.decode("utf-8")
 
+    # The edit form offers the experience details only (UI bilingual batch, plan 5.2): text of the older split fields is
+    # offered inside them, in their stable order; every word is still read and exported with its own label.
+    sources = BODY_SOURCES.get(category, ())
+
     assert stored(app, item_id).content == values
     assert edit.fields["category"] == category
 
     for field in CATEGORY_FIELDS[category]:
-        assert edit.fields[field.name] == values[field.name], field.name
+        if field.name in sources:
+            assert not edit.fields.get(field.name) and values[field.name] in edit.fields[BODY], field.name
+        elif field.name == BODY:
+            assert edit.fields[BODY] == compose_body(values, category), field.name
+        else:
+            assert edit.fields[field.name] == values[field.name], field.name
+
         assert values[field.name] in page, field.name
         assert f"**{field.label}**\n\n{values[field.name]}" in markdown, field.name
 
@@ -170,7 +183,9 @@ def test_project_records_stay_what_u1a_made_them(app, browser_a):
 
     assert item.category == PROJECT
     assert set(item.content) == {field.name for field in CATEGORY_FIELDS[PROJECT]}
-    assert "我的贡献" in browser_a.get(f"/experiences/{item_id}").text
+    # A record in the older split fields is read with their own labels since the UI bilingual batch (plan 5.2).
+    page = browser_a.get(f"/experiences/{item_id}").text
+    assert field_label(PROJECT, "actions") in page and "做了一个小程序" in page
 
 
 def test_the_stored_category_decides_which_fields_a_save_writes(app, browser_a):
@@ -203,18 +218,18 @@ def test_an_unknown_category_is_refused_and_nothing_is_saved(app, browser_a):
 
 
 def test_education_awards_and_others_have_no_contribution_block(browser_a):
-    project = browser_a.create(title="项目", actions="写了接口", outcome="上线了")
-    education = create(browser_a, EDUCATION, school="合成大学", major="计算机", notes="辅修数学")
-    work = create(browser_a, WORK, organization="合成公司", actions="整理数据", outcome="做完了")
+    # Since the UI bilingual batch (plan 5.2) every category is written in one 经历内容: no category has a contribution
+    # block of its own any more, and an education keeps its own facts beside the details.
+    project = browser_a.create(title="项目", body="写了接口，上线了")
+    education = create(browser_a, EDUCATION, school="合成大学", major="计算机", body="辅修数学")
+    work = create(browser_a, WORK, organization="合成公司", body="整理数据，做完了")
 
-    assert '<h2 class="section-label" id="read-actions">我的贡献</h2>' in browser_a.get(f"/experiences/{project}").text
+    for item in (project, education, work):
+        page = browser_a.get(f"/experiences/{item}").text
+        assert "我的贡献" not in page and "做过的事" not in page and "经历内容" in page
 
     education_page = browser_a.get(f"/experiences/{education}").text
-
-    assert "我的贡献" not in education_page
-    assert "<dt>专业</dt><dd>计算机</dd>" in education_page
-    assert '<h2 class="section-label" id="read-notes">补充说明</h2>' in education_page
-    assert '<h2 class="section-label" id="read-actions">做过的事</h2>' in browser_a.get(f"/experiences/{work}").text
+    assert "计算机" in education_page and "辅修数学" in education_page
 
 
 def test_the_new_form_offers_every_category_and_keeps_the_list_filter(browser_a):
@@ -272,7 +287,7 @@ def test_search_never_reads_private_notes_history_the_bin_or_other_users(app, br
     revised = browser_a.create(title="改过的记录", actions=f"旧说法{SENTINEL}-old")
     assert browser_a.submit(f"/experiences/{revised}", f"/experiences/{revised}/confirm").status_code == 303
     assert browser_a.submit(
-        f"/experiences/{revised}/edit", f"/experiences/{revised}/draft", actions="新说法"
+        f"/experiences/{revised}/edit", f"/experiences/{revised}/draft", body="新说法"
     ).status_code == 303
     binned = browser_a.create(title=f"回收站里的{SENTINEL}-bin", actions="x")
     assert browser_a.submit(f"/experiences/{binned}/delete", f"/experiences/{binned}/delete").status_code == 303
@@ -281,7 +296,7 @@ def test_search_never_reads_private_notes_history_the_bin_or_other_users(app, br
     with app.state.library.database.transaction() as db:
         old_versions = db.scalars(select(ExperienceVersion).where(ExperienceVersion.item_id == revised)).all()
 
-    assert any(f"旧说法{SENTINEL}-old" in version.content["actions"] for version in old_versions)
+    assert any(f"旧说法{SENTINEL}-old" in "\n".join(version.content.values()) for version in old_versions)
 
     for words in (SENTINEL, f"{SENTINEL}-old", f"{SENTINEL}-bin", f"{SENTINEL}-b"):
         page = browser_a.get("/experiences", params={"q": words}).text
@@ -331,7 +346,8 @@ def test_the_filter_form_needs_no_session_token_and_changes_nothing(app, browser
 
     # A plain search form: no session token, nothing it could change.
     assert search.action == "/experiences"
-    assert set(search.fields) == {"q"}  # the form reader skips <select>; the category one is here:
+    # The form reader sends a list's chosen option as a browser does (owner redesign): the words and the category.
+    assert set(search.fields) == {"q", "category"}
     assert '<select name="category" aria-label="类别">' in page
 
 

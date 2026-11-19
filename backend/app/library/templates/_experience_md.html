@@ -1,0 +1,232 @@
+{#- The library as a list and one record side by side (owner redesign, image 04; plan 3.1). The list page opens the first
+    record found beside the list; a record's own address opens that one. On narrow screens the list page shows the list
+    and a record's address shows the record, with the way back to the list. -#}
+{% import "_macros.html" as m with context %}
+{% import "_icons.html" as i %}
+
+{% macro head() %}
+<header class="page-head">
+  <h1>{{ t("nav.experiences") }}</h1>
+  <div class="page-actions">
+    <a class="button primary" href="{{ m.new_record_href() }}">{{ i.icon("plus") }}{{ t("lib.add_record") }}</a>
+    <a class="button secondary" href="/imports">{{ i.icon("upload") }}{{ t("nav.imports") }}</a>
+  </div>
+</header>
+{% endmacro %}
+
+{#- Narrowing the list: its state (chips, each with how many records it holds), words and a category, all kept in the
+    address so a record opened from the list keeps them. -#}
+{% macro filters() %}
+<div class="md-filters">
+  <nav class="chip-row" aria-label="{{ t('lib.state_filter') }}">
+    {% for name, key in (("", "lib.state_all"), ("confirmed", "lib.state_confirmed_n"), ("review", "lib.state_review_n")) %}
+    <a class="chip" href="{{ state_links[name] }}"{% if filter_state == name %} aria-current="page"{% endif %}>{{ t(key) }}<span class="chip-count">{{ state_counts.get(name, 0) }}</span></a>
+    {% endfor %}
+  </nav>
+  {{ m.library_filter() }}
+</div>
+{% endmacro %}
+
+{% macro items() %}
+{% if sidebar_items %}
+<ul class="md-items">
+  {% for entry in sidebar_items %}
+  <li>
+    <a class="md-item" href="/experiences/{{ entry.id }}{{ filter_suffix }}"{% if entry.id == selected_id %} aria-current="true"{% endif %}>
+      <span class="md-item-main">
+        <span class="md-item-title">{{ display_title(entry.content, entry.category) }}</span>
+        <span class="md-item-meta">{{ CATEGORY_LABELS[entry.category] }}<span class="sep" aria-hidden="true"></span>{{ t("lib.updated_short", at=entry.updated_at|shorttime) }}</span>
+      </span>
+      {{ m.state_badge(entry) }}
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="md-empty" role="status">{{ t("lib.nothing_matches") }}</p>
+{% endif %}
+{% endmacro %}
+
+{#- One record, read top to bottom: what it is and its state, the one main action it may need (confirming), then the
+    experience details as the user wrote them; the rest opens on demand. A record still written in the older split
+    fields shows each under its own name, its text untouched (plan 5.2 of the bilingual batch). -#}
+{% macro detail() %}
+{% set content = item.content %}
+{% set reading = READINGS[item.category] %}
+{% set sources = BODY_SOURCES[item.category] %}
+<p class="md-back"><a class="library-back" href="/experiences{{ filter_suffix }}">{{ i.icon("arrow-left") }}{{ t("lib.back_to_library") }}</a></p>
+<header class="record-head">
+  <div class="record-title-row">
+    <div class="record-title">
+      <h2 id="record-title">{{ display_title(content, item.category) }}</h2>
+      {{ m.state_badge(item) }}
+    </div>
+    <div class="record-tools">
+      <a class="button secondary" href="/experiences/{{ item.id }}/edit">{{ i.icon("pencil") }}{{ t("common.edit") }}</a>
+      <a class="button secondary" href="/experiences/{{ item.id }}/history">{{ i.icon("rotate-ccw-clock") }}{{ t("lib.view_history") }}</a>
+      {% call m.more_menu() %}
+      <a class="menu-link" href="/experiences/{{ item.id }}/export.md" download>{{ t("lib.export_markdown") }}</a>
+      <a class="menu-link danger-link" href="/experiences/{{ item.id }}/delete">{{ t("lib.delete_ellipsis") }}</a>
+      {% endcall %}
+    </div>
+  </div>
+  {% set meta = namespace(parts=[CATEGORY_LABELS[item.category]]) %}
+  {% if reading.subtitle and content.get(reading.subtitle) %}{% set meta.parts = meta.parts + [content[reading.subtitle]] %}{% endif %}
+  {% for name in reading.meta %}{% if content.get(name) %}{% set meta.parts = meta.parts + [content[name]] %}{% endif %}{% endfor %}
+  <p class="record-context">{{ meta.parts|join(" / ") }}</p>
+  <p class="state-line">
+    {% if item.state == "confirmed" %}
+    <span>{{ t("lib.confirmed_at", at=item.last_confirmed_at|shorttime) }}</span>
+    {% else %}
+    <span>{{ t("lib.saved_at", at=item.updated_at|shorttime) }}</span>
+    {% endif %}
+  </p>
+  {% if item.state != "confirmed" and item.last_confirmed_at %}
+  <p class="state-explain">{{ t("lib.last_confirmed_note", at=item.last_confirmed_at|shorttime) }}</p>
+  {% elif item.state != "confirmed" %}
+  <p class="state-explain">{{ t("lib.saving_is_not_confirming") }}</p>
+  {% endif %}
+  {% if item.state != "confirmed" %}
+  <form method="post" action="/experiences/{{ item.id }}/confirm" class="record-confirm">
+    {{ m.csrf() }}
+    <input type="hidden" name="expected_revision" value="{{ item.revision }}">
+    <button type="submit" class="primary confirm">{{ i.icon("circle-check") }}{{ t("lib.confirm_true") }}</button>
+  </form>
+  {% endif %}
+</header>
+
+<section class="record-body" aria-labelledby="read-body">
+  <h3 class="section-title" id="read-body">{{ t("field.body") }}</h3>
+  <div class="reading-box">
+    {% if content.get(BODY) %}
+    <p class="prose">{{ content[BODY] }}</p>
+    {% endif %}
+    {% for name in sources %}
+    {% if content.get(name) %}
+    <div class="split-part">
+      <h4 class="split-label">{{ field_label(item.category, name) }}</h4>
+      <p class="prose">{{ content[name] }}</p>
+    </div>
+    {% endif %}
+    {% endfor %}
+    {% if not content.get(BODY) and not split_fields_in(content, item.category) %}
+    <p class="empty">{{ NOT_FILLED }}</p>
+    {% endif %}
+  </div>
+  {% if split_fields_in(content, item.category) %}
+  <p class="hint">{{ t("lib.split_record_note") }}</p>
+  {% endif %}
+</section>
+
+{# 补充信息: what the head above has not said already (a project's role is in its context line). #}
+{% set in_head = [reading.subtitle] + reading.meta|list %}
+{% set more = namespace(any=False) %}
+{% for name in MORE_FIELDS[item.category] %}{% if content.get(name) and name not in in_head %}{% set more.any = True %}{% endif %}{% endfor %}
+{% if more.any %}
+<details class="fold">
+  {{ m.fold_summary(t("lib.more_details")) }}
+  <dl class="fields">
+    {% for name in MORE_FIELDS[item.category] %}
+    {% if content.get(name) and name not in in_head %}
+    <dt>{{ field_label(item.category, name) }}</dt>
+    <dd>{% if name == "links" %}{{ m.link_list(content[name]) }}{% else %}<p class="text">{{ content[name] }}</p>{% endif %}</dd>
+    {% endif %}
+    {% endfor %}
+  </dl>
+</details>
+{% endif %}
+{% if item.private_note %}
+{% if private_shown is not defined or private_shown %}
+<details class="fold fold-private">
+  {{ m.fold_summary(t("field.note"), private=True) }}
+  <p class="private-notice">{{ t("lib.private_note_notice") }}</p>
+  <p class="prose">{{ item.private_note }}</p>
+</details>
+{% else %}
+{# The library's overview opens its first record by itself: a private note stays out of it until that record is opened. #}
+<p class="hint private-held">{{ i.icon("lock-keyhole") }}{{ t("lib.private_note_held") }}</p>
+{% endif %}
+{% endif %}
+{% set unfilled = unfilled_labels(content, item.category) %}
+{% if unfilled %}
+<p class="record-unfilled">{{ t("lib.not_filled_list", fields=list_join(unfilled)) }}</p>
+{% endif %}
+{# The files kept for this record, opened on demand (open when there are some or an upload just failed). Only ready
+   ones are listed; one whose file went missing says so instead of offering a download that fails. Uploading is its
+   own action: it never saves the record's text. #}
+<details class="fold record-attachments" id="attachments"{% if attachments or binned_attachments or upload_error %} open{% endif %}>
+  {{ m.fold_summary(t("lib.attachments") ~ (t("lib.attachment_count", n=attachments|length) if attachments else "")) }}
+  {% if attachments %}
+  <ul class="attachment-list">
+    {% for attachment in attachments %}
+    {% set state = file_states[attachment.id] %}
+    <li>
+      <span class="attachment-name">{{ attachment.filename }}</span>
+      <span class="attachment-meta">{{ TYPE_LABELS[attachment.media_type] }} · {{ format_size(attachment.size) }} · {{ t("lib.uploaded_at", at=attachment.created_at|shorttime) }}</span>
+      <span class="row-actions">
+        {% if state == "present" %}
+        <a href="/experiences/{{ item.id }}/attachments/{{ attachment.id }}/download" download>{{ t("lib.download") }}<span class="visually-hidden">{{ t("common.colon") }}{{ attachment.filename }}</span></a>
+        {% else %}
+        <span class="attachment-problem">{% if state == "missing" %}{{ t("lib.file_missing") }}{% else %}{{ t("lib.file_unreadable") }}{% endif %}</span>
+        {% endif %}
+        <a class="danger-link" href="/experiences/{{ item.id }}/attachments/{{ attachment.id }}/delete">{{ t("lib.delete_ellipsis") }}<span class="visually-hidden">{{ t("common.colon") }}{{ attachment.filename }}</span></a>
+      </span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty">{{ t("lib.no_attachments") }}</p>
+  {% endif %}
+  {% if upload_error %}
+  <p class="error" role="alert">{{ upload_error }}</p>
+  {% endif %}
+  {% if places_left %}
+  <form class="attachment-upload" method="post" action="/experiences/{{ item.id }}/attachments" enctype="multipart/form-data" data-upload>
+    {{ m.csrf() }}
+    <input type="hidden" name="upload_key" value="{{ upload_key }}">
+    <label for="attachment-file">{{ t("lib.add_attachment") }}</label>
+    <span class="hint" id="attachment-hint">{{ t("lib.attachment_hint", most=MAX_ATTACHMENTS, left=places_left) }}</span>
+    <div class="attachment-picker">
+      <input type="file" id="attachment-file" name="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" required aria-describedby="attachment-hint">
+      <button type="submit" data-upload-button>{{ t("lib.upload") }}</button>
+    </div>
+    <p class="upload-status" data-upload-status role="status"></p>
+  </form>
+  {% else %}
+  <p class="hint">{{ t("lib.attachments_full", most=MAX_ATTACHMENTS) }}</p>
+  {% endif %}
+  {% if binned_attachments %}
+  <h4 class="attachment-bin-title">{{ t("lib.deleted_attachments") }}</h4>
+  <ul class="attachment-list">
+    {% for attachment in binned_attachments %}
+    <li>
+      <span class="attachment-name">{{ attachment.filename }}</span>
+      <span class="attachment-meta">{{ t("lib.deleted_until", deleted=attachment.deleted_at|shorttime, until=attachment.purge_after|localtime, left=format_remaining(attachment.purge_after, now)) }}</span>
+      <span class="row-actions">
+        <form method="post" action="/experiences/{{ item.id }}/attachments/{{ attachment.id }}/restore" class="inline">
+          {{ m.csrf() }}
+          <input type="hidden" name="expected_revision" value="{{ attachment.revision }}">
+          <button type="submit">{{ t("common.restore") }}<span class="visually-hidden">{{ t("common.colon") }}{{ attachment.filename }}</span></button>
+        </form>
+        <a class="danger-link" href="/experiences/{{ item.id }}/attachments/{{ attachment.id }}/purge">{{ t("lib.purge_ellipsis") }}<span class="visually-hidden">{{ t("common.colon") }}{{ attachment.filename }}</span></a>
+      </span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</details>
+{% endmacro %}
+
+{#- The whole two-column area: the list on the left, the record (if any) on the right. -#}
+{% macro area() %}
+<div class="md">
+  <nav class="md-list" aria-label="{{ t('lib.record_list') }}">
+    {{ items() }}
+  </nav>
+  <section class="md-detail" aria-labelledby="record-title">
+    {% if item is defined and item %}
+    {{ detail() }}
+    {% endif %}
+  </section>
+</div>
+{% endmacro %}

@@ -198,23 +198,27 @@ def finish(app) -> None:
 # --- where it is ------------------------------------------------------------------------------------------------------
 
 
+def tabs(page):
+    """The second-level navigation of a page's area (UI bilingual batch, plan 2): href, current mark, words."""
+    nav = page[page.index('<nav class="tabs"'): page.index("</nav>", page.index('<nav class="tabs"'))]
+
+    return re.findall(r'<a href="([^"]+)"( aria-current="page")?>([^<]+)</a>', nav)
+
+
+def primary(page):
+    """The first-level places of the side bar: href, current mark, words."""
+    nav = page[page.index('<nav class="primary-nav"'): page.index("</nav>", page.index('<nav class="primary-nav"'))]
+
+    return re.findall(r'<a class="nav-item" href="([^"]+)"( aria-current="(?:true|page)")?>.*?<span>([^<]+)</span></a>', nav)
+
+
 def test_direction_exploration_sits_between_my_material_and_job_opportunities(browser_a):
-    def top(page):
-        return re.findall(r'<a href="([^"]+)"( aria-current="true")?>([^<]+)</a>', page[page.index('aria-label="主要导航"'):page.index("</nav>")])
-
-    def sub(page):
-        return re.findall(r'<a href="([^"]+)"( aria-current="page")?>([^<]+)</a>', page[page.index('<nav class="subnav"'):])[:2]
-
     explore, records = browser_a.get(BASE).text, browser_a.get(f"{BASE}/records").text
 
-    assert [name for _, _, name in top(explore)] == ["我的资料", "方向探索", "岗位机会"]
-    assert top(explore)[1] == ("/directions", ' aria-current="true"', "方向探索")
-    assert sub(explore) == [("/directions", ' aria-current="page"', "探索方向"), ("/directions/records", "", "探索记录")]
-    assert sub(records) == [("/directions", "", "探索方向"), ("/directions/records", ' aria-current="page"', "探索记录")]
-    # Since U3-C3b, 找岗位 has an entry for an unsure direction; the hand-off shows only once a direction is kept
-    # (test_direction_handoff.py), so a user with no decision sees none.
-    assert "用这些方向找岗位" not in explore + records
-    assert '<a href="/directions">方向还不确定？先去探索方向</a>' in browser_a.get("/discover").text
+    assert [name for _, _, name in primary(explore)] == ["工作台", "我的资料", "方向探索", "岗位机会"]
+    assert ("/directions", ' aria-current="true"', "方向探索") in primary(explore)
+    assert tabs(explore) == [("/directions", ' aria-current="page"', "探索方向"), ("/directions/records", "", "探索记录")]
+    assert tabs(records) == [("/directions", "", "探索方向"), ("/directions/records", ' aria-current="page"', "探索记录")]
 
 
 # --- choose, review, run, compare --------------------------------------------------------------------------------------
@@ -223,17 +227,21 @@ def test_direction_exploration_sits_between_my_material_and_job_opportunities(br
 def test_choose_review_run_and_compare_on_the_local_simulation(app, inline, browser_a, library):
     page = browser_a.get(BASE).text
 
-    assert "校园订单看板（合成）" in page and "已填写：行业兴趣与意愿、理想工作内容和方式、现实条件" in page
-    assert "使用本机模拟服务" in page
+    # The experiences to draw on beside the preferences as they are filled in, each value with its degree (owner
+    # redesign, plan 4.1, image 12).
+    assert "校园订单看板（合成）" in page and '数据分析或者用户研究<span class="stance-note">（理想）</span>' in page
+    assert '销售<span class="stance-note">（不能接受）</span>' in page and "使用本机模拟服务" in page
 
     task = task_of(review(browser_a, [library]))
     review_page = text_of(browser_a.get(task).text)
 
-    # The review: who gets it, what goes out field by field, the three groups, and what never goes out.
-    assert "本机模拟服务：RoleRadar 内置的固定规则，不是 AI" in review_page and "只临时保留 30 分钟" in review_page
+    # The review (owner redesign, plan 4.1): who gets it, what goes out field by field, the three groups. The long
+    # processing rows and the standing list of what never goes out are gone for the local simulation; how long an
+    # unsaved result is kept is said on the result.
+    assert "本机模拟服务：RoleRadar 内置的固定规则，不是 AI" in review_page and "只临时保留 30 分钟" not in review_page
     for group in ("行业兴趣与意愿", "理想工作内容和方式", "现实条件"):
         assert group in review_page
-    assert "尚未填写：" in review_page and "以前的探索和方向决定" in review_page
+    assert "尚未填写：" in review_page and "以前的探索和方向决定" not in review_page
     assert kept(app) == (0, 0, 0)
 
     assert start(browser_a, task).headers["location"] == task
@@ -245,8 +253,10 @@ def test_choose_review_run_and_compare_on_the_local_simulation(app, inline, brow
     assert "下面都是一般性介绍，未经岗位来源核验；没有分数，也不排名。" in result
     # Beside the one line saying there are none, no score, rank or "best fit" anywhere.
     assert not any(word in text_of(main_of(result)).replace("没有分数，也不排名", "") for word in SCORES)
-    assert "保存这次探索" in result and "之后清除" in result
-    assert sends_text(Sends(generation_sent=1)) in result
+    assert "保存这次探索" in result and "未保存的结果在 " in result and "之后清除" in result
+    # A normal result keeps no line of requests handed on (owner redesign revision R2); the task still counts them, as
+    # its status says (the running page reads it).
+    assert sends_text(Sends(generation_sent=1)) not in result and "已交给服务的请求" not in result
     assert browser_a.get(f"{task}/status").json() == {"stage": "done", "step": None, "sends": sends_text(Sends(generation_sent=1))}
     # Nothing is saved by running.
     assert kept(app) == (0, 0, 0)
@@ -255,7 +265,7 @@ def test_choose_review_run_and_compare_on_the_local_simulation(app, inline, brow
 def test_without_experiences_or_preferences_an_exploration_is_general(app, inline, browser_b):
     page = browser_b.get(BASE).text
 
-    assert "还没有已确认的经历。不选经历也可以探索" in page and "还没有填写求职偏好；不填也可以探索。" in page
+    assert "还没有已确认的经历。不选经历也可以探索" in page and "还没有填写求职偏好。" in page
 
     task = task_of(review(browser_b))
     assert "这次没有选择经历：结果只是一般性介绍，没有个人依据。" in browser_b.get(task).text
@@ -449,8 +459,8 @@ def test_a_result_whose_material_was_edited_since_cannot_be_saved_or_decided_on(
 
     assert "保存这次探索" in opened and "这次结果用到的资料之后改过" in page
     assert "保存这次探索" not in page and not re.search(r'name="state" value="keep"', page)
-    assert saved.status_code == 409 and RESULT_MOVED in text_of(saved.text)
-    assert decided.status_code == 409 and RESULT_MOVED in text_of(decided.text)
+    assert saved.status_code == 409 and str(RESULT_MOVED) in text_of(saved.text)
+    assert decided.status_code == 409 and str(RESULT_MOVED) in text_of(decided.text)
     assert kept(app) == (0, 0, 0)
 
 
@@ -465,7 +475,7 @@ def test_a_result_whose_material_was_deleted_is_withdrawn_for_good(app, inline, 
     saved = browser_a.post(f"{task}/save", {"csrf_token": browser_a.csrf_token()})
 
     for page in (withdrawn, after_restoring):
-        assert WITHDRAWN in text_of(page) and directions_shown(page) == []
+        assert str(WITHDRAWN) in text_of(page) and directions_shown(page) == []
         assert "用 Python 清洗订单数据" not in page and "数据分析" not in text_of(main_of(page))
     assert saved.status_code == 409 and kept(app) == (0, 0, 0)
 
@@ -489,11 +499,11 @@ def test_a_stale_result_is_checked_on_every_view_and_never_becomes_savable(app, 
     restored = browser_a.get(task).text
 
     for page in (stale, reverted):
-        assert STALE in text_of(page) and directions_shown(page)
+        assert str(STALE) in text_of(page) and directions_shown(page)
         assert "保存这次探索" not in page and not re.search(r'name="state" value="keep"', page)
     assert browser_a.post(f"{task}/save", {"csrf_token": browser_a.csrf_token()}).status_code == 409
     for page in (withdrawn, restored):
-        assert WITHDRAWN in text_of(page) and directions_shown(page) == [] and "请求期间改过" not in page
+        assert str(WITHDRAWN) in text_of(page) and directions_shown(page) == [] and "请求期间改过" not in page
     assert kept(app) == (0, 0, 0)
 
 
@@ -506,7 +516,7 @@ def test_deciding_on_a_saved_exploration_checks_its_sources_again(app, inline, b
     decided = browser_a.post(form.action, {**form.fields, "state": "keep"})
     page = browser_a.get(page_url).text
 
-    assert decided.status_code == 409 and EXPLORATION_MOVED in text_of(decided.text)
+    assert decided.status_code == 409 and str(EXPLORATION_MOVED) in text_of(decided.text)
     assert "依据的资料之后改过：这是当时的结果，不能再根据它做决定。" in page and not re.search(r'name="state" value="keep"', page)
     assert rows(app, DirectionDecision) == []
 
@@ -518,16 +528,17 @@ def test_a_change_on_the_records_page_keeps_the_basis_and_is_checked_again_after
     [decision] = rows(app, DirectionDecision)
     state_change = f"{BASE}/decisions/{decision['id']}/state"
     # Resting on a saved exploration that stands as it was: changed as it is, still resting on it.
-    assert browser_a.submit(f"{BASE}/records", state_change, state="defer").status_code == 303
+    # The decisions are the records page's second tab (owner redesign, plan 4.3).
+    assert browser_a.submit(f"{BASE}/records?tab=decisions", state_change, state="defer").status_code == 303
     [deferred] = rows(app, DirectionDecision)
-    records = browser_a.get(f"{BASE}/records").text
+    records = browser_a.get(f"{BASE}/records?tab=decisions").text
     form = next(form for form in forms_in(records) if form.action == state_change)
     edit(browser_a, library, actions="改过之后再改状态。")
     changed = browser_a.post(form.action, {**form.fields, "state": "exclude"})
 
     assert (deferred["state"], deferred["basis"], deferred["exploration_id"]) == ("defer", "saved_exploration", saved_id(app))
     assert "改为排除" in records
-    assert changed.status_code == 409 and NEEDS_OWN_CHOICE in text_of(changed.text)
+    assert changed.status_code == 409 and str(NEEDS_OWN_CHOICE) in text_of(changed.text)
     assert rows(app, DirectionDecision)[0]["state"] == "defer"
 
 
@@ -553,7 +564,7 @@ def test_saving_again_neither_restores_a_deleted_exploration_nor_lets_a_moved_ba
     assert browser_a.submit(f"{BASE}/explorations/{exploration}/delete", f"{BASE}/explorations/{exploration}/delete").status_code == 303
     in_bin = browser_a.post(f"{task}/save", {"csrf_token": browser_a.csrf_token()})
 
-    assert in_bin.status_code == 409 and SAVED_IN_BIN in text_of(in_bin.text)
+    assert in_bin.status_code == 409 and str(SAVED_IN_BIN) in text_of(in_bin.text)
     assert rows(app, DirectionExploration)[0]["deleted_at"] is not None
 
     assert browser_a.submit("/experiences?tab=trash", f"{BASE}/explorations/{exploration}/restore").status_code == 303
@@ -561,12 +572,13 @@ def test_saving_again_neither_restores_a_deleted_exploration_nor_lets_a_moved_ba
     moved = browser_a.post(f"{task}/save", {"csrf_token": browser_a.csrf_token()})
 
     # A record saved before is no sign that what the result rests on still stands.
-    assert moved.status_code == 409 and RESULT_MOVED in text_of(moved.text)
+    assert moved.status_code == 409 and str(RESULT_MOVED) in text_of(moved.text)
 
 
 def test_a_decision_rests_on_the_unsaved_result_then_on_the_exploration_saved_from_it(app, inline, browser_a, library):
     task = explored(browser_a, [library])
-    assert decide(browser_a, task, "数据分析", "keep").headers["location"] == f"{task}?notice=decided"
+    # The direction decided on stays open (owner redesign, plan 4.2: its details under its row).
+    assert decide(browser_a, task, "数据分析", "keep").headers["location"] == f"{task}?notice=decided&open=direction-1"
     [unsaved] = rows(app, DirectionDecision)
     assert browser_a.post(f"{task}/save", {"csrf_token": browser_a.csrf_token()}).status_code == 303
     assert decide(browser_a, task, "数据分析", "defer").status_code == 303
@@ -606,7 +618,11 @@ def test_undoing_a_decision_sends_it_to_the_bin_and_it_comes_back_unless_a_newer
     assert "你的决定：未决定" in browser_a.get(task).text
     assert "删除的方向探索和决定" in bin_page and "数据分析 方向决定：保留" in bin_page
 
-    assert browser_a.submit("/experiences?tab=trash", f"{BASE}/decisions/{decision['id']}/restore").headers["location"] == "/experiences?tab=trash"
+    # The bin is 数据管理's (UI bilingual batch, plan 2): restoring from it comes back to it there, saying so (owner
+    # redesign revision, 2026-11-18: the row only disappeared before).
+    back = browser_a.submit("/experiences?tab=trash", f"{BASE}/decisions/{decision['id']}/restore").headers["location"]
+    assert back == "/data/trash?notice=restored"
+    assert "已从回收站恢复。" in text_of(browser_a.get(back).text)
     assert rows(app, DirectionDecision)[0]["deleted_at"] is None
     assert browser_a.submit(task, undo).status_code == 303
     assert decide(browser_a, task, "数据分析", "exclude").status_code == 303
@@ -642,7 +658,9 @@ def test_a_direction_excluded_before_comes_last_and_says_so(app, inline, browser
     page = browser_a.get(explored(browser_a, [library])).text
 
     assert directions_shown(page)[-1] == "数据分析" and "你之前排除过这个方向，可以随时改。" in page
-    assert '数据分析</a><span class="value-note">排除</span>' in page
+    # Its card says so in the overview (owner redesign, plan 4.2), never hidden in the details only.
+    card = page[page.rindex('<article class="direction-card-a'): page.index("</article>", page.rindex('<article class="direction-card-a'))]
+    assert "is-excluded" in card and '<span class="badge">排除</span>' in card
 
 
 # --- the records: the basis a decision keeps ---------------------------------------------------------------------------
@@ -654,7 +672,7 @@ def test_only_a_confirmed_change_makes_a_decision_on_an_exploration_the_users_ow
     [decision] = rows(app, DirectionDecision)
     with app.state.library.database.transaction() as db:
         history = db.scalar(select(func.count()).select_from(DirectionSource).where(DirectionSource.holder_id == decision["id"]))
-    records = browser_a.get(f"{BASE}/records").text
+    records = browser_a.get(f"{BASE}/records?tab=decisions").text
     direct = browser_a.post(f"{BASE}/decisions/{decision['id']}/state", {"csrf_token": browser_a.csrf_token(), "expected_revision": "1", "state": "defer"})
     after_direct = rows(app, DirectionDecision)[0]["state"]
     ask = browser_a.get(f"{BASE}/decisions/{decision['id']}/own").text
@@ -665,7 +683,7 @@ def test_only_a_confirmed_change_makes_a_decision_on_an_exploration_the_users_ow
 
     # Resting on a result that was not saved: no plain change is offered, nor taken.
     assert f'href="{own}">重新定为我的选择…</a>' in records and f'action="{BASE}/decisions/{decision["id"]}/state"' not in records
-    assert direct.status_code == 409 and NEEDS_OWN_CHOICE in text_of(direct.text) and after_direct == "keep"
+    assert direct.status_code == 409 and str(NEEDS_OWN_CHOICE) in text_of(direct.text) and after_direct == "keep"
     assert "原来的依据留作历史，不会删除" in ask and "根据没有保存的方向探索" in ask
     assert stale.status_code == 409 and "这条记录刚刚变了" in stale.text
     assert confirmed_change.headers["location"] == f"{BASE}/records?notice=own"
@@ -674,7 +692,7 @@ def test_only_a_confirmed_change_makes_a_decision_on_an_exploration_the_users_ow
         assert db.scalar(select(func.count()).select_from(DirectionSource).where(DirectionSource.holder_id == decision["id"])) == history
 
     # The user's own choice changes as it is, without asking again.
-    assert browser_a.submit(f"{BASE}/records", f"{BASE}/decisions/{decision['id']}/state", state="keep").headers["location"] == f"{BASE}/records?notice=decided"
+    assert browser_a.submit(f"{BASE}/records?tab=decisions", f"{BASE}/decisions/{decision['id']}/state", state="keep").headers["location"] == f"{BASE}/records?notice=decided"
     assert (rows(app, DirectionDecision)[0]["state"], rows(app, DirectionDecision)[0]["basis"]) == ("keep", "personal")
 
 
@@ -712,9 +730,11 @@ def test_a_saved_exploration_is_deleted_restored_and_purged_through_the_pages(ap
     assert "根据它做的决定会保留" in browser_a.get(delete_page).text
     assert browser_a.submit(delete_page, delete_page).headers["location"] == f"{BASE}/records?notice=deleted"
     records = text_of(browser_a.get(f"{BASE}/records").text)
+    decisions = text_of(browser_a.get(f"{BASE}/records?tab=decisions").text)
     bin_page = browser_a.get("/experiences?tab=trash").text
 
-    assert "还没有保存的探索" in records and "依据的方向探索已删除（还能恢复）" in records and "重新定为我的选择…" in records
+    # Each tab has its own empty state (plan 4.3): no saved exploration, and the decision kept with its basis.
+    assert "还没有保存的探索" in records and "依据的方向探索已删除（还能恢复）" in decisions and "重新定为我的选择…" in decisions
     assert "方向探索</span>" in bin_page and f"{BASE}/explorations/{exploration}/restore" in bin_page
 
     assert browser_a.submit("/experiences?tab=trash", f"{BASE}/explorations/{exploration}/restore").status_code == 303
@@ -729,7 +749,7 @@ def test_a_saved_exploration_is_deleted_restored_and_purged_through_the_pages(ap
 
     assert "一次方向探索：你已于" in waiting and "正在等待清理" in waiting
     assert "一次方向探索（你申请的永久删除）" in finished and "清理完成" in finished
-    assert rows(app, DirectionExploration) == [] and "依据的方向探索已永久删除" in text_of(browser_a.get(f"{BASE}/records").text)
+    assert rows(app, DirectionExploration) == [] and "依据的方向探索已永久删除" in text_of(browser_a.get(f"{BASE}/records?tab=decisions").text)
 
 
 def test_the_export_holds_what_the_pages_saved(app, inline, browser_a, library):
@@ -741,7 +761,8 @@ def test_the_export_holds_what_the_pages_saved(app, inline, browser_a, library):
     [markdown] = [name for name in package.namelist() if name.endswith("directions.md")]
     text = package.read(markdown).decode("utf-8")
 
-    assert '<a href="/export/all.zip" download>导出全部资料</a>' in records
+    # The long note on the export is gone (plan 4.3); the way there stays, in the page's More menu.
+    assert '<a class="menu-link" href="/export/all.zip" download>导出资料</a>' in records
     assert "数据分析" in text and "保留" in text
 
 
@@ -813,9 +834,9 @@ def test_the_records_page_offers_a_plain_change_only_when_deciding_on_the_explor
     assert browser_a.post(f"{task}/save", {"csrf_token": browser_a.csrf_token()}).status_code == 303
     assert decide(browser_a, task, "数据分析", "keep").status_code == 303
     [decision] = rows(app, DirectionDecision)
-    before = browser_a.get(f"{BASE}/records").text
+    before = browser_a.get(f"{BASE}/records?tab=decisions").text
     edit(browser_a, other, actions="访谈之后又改过。")
-    after = browser_a.get(f"{BASE}/records").text
+    after = browser_a.get(f"{BASE}/records?tab=decisions").text
 
     assert f'action="{BASE}/decisions/{decision["id"]}/state"' in before
     assert f'action="{BASE}/decisions/{decision["id"]}/state"' not in after and "重新定为我的选择…" in after
@@ -855,9 +876,9 @@ def test_an_old_save_never_brings_back_an_exploration_deleted_for_good(app, inli
     page = browser_a.get(task).text
 
     assert actions_of(old) == (True, True)
-    assert response.status_code == 409 and SAVED_AND_PURGED in text_of(response.text)
+    assert response.status_code == 409 and str(SAVED_AND_PURGED) in text_of(response.text)
     assert [row["deleted_at"] is not None for row in rows(app, DirectionExploration)] == ([] if cleaned else [True])
-    assert SAVED_GONE in text_of(page) and actions_of(page) == (False, False)
+    assert str(SAVED_GONE) in text_of(page) and actions_of(page) == (False, False)
 
 
 @pytest.mark.parametrize("cleaned", [False, True], ids=["waiting_for_cleanup", "cleaned_up"])
@@ -868,7 +889,7 @@ def test_an_old_decision_never_turns_an_exploration_deleted_for_good_into_an_uns
     purge_saved(app, browser_a, task, cleaned=cleaned)
     response = browser_a.post(form.action, {**form.fields, "state": "keep"})
 
-    assert response.status_code == 409 and GONE_FOR_DECIDING in text_of(response.text)
+    assert response.status_code == 409 and str(GONE_FOR_DECIDING) in text_of(response.text)
     assert rows(app, DirectionDecision) == []
 
 
@@ -884,8 +905,8 @@ def test_a_saved_exploration_deleted_and_restored_is_the_tasks_saved_exploration
     decided_in_bin = browser_a.post(form.action, {**form.fields, "state": "keep"})
 
     assert "这次探索保存过，现在在" in text_of(in_bin) and actions_of(in_bin) == (False, False)
-    assert saved_in_bin.status_code == 409 and SAVED_IN_BIN in text_of(saved_in_bin.text)
-    assert decided_in_bin.status_code == 409 and SAVED_IN_BIN in text_of(decided_in_bin.text)
+    assert saved_in_bin.status_code == 409 and str(SAVED_IN_BIN) in text_of(saved_in_bin.text)
+    assert decided_in_bin.status_code == 409 and str(SAVED_IN_BIN) in text_of(decided_in_bin.text)
     assert rows(app, DirectionDecision) == []
 
     # Restored on purpose from the bin: the task's saved exploration again, decided on as such.
@@ -929,7 +950,7 @@ def test_saving_and_deciding_on_one_task_are_one_write_at_a_time(app, inline, br
     store.release_write(held.id)
 
     assert claim is Claim.CLAIMED
-    assert busy_save.status_code == busy_decide.status_code == 409 and WRITING in text_of(busy_save.text) + text_of(busy_decide.text)
+    assert busy_save.status_code == busy_decide.status_code == 409 and str(WRITING) in text_of(busy_save.text) + text_of(busy_decide.text)
     assert after_busy == (0, 0, 0)
     assert browser_a.post(f"{task}/save", {"csrf_token": browser_a.csrf_token()}).status_code == 303
     assert decide(browser_a, task, "数据分析", "keep").status_code == 303

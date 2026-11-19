@@ -6,7 +6,7 @@
 {% macro link_list(value) %}
 <ul class="links">
   {% for text, href in link_lines(value) %}
-  <li>{% if href %}<a href="{{ href }}" rel="noopener noreferrer">{{ text }}</a>{% else %}{{ text }} <span class="muted small">（不是 http/https 链接，没有生成可点击的链接）</span>{% endif %}</li>
+  <li>{% if href %}<a href="{{ href }}" rel="noopener noreferrer">{{ text }}</a>{% else %}{{ text }} <span class="muted small">{{ t("lib.not_a_link") }}</span>{% endif %}</li>
   {% endfor %}
 </ul>
 {% endmacro %}
@@ -21,30 +21,35 @@
 {% endif %}
 {% endmacro %}
 
-{# Every field of a record or a history version, grouped as its form groups them. #}
+{# Every field of a record or a history version, grouped as the categories group them. The experience details and
+   the older split fields show when they hold text (presentation.shown_fields): nothing written is ever left out. #}
 {% macro content_block(content, category="project") %}
 {% if category == PREFERENCES %}
 {{ preference_view(content) }}
 {% elif category == PROFILE %}
 <dl class="fields">
   {% for field in CATEGORY_FIELDS[category] %}
-  <dt>{{ field.label }}</dt>
+  <dt>{{ label_of(category, field.name) }}</dt>
   <dd>{{ field_value(field, content.get(field.name, "")) }}</dd>
   {% endfor %}
 </dl>
 {% else %}
-{% for group_label, fields in CATEGORY_GROUPS[category] %}
+{% set shown = shown_fields(content, category) %}
+{% for group_key, fields in CATEGORY_GROUPS[category] %}
+{% set listed = fields|selectattr("name", "in", shown)|list %}
+{% if listed %}
 <section class="content-group">
-  {% if group_label %}
-  <h2>{{ group_label }}</h2>
+  {% if group_key %}
+  <h2>{{ group_label(group_key) }}</h2>
   {% endif %}
   <dl class="fields">
-    {% for field in fields %}
-    <dt>{{ field.label }}</dt>
+    {% for field in listed %}
+    <dt>{{ label_of(category, field.name) }}</dt>
     <dd>{{ field_value(field, content.get(field.name, "")) }}</dd>
     {% endfor %}
   </dl>
 </section>
+{% endif %}
 {% endfor %}
 {% endif %}
 {% endmacro %}
@@ -60,12 +65,12 @@
   {% endif %}
   {% endfor %}
   <section class="preference">
-    <h3>{{ label }}</h3>
+    <h3>{{ t("pref.group." ~ key) }}</h3>
     {% if given.any %}
     <dl class="stances">
       {% for field in fields %}
       {% if content.get(field.name) %}
-      <div><dt>{{ field.label }}</dt><dd class="text">{{ content[field.name] }}</dd></div>
+      <div><dt>{{ preference_label(field.name) }}</dt><dd class="text">{{ content[field.name] }}</dd></div>
       {% endif %}
       {% endfor %}
     </dl>
@@ -76,7 +81,7 @@
   {% endfor %}
   {% for field in PREFERENCE_SINGLES %}
   <section class="preference">
-    <h3>{{ field.label }}</h3>
+    <h3>{{ preference_label(field.name) }}</h3>
     {% if content.get(field.name) %}
     <p class="text">{{ content[field.name] }}</p>
     {% else %}
@@ -96,18 +101,20 @@
 {% endmacro %}
 
 {# The arrow shows that a row opens; the title alone names what is inside. #}
-{% macro fold_summary(title, private=False) %}
-<summary>{% if private %}{{ i.icon("lock-keyhole") }}{% endif %}<span class="fold-title">{{ title }}</span><span class="chevron">{{ i.icon("chevron-right") }}</span></summary>
+{% macro fold_summary(title, private=False, badge=none) %}
+<summary>{% if private %}{{ i.icon("lock-keyhole") }}{% endif %}<span class="fold-title">{{ title }}</span>{% if badge is not none %}<span class="badge fold-badge">{{ badge }}</span>{% endif %}<span class="chevron">{{ i.icon("chevron-right") }}</span></summary>
 {% endmacro %}
 
-{# A field with an error says so in words, also to a screen reader that lands on it. #}
-{% macro form_field(field, value, error, rows=none) %}
+{# A field with an error says so in words, also to a screen reader that lands on it. Its name and hint are said in
+   the page's language; its name attribute is the stored field name, never the words. #}
+{% macro form_field(field, value, error, rows=none, category="project") %}
 {% set described = "h-" ~ field.name ~ (" e-" ~ field.name if error else "") %}
-<div class="field{% if error %} has-error{% endif %}">
-  <label for="f-{{ field.name }}">{{ field.label }}</label>
-  <span class="hint" id="h-{{ field.name }}">{{ field.hint }}</span>
+{% set field_hint = hint_of(category, field.name) %}
+<div class="field{% if error %} has-error{% endif %}{% if field.name == BODY %} field-body{% endif %}">
+  <label for="f-{{ field.name }}">{{ label_of(category, field.name) }}</label>
+  <span class="hint" id="h-{{ field.name }}">{{ field_hint }}</span>
   {% if field.multiline %}
-  <textarea id="f-{{ field.name }}" name="{{ field.name }}" rows="{{ rows or (3 if field.name == 'links' else 4) }}" maxlength="{{ field.max_length }}" aria-describedby="{{ described }}"{% if error %} aria-invalid="true"{% endif %}>{{ value }}</textarea>
+  <textarea id="f-{{ field.name }}" name="{{ field.name }}" rows="{{ rows or (3 if field.name == 'links' else (9 if field.name == BODY else 4)) }}" maxlength="{{ field.max_length }}" aria-describedby="{{ described }}"{% if error %} aria-invalid="true"{% endif %}>{{ value }}</textarea>
   {% else %}
   <input id="f-{{ field.name }}" type="text" name="{{ field.name }}" value="{{ value }}" maxlength="{{ field.max_length }}" aria-describedby="{{ described }}"{% if error %} aria-invalid="true"{% endif %}>
   {% endif %}
@@ -117,74 +124,116 @@
 </div>
 {% endmacro %}
 
+{#- The time of an experience as years and months (owner redesign, plan 3.1): a start, an end or 至今 (one month for an
+    award), never a day, and nothing filled in for the person. A time written another way stays in its own words until
+    the person chooses the picker; the posted original lets a time saved back as it was keep its words exactly
+    (app.library.months.with_period). Without JavaScript every part shows and the choice decides; months.js only
+    hides what is not in use. -#}
+{% macro month_picker(field, values, error, category) %}
+{% set single = category == "award" %}
+{% set words = values.period_original and not period_fits(values.period_original, single) %}
+<fieldset class="field month-field{% if error %} has-error{% endif %}" data-month-field{% if error %} aria-describedby="e-period"{% endif %}>
+  <legend>{{ label_of(category, field.name) }}</legend>
+  <input type="hidden" name="period_original" value="{{ values.period_original }}">
+  {% if words %}
+  <div class="month-words">
+    <div class="month-choice" role="radiogroup" aria-label="{{ label_of(category, field.name) }}">
+      <label class="check"><input type="radio" name="period_mode" value="text"{% if values.period_mode != "months" %} checked{% endif %} data-month-mode> {{ t("months.keep_words") }}</label>
+      <label class="check"><input type="radio" name="period_mode" value="months"{% if values.period_mode == "months" %} checked{% endif %} data-month-mode> {{ t("months.use_picker") }}</label>
+    </div>
+    <label class="month-words-label" for="f-period">{{ t("months.own_words") }}</label>
+    <input id="f-period" type="text" name="period" value="{{ values.period if values.period is defined else values.period_original }}" maxlength="{{ field.max_length }}" data-month-words>
+  </div>
+  {% else %}
+  <input type="hidden" name="period_mode" value="months">
+  {% endif %}
+  <div class="month-pickers" data-month-pickers>
+    {% for part in (("start",) if single else ("start", "end")) %}
+    {% set part_label = t("months.single") if single else t("months." ~ part) %}
+    <div class="month-part">
+      <span class="month-label">{{ part_label }}</span>
+      <span class="month-selects">
+        <select name="period_{{ part }}_year" aria-label="{{ part_label }}{{ t('common.colon') }}{{ t('months.year') }}"{% if part == "end" %} data-month-end{% endif %}>
+          <option value="">{{ t("months.choose_year") }}</option>
+          {% for year in YEARS %}
+          <option value="{{ year }}"{% if values['period_' ~ part ~ '_year'] == year|string %} selected{% endif %}>{{ t("months.year_option", year=year) }}</option>
+          {% endfor %}
+        </select>
+        <select name="period_{{ part }}_month" aria-label="{{ part_label }}{{ t('common.colon') }}{{ t('months.month') }}"{% if part == "end" %} data-month-end{% endif %}>
+          <option value="">{{ t("months.choose_month") }}</option>
+          {% for month in MONTHS %}
+          <option value="{{ month }}"{% if values['period_' ~ part ~ '_month'] == month|string %} selected{% endif %}>{{ t("months.m%d"|format(month)) }}</option>
+          {% endfor %}
+        </select>
+      </span>
+    </div>
+    {% if part == "start" and not single %}<span class="month-to" aria-hidden="true">{{ t("months.to") }}</span>{% endif %}
+    {% endfor %}
+    {% if not single %}
+    <label class="check month-ongoing"><input type="checkbox" name="period_ongoing" value="1"{% if values.period_ongoing == "1" %} checked{% endif %} data-month-ongoing> {{ t("months.ongoing") }}</label>
+    {% endif %}
+  </div>
+  {% if error %}
+  <span class="field-error" id="e-period">{{ error }}</span>
+  {% endif %}
+</fieldset>
+{% endmacro %}
+
 {# A new record starts in the category the list is filtered by, and the filter stays. #}
 {% macro new_record_href() %}/experiences/new{% if filter_category %}?kind={{ filter_category }}&amp;{{ filter_suffix[1:] }}{% endif %}{% endmacro %}
 
 {# Finding records: words and a category, sent together as a plain GET form. #}
 {% macro library_filter() %}
-<form class="library-filter" method="get" action="/experiences" role="search" aria-label="查找经历">
-  <input type="search" name="q" value="{{ filter_query }}" maxlength="100" placeholder="搜索" aria-label="搜索经历">
-  <select name="category" aria-label="类别">
-    <option value="">全部类别</option>
+<form class="library-filter" method="get" action="/experiences" role="search" aria-label="{{ t('lib.find_records') }}">
+  <input type="search" name="q" value="{{ filter_query }}" maxlength="100" placeholder="{{ t('lib.search_placeholder') }}" aria-label="{{ t('lib.search_records') }}">
+  <select name="category" aria-label="{{ t('lib.category') }}">
+    <option value="">{{ t("lib.all_categories") }}</option>
     {% for category in EXPERIENCE_CATEGORIES %}
     <option value="{{ category }}"{% if category == filter_category %} selected{% endif %}>{{ CATEGORY_LABELS[category] }}</option>
     {% endfor %}
   </select>
-  <button type="submit" class="secondary">查找</button>
+  <button type="submit" class="secondary">{{ t("lib.search") }}</button>
   {% if filter_category or filter_query %}
-  <a class="library-clear" href="/experiences">清空筛选</a>
+  <a class="library-clear" href="/experiences">{{ t("lib.clear_filter") }}</a>
   {% endif %}
 </form>
 {% endmacro %}
 
-{# items is the list as filtered by the address (?category=…&q=…); its links keep the filter. #}
-{% macro library_nav(items, selected_id) %}
-<aside class="library" aria-label="我的经历">
-  <div class="library-head">
-    <a class="library-back" href="/experiences{{ filter_suffix }}">{{ i.icon("arrow-left") }}返回经历库{% if sidebar_total %}（{{ sidebar_total }} 条）{% endif %}</a>
-    <h2>我的经历</h2>
-    {# An empty library invites the first record in the page itself. #}
-    {% if items is none or sidebar_total %}
-    <a class="button secondary" href="{{ new_record_href() }}">{{ i.icon("plus") }}新建记录</a>
-    {% endif %}
-  </div>
-  {% if items is not none and sidebar_total %}
-  {{ library_filter() }}
-  {% endif %}
-  {% if items is none %}
-  <p class="library-unavailable" role="status">经历列表暂时无法显示，请稍后刷新页面。这一页的内容不受影响。</p>
-  {% elif items %}
-  <nav aria-label="经历列表" data-reveal>
-    <ul class="library-list">
-      {% for entry in items %}
-      <li>
-        <a class="library-item" href="/experiences/{{ entry.id }}{{ filter_suffix }}"{% if entry.id == selected_id %} aria-current="page"{% endif %}>
-          <span class="library-title">{{ display_title(entry.content, entry.category) }}</span>
-          {% set summary = summary_line(entry.content, entry.category) %}
-          {% if summary %}
-          <span class="library-summary">{{ summary }}</span>
-          {% endif %}
-          <span class="library-meta"><span class="library-category">{{ CATEGORY_LABELS[entry.category] }}</span>{{ state_badge(entry) }}<span>最近保存 {{ entry.updated_at|shorttime }}</span></span>
-        </a>
-      </li>
-      {% endfor %}
-    </ul>
-  </nav>
-  {% elif sidebar_total %}
-  <p class="library-empty" role="status">没有符合条件的记录。</p>
-  {% else %}
-  <p class="library-empty">还没有记录。</p>
-  {% endif %}
-</aside>
+{# The way back to the list a record was opened from, keeping its filter (plan 4: 返回列表保持上下文). #}
+{% macro back_to_library() %}
+<a class="library-back" href="/experiences{{ filter_suffix }}">{{ i.icon("arrow-left") }}{{ t("lib.back_to_library") }}{% if sidebar_total %}{{ t("lib.back_count", n=sidebar_total) }}{% endif %}</a>
 {% endmacro %}
 
-{% macro leave_dialog(save_label="保存草稿") %}
-<dialog id="leave-dialog" aria-labelledby="leave-title">
-  <h2 id="leave-title">有还没保存的修改</h2>
+{#- The icon beside a job's decision (owner redesign, plan 6.1): 收藏, 准备申请, 暂缓, 跳过. -#}
+{% macro decision_icon(value) %}{% if value == "favorite" %}{{ i.icon("star") }}{% elif value == "apply" %}{{ i.icon("file-text") }}{% elif value == "defer" %}{{ i.icon("clock") }}{% else %}{{ i.icon("circle-x") }}{% endif %}{% endmacro %}
+
+{#- The 更多 / More menu of a page or a record (plan 2.3): a "⋯" button whose name is said to screen readers, opening by
+    click, touch or keyboard (a native disclosure; menu.js closes it on Escape or a click elsewhere). Deleting goes
+    last in it. -#}
+{% macro more_menu(label=none) %}
+<details class="more-menu" data-menu>
+  <summary class="button secondary more-button">{{ i.icon("ellipsis") }}<span class="visually-hidden">{{ label or t("common.more") }}</span></summary>
+  <div class="menu-panel">
+    {{ caller() }}
+  </div>
+</details>
+{% endmacro %}
+
+{#- 有未保存的修改 (owner redesign, plan 8.3, image 18): what is at stake in one line, then keep editing, discard, or save
+    and leave (the last only where the page can save). -#}
+{% macro leave_dialog(save_label=none) %}
+<dialog id="leave-dialog" aria-labelledby="leave-title" aria-describedby="leave-line">
+  <div class="dialog-head">
+    <p class="state-icon">{{ i.icon("pencil") }}</p>
+    <div>
+      <h2 id="leave-title">{{ t("leave.title") }}</h2>
+      <p id="leave-line">{{ t("leave.line") }}</p>
+    </div>
+  </div>
   <div class="dialog-actions">
-    <button type="button" data-leave-choice="save">{{ save_label }}</button>
-    <button type="button" data-leave-choice="stay" class="secondary">继续编辑</button>
-    <button type="button" data-leave-choice="discard" class="danger">放弃修改</button>
+    <button type="button" data-leave-choice="stay" class="secondary">{{ t("leave.stay") }}</button>
+    <button type="button" data-leave-choice="discard" class="danger">{{ t("leave.discard") }}</button>
+    <button type="button" data-leave-choice="save">{{ save_label or t("common.save_draft") }}</button>
   </div>
 </dialog>
 {% endmacro %}

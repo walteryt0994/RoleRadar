@@ -50,6 +50,7 @@ from app.analysis_contracts import (
 )
 from app.discovery import rules, supplied, updates
 from app.discovery.contracts import RECOMMENDED, Access, CheckStatus, Dimension, EndReason, EvidenceLevel, Lead, PostingRef, Result
+from app.evidence_coverage import coverage_record
 from app.library import job_recommendations, job_texts, job_watches
 from app.library.content import PREFERENCES
 from app.library.errors import NotFound, RecordConflict
@@ -93,6 +94,8 @@ from app.library.models import (
 from app.library.projection import current_preferences
 from app.library.references import SourceState, analysis_sources, state_of, worst
 from app.library.service import is_expired, new_id, record_event
+from app.i18n import lazy, t
+from app.jd_record import fingerprint_job_posting
 
 # D3a keeps synthetic data only: no real source, whatever a set of sources lists (U3-D3 pre-check, revision 2).
 # Synthetic data, and (U3-D6) a source reached by RoleRadar's own requests: kept only where the set the app runs on
@@ -108,8 +111,8 @@ ANSWER_WORDS = {CheckStatus.OPEN: CHECK_OPEN, CheckStatus.CLOSED: CHECK_CLOSED}
 # 2: each search's failure, in the fixed words the result page said it (U3-D3a F2).
 # 3: how many postings the user skipped the search came across, each once (U3-D3c). A summary of version 2 has none.
 SUMMARY_VERSION = 3
-NOT_KEEPABLE ="这次查找用到的来源没有保存许可，结果只临时显示；这次什么都没有保存。"
-NOT_FINISHED = "这次查找还没有结束，结束以后才能保存。"
+NOT_KEEPABLE =lazy("job.recs.1")
+NOT_FINISHED = lazy("job.recs.2")
 # Analyses (U3-D3b): synthetic data only, as for postings; a set lists the sources it lets keep analyses of apart
 # (SourceSet.keep_analyses), never wider than what it lets keep at all.
 # The same for analyses, never wider than keep: listed by SourceSet.keep_analyses alone (the D6 batch, only when its
@@ -119,17 +122,15 @@ ANALYSIS_KEEPABLE_ACCESS = frozenset({Access.SYNTHETIC, Access.LOCAL_FETCH})
 # condition its posting quote lays down, whether it holds and the posting's line that shows it. Version 1 has none:
 # it reads with them empty, as its page showed it then.
 ANALYSIS_CONTENT_VERSION = 2
-NO_ANALYSIS_KEEP = "这次查找用到的来源没有保存分析的许可，分析只临时显示；这次什么都没有保存。"
-NO_ANALYSIS = "这个岗位没有完整分析结果，没有可以保存的分析；这次什么都没有保存。"
-ANALYSIS_IN_BIN = "这次查找里这个岗位的分析已经保存过，现在在回收站里。可以去回收站恢复它；这次没有再保存一份。"
-ANALYSIS_PURGED = "这次查找里这个岗位的分析保存以后已经永久删除，不能再从这次结果保存；需要的话，请重新查找。"
+NO_ANALYSIS_KEEP = lazy("job.recs.3")
+NO_ANALYSIS = lazy("job.recs.4")
+ANALYSIS_IN_BIN = lazy("job.recs.5")
+ANALYSIS_PURGED = lazy("job.recs.6")
 MATERIAL_CHANGED = (
-    "这份分析用到的经历或求职偏好在查找之后有了变化（修改、重新确认或删除），"
-    "按当时的内容得出的分析不能再保存；这次什么都没有保存。需要的话，请重新查找。"
+    lazy("job.recs.7")
 )
 NO_PREFERENCE_VERSION = (
-    "求职偏好的保存记录里，没有一份和这次分析发送的内容一致（可能已被删除），所以没有保存；"
-    "可以先在回收站恢复那次保存记录，或者重新查找。"
+    lazy("job.recs.8")
 )
 ANALYSIS_REFUSALS = (NOT_FINISHED, NO_ANALYSIS, ANALYSIS_IN_BIN, ANALYSIS_PURGED, MATERIAL_CHANGED, NO_PREFERENCE_VERSION)
 
@@ -280,6 +281,8 @@ def search_summary(task, mode: str) -> dict:
     return {
         "version": SUMMARY_VERSION,
         "mode": mode,
+        # The language its explanatory text was asked for (UI bilingual batch, plan 6.3); a summary kept before has none.
+        "result_language": confirmation.result_language,
         "stage": task.stage.value,
         "cancelled_by": task.cancelled_by,
         "sources": [
@@ -365,13 +368,22 @@ def analysis_content(item: Result) -> dict:
     flags, so a negation, a plan or a team's work it was read with is never lost when the record goes; the preferences
     compared with the user's own words and the posting's; and what it rests on, by ids, numbers and field names. Never
     the posting's text, a whole experience, a prompt or a model's answer as such."""
-    analysis = item.analysis
-
     return {
         "version": ANALYSIS_CONTENT_VERSION,
         "category": item.category.value,
         "first_checks": list(item.first_checks),
         "notes": list(item.notes),
+        **analysis_body(item.analysis),
+    }
+
+
+def analysis_body(analysis) -> dict:
+    """The part of a kept analysis that is the analysis itself (analysis_content), for a search's analysis or a
+    standalone one (plan 5.3). It keeps the 岗位要求依据覆盖 count as it was made from these very findings
+    (display_metrics, evidence_coverage_v1, owner redesign plan 7.3): optional, so a record kept before has none, and
+    then none is shown for it rather than counted again."""
+    return {
+        "display_metrics": {"evidence_coverage": coverage_record(analysis)},
         "findings": [
             {
                 "requirement_id": finding.requirement_id,
@@ -632,6 +644,155 @@ def keep_analysis(
     return row
 
 
+# --- standalone analyses (UI bilingual batch, plan 5.3) -------------------------------------------------------------
+# An analysis the user made on the analysis page, kept on its own: it needs no saved posting and saves none. It is kept
+# once per task (its search_id is the task's, under the same unique index), with what it rests on, its generation
+# language and the posting's source as the server verified it when the analysis was reviewed (AnalysisOrigin), never
+# as a form says at saving. A posting pasted into the analysis page alone has no official id, and is given none.
+STANDALONE_PREFIX = "analysis:"
+PASTED_ANALYSIS_SOURCE = "user-pasted"
+PASTED_ANALYSIS_POSTING = "-"
+# Synthetic sources and the user's own text; never a real source (the D6 batch keeps a search's analyses only).
+STANDALONE_KEEPABLE_ACCESS = frozenset({Access.SYNTHETIC, job_texts.USER_PROVIDED})
+STANDALONE_NOT_KEEPABLE = lazy("job.standalone.not_keepable")
+STANDALONE_NO_ANALYSIS = lazy("job.standalone.no_analysis")
+STANDALONE_IN_BIN = lazy("job.standalone.in_bin")
+STANDALONE_PURGED = lazy("job.standalone.purged")
+STANDALONE_CHANGED = lazy("job.standalone.changed")
+
+
+@dataclass(frozen=True)
+class AnalysisOrigin:
+    """Where a standalone analysis's posting came from, as the server verified it when the task was reviewed: a pasted
+    posting kept in 我的岗位 (record_id), one read from a registered source by 补充岗位, or text pasted here only."""
+
+    source_id: str
+    posting_id: str
+    access: str
+    evidence: str
+    source_name: str = ""
+    title: str = ""
+    company: str = ""
+    url: str | None = None
+    record_id: str | None = None
+    # The 补充岗位 result it came from, in this session's memory (never stored): where its page offers 加入我的岗位.
+    supplied_token: str | None = None
+
+
+PASTED_ORIGIN = AnalysisOrigin(PASTED_ANALYSIS_SOURCE, PASTED_ANALYSIS_POSTING, job_texts.USER_PROVIDED, job_texts.USER_PROVIDED)
+
+
+def standalone_of(db: Session, owner_id: str, task_id: str) -> JobAnalysis | None:
+    """The analysis kept from this task, in use or in the bin; None if none was kept, or it is gone for good."""
+    return db.scalar(
+        select(JobAnalysis).where(JobAnalysis.owner_id == owner_id, JobAnalysis.search_id == STANDALONE_PREFIX + task_id)
+    )
+
+
+def keep_standalone_analysis(
+    db: Session,
+    owner_id: str,
+    task_id: str,
+    request,
+    result,
+    origin: AnalysisOrigin,
+    *,
+    analysed_at: datetime | None,
+    mode: str,
+    saved_id: str | None,
+    now: datetime,
+) -> JobAnalysis:
+    """A standalone analysis kept as its result page showed it: made once, with what it rests on, only while that is
+    as the analysis had it. Kept already and in use, it is the one kept; in the bin, or deleted for good since (the
+    task remembers what it kept: saved_id), it is never made again from the old page (KeepRefused)."""
+    if origin.access not in STANDALONE_KEEPABLE_ACCESS:
+        raise KeepRefused(STANDALONE_NOT_KEEPABLE)
+
+    if result is None or result.status != "complete" or result.analysis is None:
+        raise KeepRefused(STANDALONE_NO_ANALYSIS)
+
+    row = standalone_of(db, owner_id, task_id)
+
+    if row is not None and row.deleted_at is None:
+        return row
+
+    if row is not None:
+        raise KeepRefused(STANDALONE_PURGED if is_expired(row, now) else STANDALONE_IN_BIN)
+
+    if saved_id is not None:
+        raise KeepRefused(STANDALONE_PURGED)
+
+    sent = {preference.field: preference.text for preference in request.preferences}
+    basis = _basis_rows(db, owner_id, result, sent, now, STANDALONE_CHANGED)
+    row = JobAnalysis(
+        id=new_id(),
+        owner_id=owner_id,
+        search_id=STANDALONE_PREFIX + task_id,
+        source_id=origin.source_id,
+        posting_id=origin.posting_id,
+        source_access=origin.access,
+        facts={
+            "kind": "standalone",
+            "source_name": origin.source_name,
+            "evidence": origin.evidence,
+            "title": origin.title,
+            "company": origin.company,
+            "cities": [],
+            "places_stated": [],
+            "job_type": None,
+            "type_stated": None,
+            "posted_on": None,
+            "deadlines": [],
+            "url": origin.url,
+            "apply_url": None,
+            "read_at": None,
+            "record_id": origin.record_id,
+            "check": {"status": CHECK_UNKNOWN, "answered_at": None},
+        },
+        content={
+            "version": ANALYSIS_CONTENT_VERSION,
+            "kind": "standalone",
+            "category": None,
+            "first_checks": [],
+            "notes": [],
+            **analysis_body(result),
+        },
+        generation={
+            "standalone": task_id,
+            "mode": mode,
+            "analysis_mode": result.mode,
+            "recipient": {"provider": request.recipient.provider, "model": request.recipient.model},
+            "notice_version": request.notice_version,
+            "requests_sent": result.requests_sent,
+            "task_fingerprint": result.task_fingerprint,
+            "job": None if result.job is None else asdict(result.job),
+            "analysis": None if result.analysis is None else asdict(result.analysis),
+            "result_language": request.result_language,
+        },
+        content_sha256=fingerprint_job_posting(request.job_posting),
+        analysed_at=analysed_at,
+        revision=1,
+        saved_at=now,
+        updated_at=now,
+        deleted_at=None,
+        purge_after=None,
+        deletion_id=None,
+    )
+    db.add(row)
+    db.flush()
+
+    for kind, item_id, version_id, fields in basis:
+        db.add(
+            JobAnalysisSource(
+                id=new_id(), owner_id=owner_id, analysis_id=row.id, kind=kind, item_id=item_id, version_id=version_id, fields=fields
+            )
+        )
+
+    record_event(db, owner_id, row.id, TargetType.JOB_ANALYSIS, row.id, "job_analysis_kept", now)
+
+    return row
+
+
 def feedback_on_analysis(
     db: Session, owner_id: str, record_id: str, revision: int, part: str, reason: str, note: str, now: datetime
 ) -> JobAnalysis:
@@ -642,7 +803,7 @@ def feedback_on_analysis(
     target, target_ref = checked_part(row.content, part)
 
     if reason not in dict(ANALYSIS_REASONS):
-        raise InputRejected("请选择哪里不准。")
+        raise InputRejected(t("job.recs.9"))
 
     db.add(
         JobAnalysisFeedback(
@@ -665,11 +826,54 @@ def feedback_on_analysis(
 # --- writes on a kept posting ------------------------------------------------------------------------------------------
 
 
+class DecisionNeedsChoice(Exception):
+    """Changing the decision would leave behind the reasons given for the one before (reasons belong to one decision):
+    nothing is written, and the page asks first, with the new decision's reasons and the note shown (owner review)."""
+
+    def __init__(self, decision: str):
+        super().__init__(decision)
+        self.decision = decision
+
+
+@dataclass(frozen=True)
+class Decided:
+    row: JobPosting
+    # False when the decision, its reasons and its note were already as asked: nothing was written.
+    changed: bool
+
+
 def decide_on_kept(
-    db: Session, owner_id: str, record_id: str, revision: int, decision: str, reasons: list[str], note: str, now: datetime
+    db: Session,
+    owner_id: str,
+    record_id: str,
+    revision: int,
+    decision: str,
+    reasons: list[str] | None,
+    note: str | None,
+    now: datetime,
 ) -> JobPosting:
+    """Change the decision on a kept posting, or take it back (decision empty); see decide."""
+    return decide(db, owner_id, record_id, revision, decision, reasons, note, now).row
+
+
+def decide(
+    db: Session,
+    owner_id: str,
+    record_id: str,
+    revision: int,
+    decision: str,
+    reasons: list[str] | None,
+    note: str | None,
+    now: datetime,
+) -> Decided:
     """Change the decision on a kept posting, or take it back (decision empty). Deciding on a current recommendation adds
-    it to 我的岗位 (U3-D4b-2); one whose time has come is written to never (RecommendationLapsed)."""
+    it to 我的岗位 (U3-D4b-2); one whose time has come is written to never (RecommendationLapsed).
+
+    What is not sent is never taken for empty (owner review): reasons None and note None mean "as they are". Choosing
+    the decision already made, with nothing else said, changes nothing (Decided.changed False). Choosing another one
+    keeps the note; the reasons belong to the decision they were given for, so when there are some, nothing is written
+    and DecisionNeedsChoice asks the page to show the new decision's reasons first. Taking a decision back clears its
+    reasons and note, as it always did, and the page says so beside the button."""
     row = active_job_record(db, owner_id, JobPosting, record_id)
 
     if job_recommendations.lapsed(db, row, now):
@@ -680,20 +884,38 @@ def decide_on_kept(
     _check_managed(row)
 
     if decision == "" and job_recommendations.marker_of(db, row.id) is not None:
-        raise InputRejected("这条推荐还没有你的决定，没有可以撤销的。")
+        raise InputRejected(t("job.recs.10"))
 
     if decision == "":
         row.decision, row.reasons, row.note, row.decided_at = None, [], None, None
         _touch(row, now)
         record_event(db, owner_id, row.id, TargetType.JOB_POSTING, row.id, "job_posting_undecided", now)
 
-        return row
+        return Decided(row, True)
+
+    same = row.decision == decision
+
+    if reasons is None:
+        if same:
+            reasons = list(row.reasons or [])
+        elif row.reasons:
+            checked_decision(decision, [], "")
+            raise DecisionNeedsChoice(decision)
+        else:
+            reasons = []
+
+    if note is None:
+        note = row.note or ""
 
     checked = checked_decision(decision, reasons, note)
+
+    if same and checked.reasons == tuple(row.reasons or ()) and checked.note == row.note:
+        return Decided(row, False)
+
     _add_to_mine(db, owner_id, row, now)
     _set_decision(db, owner_id, row, checked, now)
 
-    return row
+    return Decided(row, True)
 
 
 def feedback_on_kept(
@@ -728,7 +950,7 @@ def feedback_on_kept(
 # How a search must have ended for its recommendations to be held: by itself, without an error, a block or a stop.
 # The two ends without a suitable result hold none, but are taken, so an older search coming back late changes nothing.
 RETAINED_ENDS = frozenset({EndReason.ENOUGH, EndReason.SCOPE_DONE, EndReason.LIMIT, EndReason.NO_RESULTS, EndReason.PARTLY_NO_RESULTS})
-NOT_HELD = "这条已经在我的岗位里，不是临时留存的推荐；要删除，请用页面底部的“删除这条记录…”。"
+NOT_HELD = lazy("job.recs.11")
 
 
 @dataclass(frozen=True)
@@ -912,7 +1134,7 @@ def add_to_mine(db: Session, owner_id: str, record_id: str, revision: int, now: 
     _check_access(row)
 
     if not _add_to_mine(db, owner_id, row, now):
-        raise InputRejected("这条已经在我的岗位里。")
+        raise InputRejected(t("job.recs.12"))
 
     return row
 
@@ -939,7 +1161,7 @@ def stop_tracking(db: Session, owner_id: str, record_id: str, revision: int, now
 
 # --- 每日查新: a new posting the user adds to 我的岗位, or no longer shows (U3-D4c) ------------------------------------
 
-WATCHED_IN_BIN = "这个岗位在回收站里：要用它，请去回收站恢复那条记录；这次没有新建，这条新增也还在。"
+WATCHED_IN_BIN = lazy("job.recs.13")
 
 
 def keep_watched(db: Session, owner_id: str, item_id: str, now: datetime, *, forget) -> JobPosting:
@@ -1042,9 +1264,9 @@ LINK_SEARCH, PASTED_SEARCH = "supplied-link", "user-provided"
 PASTED_SOURCE_NAME = "你提供的原文"
 # Of everything a kept posting may have done, a pasted one may only be decided on (U3-D4d).
 MANAGED_ACCESS = frozenset({*KEEPABLE_ACCESS, job_texts.USER_PROVIDED})
-SUPPLIED_IN_BIN = "这个岗位在你的回收站里：要用它，请去回收站恢复那条记录；这次没有新建。"
-NOT_SUPPLIABLE = "这个来源现在不能保存补充的岗位；这次什么都没有写。"
-NOTHING_READ = "这次没有读到这个岗位的公开信息，没有可以保存的；这次什么都没有写。"
+SUPPLIED_IN_BIN = lazy("job.recs.14")
+NOT_SUPPLIABLE = lazy("job.recs.15")
+NOTHING_READ = lazy("job.recs.16")
 # The four things a pasted posting is compared by (D4d 6.3), in the order a page lists them.
 IDENTITY_PARTS = ("公司", "职位名", "链接", "原文")
 
@@ -1286,7 +1508,8 @@ def keep_pasted(db: Session, owner_id: str, content, confirmed: frozenset[str], 
         id=new_id(),
         owner_id=owner_id,
         source_id=SUPPLIED_SOURCE,
-        posting_id=new_id(),
+        # The id it was given when supplied, so an analysis saved of it before is this posting's (Codex review F2).
+        posting_id=content.posting_id or new_id(),
         source_access=job_texts.USER_PROVIDED,
         facts={
             "kind": "supplied",
@@ -1517,10 +1740,13 @@ class ShownAnalysis:
     findings: tuple[RequirementFinding, ...]
     preferences: str
     preference_findings: tuple[PreferenceFinding, ...]
+    # What was kept of the 岗位要求依据覆盖 count (analysis_body); None for a record kept without it.
+    display_metrics: dict | None = None
 
 
 def shown_analysis(content: dict) -> ShownAnalysis:
     return ShownAnalysis(
+        display_metrics=content.get("display_metrics"),
         findings=tuple(
             RequirementFinding(
                 requirement_id=finding["requirement_id"],
@@ -1571,16 +1797,16 @@ def shown_analysis(content: dict) -> ShownAnalysis:
 def analysis_parts(content: dict) -> list[tuple[str, str]]:
     """Each part of a kept analysis the user may say is not right, as (form value, words): the category, each
     requirement, each experience quote, each preference compared."""
-    parts = [("category", "分类")]
+    parts = [("category", t("job.recs.17"))]
 
     for finding in content["findings"]:
-        parts.append((f"requirement:{finding['requirement_id']}", f"招聘条件：{_short(finding['text'])}"))
+        parts.append((f"requirement:{finding['requirement_id']}", t("job.recs.18", p0=_short(finding['text']))))
 
         for index, citation in enumerate(finding["citations"]):
-            parts.append((f"citation:{finding['requirement_id']}:{index}", f"经历引文：{_short(citation['quote'])}"))
+            parts.append((f"citation:{finding['requirement_id']}:{index}", t("job.recs.19", p0=_short(citation['quote']))))
 
     for finding in content["preference_findings"]:
-        parts.append((f"preference:{finding['preference_id']}", f"偏好对照：{_short(finding['text'])}"))
+        parts.append((f"preference:{finding['preference_id']}", t("job.recs.20", p0=_short(finding['text']))))
 
     return parts
 
@@ -1588,12 +1814,12 @@ def analysis_parts(content: dict) -> list[tuple[str, str]]:
 def checked_part(content: dict, part: str) -> tuple[str, str | None]:
     """(target, target_ref) of a part the form names, only one this analysis has."""
     if part not in dict(analysis_parts(content)):
-        raise InputRejected("请选择分析里哪一部分不准。")
+        raise InputRejected(t("job.recs.21"))
 
     target, _, target_ref = part.partition(":")
 
     if target not in dict(ANALYSIS_TARGETS):
-        raise InputRejected("请选择分析里哪一部分不准。")
+        raise InputRejected(t("job.recs.21"))
 
     return target, target_ref or None
 
@@ -1619,14 +1845,14 @@ def checked_decision(decision: str, reasons: list[str], note: str) -> CheckedDec
     try:
         chosen = JobDecision(decision)
     except ValueError:
-        raise InputRejected("请选择收藏、暂缓、跳过或准备申请。") from None
+        raise InputRejected(t("job.recs.22")) from None
 
     allowed = [code for code, _ in REASONS[chosen]]
     picked = []
 
     for code in reasons:
         if code not in allowed:
-            raise InputRejected("原因只能从列出的选项里选。")
+            raise InputRejected(t("job.recs.23"))
 
         if code not in picked:
             picked.append(code)
@@ -1636,10 +1862,10 @@ def checked_decision(decision: str, reasons: list[str], note: str) -> CheckedDec
 
 def checked_feedback(field: str, reason: str, note: str) -> CheckedFeedback:
     if field not in dict(FEEDBACK_FIELDS):
-        raise InputRejected("请选择哪一项不准。")
+        raise InputRejected(t("job.recs.24"))
 
     if reason not in dict(FEEDBACK_REASONS):
-        raise InputRejected("请选择哪里不准。")
+        raise InputRejected(t("job.recs.9"))
 
     return CheckedFeedback(field, reason, _note(note))
 
@@ -1652,7 +1878,7 @@ def seen_from(record_id: str, revision: str) -> Seen:
         return Seen()
 
     if not record_id or not revision.isdigit():
-        raise InputRejected("页面信息不完整，请刷新页面后再试。")
+        raise InputRejected(t("job.recs.25"))
 
     return Seen(record_id, int(revision))
 
@@ -1692,11 +1918,19 @@ def _analysis_basis(db: Session, owner_id: str, task, item: Result, now: datetim
     the preferences reading as what was sent. Only while all of it is as the search had it: an experience changed,
     re-confirmed or deleted since, a quote or what it was read with no longer in its version, preferences changed
     since, or no saved version of them reading as sent, keeps nothing (KeepRefused)."""
-    analysis, rows = item.analysis, []
+    sent = {preference.field: preference.text for preference in task.confirmation.preferences}
+
+    return _basis_rows(db, owner_id, item.analysis, sent, now, MATERIAL_CHANGED)
+
+
+def _basis_rows(db: Session, owner_id: str, analysis, sent: dict, now: datetime, changed) -> list[tuple[str, str, str, list[str]]]:
+    """The rows an analysis rests on (_analysis_basis), for a search's analysis or a standalone one (plan 5.3): changed
+    is what is said when any of it is no longer as the analysis had it."""
+    rows = []
 
     for basis in analysis.sources:
         if state_of(db, owner_id, SourceKind.EXPERIENCE, basis.item_id, basis.version_id, basis.fields, now) is not SourceState.CURRENT:
-            raise KeepRefused(MATERIAL_CHANGED)
+            raise KeepRefused(changed)
 
         rows.append((SourceKind.EXPERIENCE.value, basis.item_id, basis.version_id, list(basis.fields)))
 
@@ -1715,15 +1949,13 @@ def _analysis_basis(db: Session, owner_id: str, task, item: Result, now: datetim
             text = _text(version.content if version is not None else None, citation.field)
 
             if version is None or not _stands_in(citation.quote, text) or not all(_stands_in(passage, text) for passage in citation.context):
-                raise KeepRefused(MATERIAL_CHANGED)
-
-    sent = {preference.field: preference.text for preference in task.confirmation.preferences}
+                raise KeepRefused(changed)
 
     if sent:
         saved = current_preferences(db, owner_id)
 
         if any(saved.get(name) != text for name, text in sent.items()):
-            raise KeepRefused(MATERIAL_CHANGED)
+            raise KeepRefused(changed)
 
         found = _preference_version(db, owner_id, sent)
 
@@ -1911,7 +2143,7 @@ def _note(note: str) -> str | None:
     text = " ".join((note or "").split())
 
     if len(text) > NOTE_CHARS:
-        raise InputRejected(f"备注最多 {NOTE_CHARS} 字，现在有 {len(text)} 字。")
+        raise InputRejected(t("job.recs.26", p0=NOTE_CHARS, p1=len(text)))
 
     return text or None
 

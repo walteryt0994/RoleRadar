@@ -219,7 +219,9 @@ def test_without_a_real_service_every_page_says_simulation_and_nothing_names_an_
     assert app.state.directions.live is None and stored.request.notice_version == "direction-1"
     assert "使用本机模拟服务：由固定规则生成结果，不是 AI。" in page_text(browser_a, "/directions")
     assert "本机模拟服务：RoleRadar 内置的固定规则，不是 AI。" in before and "本批批准" not in before
-    assert "（本机模拟，没有联网，不产生费用）" in after and "费用状态" not in after and "真实服务" not in after
+    # The result says whose it is in its head (owner redesign revision R2: no line of requests handed on beside it).
+    assert "本机模拟服务：由固定规则生成结果，不是 AI。" in after and "已交给服务的请求" not in after
+    assert "费用状态" not in after and "真实服务" not in after
 
 
 def test_an_approval_without_direction_leaves_the_directions_on_the_simulation_and_is_never_borrowed(live):
@@ -231,7 +233,7 @@ def test_an_approval_without_direction_leaves_the_directions_on_the_simulation_a
 
     assert app.state.directions.live is None and app.state.job_analysis.live is not None
     assert "使用本机模拟服务" in page_text(browser, "/directions") and "使用真实服务" in page_text(browser, "/job-analysis")
-    assert "（本机模拟，没有联网，不产生费用）" in page_text(browser, task)
+    assert "本机模拟服务：由固定规则生成结果，不是 AI。" in page_text(browser, task) and "真实服务" not in page_text(browser, task)
     assert provider.calls == [] and ledger(app) == []
 
     # Were the analyses' service handed to the directions all the same, its gate would still let nothing through.
@@ -307,7 +309,10 @@ def test_one_confirmation_sends_one_request_through_the_gate_and_the_user_decide
     (row,) = ledger(app)
 
     assert "真实服务的结果：由外部 AI 模型（OpenAI 的 gpt-5.6-sol）生成，引文已在本机逐条核对。" in text
-    assert sent(1) in text and "费用按服务商报告的用量在应用内核算" in text and "不是这一次探索单独的费用" in text
+    # A normal result keeps no line of requests handed on (owner redesign revision R2); the real service's cost stands
+    # in the approval's section, as the whole approval's totals, never as this exploration's own.
+    assert "已交给服务的请求" not in text
+    assert "这批批准的费用状态" in text and "按用量核算 $" in text and "不是这一次探索单独的费用" in text
     assert "本机模拟" not in text and "不产生费用" not in text and "没有联网" not in text
     assert (row.state, row.charged_micro_usd, row.reserved_micro_usd, row.purpose) == (LiveRequestState.SETTLED, COST, RESERVE, "direction")
     # The approval's output limit for direction alone and its reasoning effort, whatever the workflow asks.
@@ -408,7 +413,7 @@ def test_the_directions_and_the_analyses_share_one_gate_and_ledger_and_keep_each
     assert job_start(browser, job).status_code == 303
     assert "另一个真实分析正在进行" in page_text(browser, job) and len(provider.calls) == 1
     release.set()
-    wait_until(lambda: "方向探索结果" in browser.get(task).text)
+    wait_until(lambda: "可以探索的方向" in browser.get(task).text)
 
     # And the other way round: an analysis's request is out, an exploration is refused.
     hold, arrived, release = held()
@@ -458,7 +463,7 @@ def test_a_stop_before_the_request_is_handed_on_sends_nothing_and_releases_its_r
         assert len(store) == 0
     else:
         text = page_text(browser, task)
-        assert "探索已取消" in text and sent() in text and "方向探索结果" not in text
+        assert "探索已取消" in text and sent() in text and "可以探索的方向" not in text
 
 
 @pytest.mark.parametrize("how", ["cancel", "time_limit", "logout"])
@@ -618,10 +623,10 @@ def test_a_live_result_whose_material_changed_or_went_cannot_be_saved(live):
     edit(browser, item, actions="结果出来之后改过。")
     changed = browser.get(task).text
 
-    assert presentation.CHANGED_SINCE in text_of(changed) and "保存这次探索" not in changed
+    assert str(presentation.CHANGED_SINCE) in text_of(changed) and "保存这次探索" not in changed
     delete(browser, item)
     gone = browser.get(task).text
-    assert presentation.WITHDRAWN in text_of(gone) and directions_shown(gone) == []
+    assert str(presentation.WITHDRAWN) in text_of(gone) and directions_shown(gone) == []
 
 
 def test_saved_simulated_history_and_new_live_results_each_keep_their_own_service(make_config, clock):
@@ -656,7 +661,7 @@ def test_saved_simulated_history_and_new_live_results_each_keep_their_own_servic
 
 def test_the_live_notice_is_its_own_version_and_describes_one_service_only():
     # Not the analysis's notice, which speaks of two requests; and only for the service whose handling it describes.
-    words = " ".join(text for _, text in presentation.LIVE_NOTICE)
+    words = " ".join(str(text) for _, text in presentation.LIVE_NOTICE)
 
     assert presentation.LIVE_NOTICE_VERSION == "direction-live-2" and "两个请求" not in words and "一个请求" in words
     assert presentation.LIVE_NOTICE_COVERS == {"openai": "https://api.openai.com/v1"} and "OpenAI" in words

@@ -56,6 +56,7 @@ from app.analysis_contracts import (
 from app.analysis_words import requirement_words
 from app.discovery.contracts import (
     DIMENSION_LABELS,
+    DIMENSION_NAMES,
     DIMENSION_PREFERENCES,
     Category,
     CheckAnswer,
@@ -68,6 +69,8 @@ from app.discovery.contracts import (
     Screening,
     SearchScope,
 )
+from app.i18n import list_join, t
+from app.library.job_words import TYPE_WORDS, type_word  # noqa: F401  (re-exported)
 from app.library.content import PREFERENCE_GROUPS, PREFERENCE_SINGLES
 
 RULES_VERSION = "8"
@@ -79,6 +82,15 @@ NOT_READ = "写了但没有认出"
 # another kind of hire than its title.
 HOURS_ONLY = "只写了工时或合同"
 AT_ODDS = "和职位名不一致"
+# These words are codes as well, compared as they are (app.discovery.presentation); a text says them through rule_word,
+# in the language of the text: the request's, or a search's own while it runs (Codex review F3). In Chinese the same.
+RULE_WORD_KEYS = {
+    NOT_PROVIDED: "job.rule.not_provided",
+    NOT_GIVEN: "job.rule.not_given",
+    NOT_READ: "job.rule.not_read",
+    HOURS_ONLY: "job.rule.hours_only",
+    AT_ODDS: "job.rule.at_odds",
+}
 # A title that states an internship, as a commitment does (app.discovery.lever.INTERNSHIP).
 INTERN_TITLE = re.compile(r"(?<![a-z])(interns?|internships?)(?![a-z])|实习", re.IGNORECASE)
 # What a source may write as a posting's type that only says its hours or its contract (U3-D2-E3), and what may join
@@ -254,38 +266,38 @@ def scope_problems(scope: SearchScope) -> tuple[str, ...]:
     problems = []
 
     for dimension in Dimension:
-        part, label = scope.of(dimension), DIMENSION_LABELS[dimension]
+        part, label = scope.of(dimension), DIMENSION_NAMES[dimension]
         barred = {normalized(dimension, value) for value in part.excluded}
 
         if part.others is Others.UNDECIDED:
-            problems.append(f"{label}：所列以外的是否也查还没有选择（本次不限，或只看所列的）")
+            problems.append(t("disc.rule.others_undecided", label=label))
         elif part.others is Others.EXCLUDED and not part.values:
-            problems.append(f"{label}：没有可以查的")
+            problems.append(t("disc.rule.nothing_to_search", label=label))
 
-        problems += [f"{label}：“{value}”是不能接受的，不能选" for value in part.values if normalized(dimension, value) in barred]
+        problems += [t("disc.rule.value_barred", label=label, value=value) for value in part.values if normalized(dimension, value) in barred]
 
     if not any(target.strip() for target in scope.targets):
-        problems.append("没有要找的岗位名称")
+        problems.append(t("disc.rule.no_targets"))
 
     return tuple(problems)
 
 
 def allows(scope: SearchScope, dimension: Dimension, value: str | None) -> str | None:
     """Why a search may not be narrowed to this value, or left open (None), if it may not."""
-    part, label = scope.of(dimension), DIMENSION_LABELS[dimension]
+    part, label = scope.of(dimension), DIMENSION_NAMES[dimension]
 
     if value is None:
-        return None if part.others is Others.INCLUDED else f"本次只看所列的{label}，检索时必须指定一个"
+        return None if part.others is Others.INCLUDED else t("disc.rule.must_name_one", label=label)
 
     wanted = normalized(dimension, value)
 
     if wanted in {normalized(dimension, barred) for barred in part.excluded}:
-        return f"“{value}”是不能接受的{label}"
+        return t("disc.rule.unacceptable_value", value=value, label=label)
 
     if part.others is Others.INCLUDED or wanted in {normalized(dimension, listed) for listed in part.values}:
         return None
 
-    return f"“{value}”不在本次确认的{label}范围里"
+    return t("disc.rule.outside_scope_value", value=value, label=label)
 
 
 def screen(scope: SearchScope, posting: Posting) -> Screening:
@@ -293,17 +305,17 @@ def screen(scope: SearchScope, posting: Posting) -> Screening:
     out, pending, notes = [], [], []
 
     if not posting.cities:
-        pending.append(f"工作地点{unknown(posting.places_stated)}，待确认")
+        pending.append(t("disc.rule.place_unknown", why=rule_word(unknown(posting.places_stated))))
     else:
         inside = [city for city in posting.cities if allows(scope, Dimension.CITY, city) is None]
         outside = [f"{city}{_why_not(scope, Dimension.CITY, city)}" for city in posting.cities if city not in inside]
 
         if not inside:
-            out.append(f"工作地点超出条件：{'、'.join(outside)}")
+            out.append(t("disc.rule.places_outside", places=list_join(outside)))
         elif outside and posting.city_choice:
-            notes.append(f"可选工作地点，按{'、'.join(inside)}判断；{'、'.join(outside)}")
+            notes.append(t("disc.rule.places_choice", inside=list_join(inside), outside=list_join(outside)))
         elif outside:
-            pending.append(f"工作地点待确认：写了{'、'.join(posting.cities)}，没有说明可以选择；{'、'.join(outside)}")
+            pending.append(t("disc.rule.places_unclear", cities=list_join(posting.cities), outside=list_join(outside)))
 
     # The type as read, or none: what was written only says the hours or the contract, or is at odds with the title
     # (type_reading); none is guessed, and none is a reason to leave a posting out.
@@ -313,14 +325,14 @@ def screen(scope: SearchScope, posting: Posting) -> Screening:
     type_pending = False
 
     for dimension, value in known.items():
-        label = DIMENSION_LABELS[dimension]
+        label = DIMENSION_NAMES[dimension]
 
         if value is None:
             if scope.of(dimension).others is not Others.INCLUDED:
-                pending.append(f"{label}{why[dimension]}，待确认")
+                pending.append(t("disc.rule.dimension_unknown", label=label, why=rule_word(why[dimension])))
                 type_pending = type_pending or dimension is Dimension.JOB_TYPE
         elif allows(scope, dimension, value) is not None:
-            out.append(f"{label}超出条件：{value}{_why_not(scope, dimension, value)}")
+            out.append(t("disc.rule.dimension_outside", label=label, value=value, why=_why_not(scope, dimension, value)))
 
     note = type_note(posting)
 
@@ -385,18 +397,26 @@ def type_note(posting: Posting) -> str | None:
         return None
 
     if type_conflict(posting):
-        return "求职类型待确认：职位名写的是实习，来源的类型字段写的是另一种招聘（如校招），两者不一致"
+        return t("disc.rule.type_at_odds")
 
     if hours_or_contract(stated):
-        return "职位名写的是实习，来源的类型字段只写了工时或合同，两者不冲突；求职类型仍待确认，不排除"
+        return t("disc.rule.type_hours_only")
 
-    return "职位名写的是实习，来源的类型字段没有认出，两者是否一致待确认"
+    return t("disc.rule.type_not_read")
 
 
 def _why_not(scope: SearchScope, dimension: Dimension, value: str) -> str:
     barred = {normalized(dimension, excluded) for excluded in scope.of(dimension).excluded}
 
-    return "（不能接受）" if normalized(dimension, value) in barred else "（不在本次范围）"
+    return t("disc.rule.why_barred") if normalized(dimension, value) in barred else t("disc.rule.why_out_of_scope")
+
+
+def rule_word(code: str | None) -> str:
+    """A fact word of these rules (RULE_WORD_KEYS) said in the language of the text it goes into; another value as it
+    is. The code itself never changes: it is compared as the Chinese word it is."""
+    key = RULE_WORD_KEYS.get(code)
+
+    return t(key) if key else (code or "")
 
 
 def ideal_hits(scope: SearchScope, posting: Posting) -> int:
@@ -468,8 +488,8 @@ def checked(previous: datetime | None, answer: CheckAnswer | None, now: datetime
 
 
 def stated(day: date | None) -> str:
-    """A date as a source gave it, or 未提供: never made up."""
-    return NOT_PROVIDED if day is None else day.isoformat()
+    """A date as a source gave it, or 未提供 (in the language of the text it goes into): never made up."""
+    return rule_word(NOT_PROVIDED) if day is None else day.isoformat()
 
 
 def relevance(scope: SearchScope, screening: Screening, posting: Posting, text: str | None) -> tuple[int, str | None]:
@@ -483,7 +503,7 @@ def relevance(scope: SearchScope, screening: Screening, posting: Posting, text: 
     why = seniority(posting, text) if early_only else None
 
     if why is not None:
-        return AT_ODDS_WITH_SCOPE, f"求职类型只限实习或校招，{why}"
+        return AT_ODDS_WITH_SCOPE, t("disc.rule.early_only", why=why)
 
     return (PLAIN if screening.status is Screen.IN else UNCLEAR), None
 
@@ -494,11 +514,11 @@ def seniority(posting: Posting, text: str | None) -> str | None:
     seniority, a student's year, the company's age, experience said to be preferred or not needed, nor years that are
     a ceiling, a range's upper end or a guess (the rules above)."""
     if SENIOR_TITLE.search(posting.title):
-        return "岗位名称写的是资深或高级职位"
+        return t("disc.rule.senior_title")
 
     years = required_years(text or "")
 
-    return None if years is None else f"原文要求应聘者有 {years} 年以上工作经验"
+    return None if years is None else t("disc.rule.years_asked", years=years)
 
 
 def required_years(text: str) -> int | None:
@@ -573,10 +593,10 @@ def gaps(result: AnalysisResult) -> tuple[str, ...]:
     required = [finding for finding in result.findings if finding.group is RequirementGroup.REQUIRED]
 
     if not required:
-        return ("岗位没有写明必备的技能要求",)
+        return (t("disc.rule.no_required"),)
 
     return tuple(
-        f"经历里没有找到足够依据：{requirement_words(finding)}"
+        t("disc.rule.gap", requirement=requirement_words(finding))
         for finding in required
         if finding.conclusion != EvidenceConclusion.SUPPORTED
     )
@@ -589,19 +609,20 @@ def to_confirm(result: AnalysisResult, screening: Screening, *, own_words: bool 
     next decision sees it: never the user's words (U3 proposal, 5.5).
     """
     # Imported here, where it is used, so that loading the rules loads no analysis workflow (U3-D4c: 每日查新 screens
-    # postings by these rules and keeps to the boundary of the checks of a kept posting).
-    from app.experience_analysis import PREFERENCE_TOPICS
+    # postings by these rules and keeps to the boundary of the checks of a kept posting). The topic in the text's
+    # language: the same words as the analysis's own in Chinese (Codex review F3).
+    from app.library.presentation import preference_parts
 
     items = list(screening.reasons) if screening.status is Screen.PENDING else []
     items += [
         # With its condition, if its posting quote lays one down (U3-D6 R4): never an unconditional demand.
-        f"招聘条件：{requirement_words(finding)}"
+        t("disc.rule.condition_to_confirm", requirement=requirement_words(finding))
         for finding in result.findings
         if finding.group is RequirementGroup.HARD_CONSTRAINT
         and finding.conclusion in (ConditionConclusion.UNKNOWN, ConditionConclusion.NEEDS_CONFIRMATION)
     ]
     items += [
-        f"{PREFERENCE_TOPICS[finding.field][0]}：{finding.text if own_words else '待确认'}"
+        t("disc.rule.preference_to_confirm", topic=preference_parts(finding.field)[0], text=finding.text if own_words else t("disc.rule.to_confirm"))
         for finding in result.preference_findings
         if finding.firm
         and (
@@ -650,6 +671,27 @@ def unsearched(scope: SearchScope, searched: set[tuple[str | None, ...]]) -> tup
     )
 
 
+# A combination's open dimensions, as unsearched writes them: the same words in every language, since the agent matches
+# its combinations by them (app.discovery.agent.combinations) and a search records them (PartialRead.combinations, a
+# saved summary). A page or a search's own sentence says them with combination_words (Codex review F3).
+UNLISTED_WORDS = {
+    **{f"所列以外的{label}": ("disc.rule.others_than_listed", dimension) for dimension, label in DIMENSION_LABELS.items()},
+    **{f"任意{label}": ("disc.rule.any_value", dimension) for dimension, label in DIMENSION_LABELS.items()},
+}
+
+
+def combination_words(shown: str) -> str:
+    """A combination as unsearched writes it, said in the language of the text it goes into: its open dimensions in
+    that language, the scope's values as the user wrote them."""
+    words = []
+
+    for part in shown.split(" · "):
+        unlisted = UNLISTED_WORDS.get(part)
+        words.append(t(unlisted[0], label=DIMENSION_NAMES[unlisted[1]]) if unlisted else part)
+
+    return " · ".join(words)
+
+
 def _covers(search: tuple[str | None, ...], combination) -> bool:
     # Left open, a dimension takes in every value, unlisted ones too; narrowed, only the value it names.
     return all(value is None or (slot is not None and value == slot) for value, (slot, _) in zip(search, combination))
@@ -657,10 +699,16 @@ def _covers(search: tuple[str | None, ...], combination) -> bool:
 
 def unjudged(saved: Mapping[str, str], chosen: tuple[SelectedPreference, ...]) -> tuple[str, ...]:
     """Preference topics no analysis judges, none of their fields being chosen: neither met nor in conflict."""
+    from app.library.presentation import preference_parts
+
     fields = {preference.field for preference in chosen}
 
     return tuple(
-        f"{label}：{'没有选择' if any(saved.get(name) for name in names) else '未填写'}，无法判断"
-        for label, names in ANALYSED_TOPICS
+        t(
+            "disc.rule.unjudged",
+            label=preference_parts(names[0])[0],
+            why=t("disc.rule.not_chosen") if any(saved.get(name) for name in names) else t("disc.rule.not_filled"),
+        )
+        for _, names in ANALYSED_TOPICS
         if not fields.intersection(names)
     )

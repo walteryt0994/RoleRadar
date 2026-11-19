@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.library import job_recommendations, job_texts, job_watches
+from app.library.job_words import source_label, type_word
 from app.library.job_choices import (
     CATEGORY_WORDS,
     CHECK_UNANSWERED,
@@ -66,6 +67,7 @@ from app.analysis_words import reason_labels as analysis_reasons
 from app.library.content import CATEGORY_LABELS, PREFERENCE_GROUPS, PREFERENCE_SINGLES
 from app.library.presentation import field_label, format_local
 from app.library.service import is_expired
+from app.i18n import lazy, list_join, t
 
 IN_USE, IN_BIN = "in_use", "recycle_bin"
 # How a posting the user added themselves came (U3-D4d): read from a link they gave, or pasted by them.
@@ -137,25 +139,25 @@ def collect_job_records(db: Session, owner_id: str, now: datetime) -> JobExport:
 
 def jobs_markdown(content: JobExport, now: datetime) -> str:
     lines = [
-        "# 岗位记录",
+        t("jexp.1"),
         "",
-        f"导出时间：{format_local(now)}。这里是你在找岗位结果里自己保存的岗位和查找摘要；没有保存的结果不会出现在这里。",
-        "岗位的事实是保存时那次查找里看到的公开信息，不是最新情况；“来源核对”是来源回答的时间，和保存时间分开写。",
-        "分析是保存时那次查找按你当时的经历得出的，引文和分析时读的那句话都按保存时的样子写出，不按现在的经历重新解释。",
+        t("jexp.2", p0=format_local(now)),
+        t("jexp.3"),
+        t("jexp.4"),
         "",
     ]
 
     if content.postings:
-        lines += ["## 我的岗位", ""]
+        lines += [t("jexp.5"), ""]
 
         for number, entry in enumerate(content.postings, start=1):
             lines += _posting_lines(number, entry)
 
     if content.recommendations:
         lines += [
-            "## 当前推荐（临时留存跟踪）",
+            t("jexp.6"),
             "",
-            "按你在查找时的勾选，系统临时留存的推荐：到期自动删除，还没加入我的岗位。",
+            t("jexp.7"),
             "",
         ]
 
@@ -163,23 +165,22 @@ def jobs_markdown(content: JobExport, now: datetime) -> str:
             lines += _posting_lines(number, entry)
 
     if content.analyses:
-        lines += ["## 已保存的分析", ""]
+        lines += [t("jexp.8"), ""]
 
         for number, entry in enumerate(content.analyses, start=1):
             lines += _analysis_lines(number, entry)
 
     if content.searches:
-        lines += ["## 查找摘要", ""]
+        lines += [t("jexp.9"), ""]
 
         for number, entry in enumerate(content.searches, start=1):
             lines += _search_lines(number, entry)
 
     if content.watches:
         lines += [
-            "## 每日查新",
+            t("jexp.10"),
             "",
-            f"按你开启的每日查新，系统自动保存的：见过的岗位编号，以及新增岗位的公开信息（从第一次读到起保留 {job_watches.KEEP_NEW_DAYS} 天）。"
-            "新增岗位没有分析，也没有核对招聘状态。",
+            t("jexp.11", p0=job_watches.KEEP_NEW_DAYS),
             "",
         ]
 
@@ -234,22 +235,21 @@ def _watch_data(db: Session, watch: JobWatch, now: datetime) -> dict:
 
 def _watch_lines(number: int, entry: dict) -> list[str]:
     lines = [
-        f"### {number}. 每日查新（开启于 {_local(entry['started_at'])}）",
+        t("jexp.12", p0=number, p1=_local(entry['started_at'])),
         "",
-        f"- 查找摘要：{entry['summary_record']}",
-        f"- 基准：{'建立于 ' + _local(entry['baseline_at']) if entry['baseline_at'] else '还没建立'}",
-        f"- 上次查新：{_local(entry['last_run']['started_at']) if entry['last_run']['started_at'] else '还没有运行过'}"
-        + (f"，结果 {entry['last_run']['outcome']}" if entry["last_run"]["outcome"] else ""),
-        f"- 见过的岗位：{len(entry['seen'])} 个",
-        f"- 新增岗位：{len(entry['new_postings'])} 个",
+        t("jexp.13", p0=entry['summary_record']),
+        t("jexp.14", p0=t("jexp.baseline_at", when=_local(entry['baseline_at'])) if entry['baseline_at'] else t("jexp.no_baseline")),
+        t("jexp.15", p0=_local(entry['last_run']['started_at']) if entry['last_run']['started_at'] else t("jexp.never_run"))
+        + (t("jexp.16", p0=entry['last_run']['outcome']) if entry["last_run"]["outcome"] else ""),
+        t("jexp.17", p0=len(entry['seen'])),
+        t("jexp.18", p0=len(entry['new_postings'])),
     ]
 
     for item in entry["new_postings"]:
         facts = item["facts"]
         lines.append(
-            f"  - {facts.get('title')}（{facts.get('company')}，{'、'.join(facts.get('cities') or []) or '地点未写'}）："
-            f"第一次读到 {_local(item['found_at'])}，保留到 {_local(item['until'])}"
-            + ("；来自没读完的列表，不能确定是新发布的" if item["list_read_in_part"] is not None else "")
+            t("jexp.19", p0=facts.get('title'), p1=facts.get('company'), p2=list_join(facts.get('cities') or []) or t("job.place_unstated"), p3=_local(item['found_at']), p4=_local(item['until']))
+            + (t("jexp.20") if item["list_read_in_part"] is not None else "")
         )
 
     return lines + [""]
@@ -407,11 +407,11 @@ def _status_line(entry: dict) -> str:
     held = entry.get("held")
 
     if held is not None:
-        state = "已关闭的推荐（来源已明确关闭，不再跟踪）" if held["state"] == "closed" else "当前推荐（临时留存跟踪）"
+        state = t("jexp.21") if held["state"] == "closed" else t("jexp.22")
 
-        return f"- 状态：{state}，还没加入我的岗位，到 {_local(held['until'])} 自动删除"
+        return t("jexp.23", p0=state, p1=_local(held['until']))
 
-    return f"- 状态：{'在用' if entry['kept_as'] == IN_USE else '在回收站，恢复截止 ' + _local(entry['restore_deadline'])}"
+    return t("jexp.24", p0=t("jexp.in_use") if entry['kept_as'] == IN_USE else t("jexp.in_bin_until", when=_local(entry['restore_deadline'])))
 
 
 def _posting_lines(number: int, entry: dict) -> list[str]:
@@ -421,59 +421,58 @@ def _posting_lines(number: int, entry: dict) -> list[str]:
     if supplied.get("kind") == "pasted":
         # The user's own (U3-D4d): no source, no place or type read, and its status never checked.
         lines = [
-            f"### {number}. {facts['title']}（{facts['company']}）",
+            t("jexp.25", p0=number, p1=facts['title'], p2=facts['company']),
             "",
             _status_line(entry),
-            f"- 来源：你提供的原文（{EVIDENCE_WORDS['user_provided']}）。职位名和公司是你填写的；系统没有打开链接，也没有向任何来源核实，"
-            "不能核对它的招聘状态",
-            f"- 你提供的链接：{supplied['link']}（只是文字，系统没有打开过）" if supplied.get("link") else "- 你提供的链接：没有",
-            f"- 保存时间：{_local(entry['kept_at'])}",
+            t("jexp.26", p0=EVIDENCE_WORDS['user_provided']),
+            t("jexp.27", p0=supplied['link']) if supplied.get("link") else t("jexp.28"),
+            t("jexp.29", p0=_local(entry['kept_at'])),
         ]
     else:
         lines = [
-            f"### {number}. {facts['title']}（{facts['company']}）",
+            t("jexp.25", p0=number, p1=facts['title'], p2=facts['company']),
             "",
             _status_line(entry),
-            f"- 来源：{facts['source_name']}，岗位编号 {entry['posting_id']}（{EVIDENCE_WORDS.get(facts['evidence'], facts['evidence'])}）",
-            f"- 地点：{'、'.join(facts['cities']) or '未认出'}；来源原文：{'、'.join(facts['places_stated']) or '没有写'}",
-            f"- 类型：{facts['job_type'] or '未认出'}；来源原文：{facts['type_stated'] or '没有写'}",
-            f"- {'临时留存时间' if entry.get('held') else '保存时间'}：{_local(entry['kept_at'])}（不是来源核对的时间）",
+            t("jexp.30", p0=source_label(facts['source_name']), p1=entry['posting_id'], p2=EVIDENCE_WORDS.get(facts['evidence'], facts['evidence'])),
+            t("jexp.31", p0=list_join(facts['cities']) or t("job.unrecognised"), p1=list_join(facts['places_stated']) or t("jexp.not_written")),
+            t("jexp.32", p0=type_word(facts['job_type']) or t("job.unrecognised"), p1=facts['type_stated'] or t("jexp.not_written")),
+            t("jexp.33", p0=t("jexp.held_at") if entry.get('held') else t("jexp.kept_at"), p1=_local(entry['kept_at'])),
         ]
 
         if supplied.get("kind") == "link":
-            lines.append(f"- 来自你补充的链接：{_local(supplied.get('read_at'))} 读到（链接只用来认出来源和岗位编号，由来源自己的接口读取）")
+            lines.append(t("jexp.34", p0=_local(supplied.get('read_at'))))
 
     # What the checks kept say, never "still open" unless the latest answered so (U3-D3a F1).
-    lines.append(f"- 来源核对：{entry['check_state']}（共 {len(entry['checks']) + len(entry['rechecks'])} 条核对记录）")
+    lines.append(t("jexp.35", p0=entry['check_state'], p1=len(entry['checks']) + len(entry['rechecks'])))
     # A real source's posting (U3-D6): what its status can and cannot show, by the latest deadline read of it.
     read = [check["facts"] for check in entry["rechecks"] if check["facts"]]
     note = closure_note(entry["source_access"], (read[-1] if read else facts).get("deadline"))
 
     if note:
-        lines.append(f"- 核对说明：{note}")
+        lines.append(t("jexp.36", p0=note))
 
     for check in entry["rechecks"]:
         said = check_words(SimpleNamespace(status=check["status"], reason=check["reason"], evidence=check["evidence"]))
         at = check["source_answered_at"] or check["unanswered_at"]
-        line = f"- {TRIGGER_WORDS.get(check['trigger'], '核对')}（{'来源回答' if check['source_answered_at'] else '尝试核对'} {_local(at)}）：{said}"
+        line = t("jexp.37", p0=TRIGGER_WORDS.get(check['trigger'], t("job.check_word")), p1=t("jexp.answered") if check['source_answered_at'] else t("jexp.tried"), p2=_local(at), p3=said)
         changes = change_lines(check["changes"])
-        lines.append(line + (f"；和上一次读到的版本相比：{'；'.join(changes)}" if changes else ""))
+        lines.append(line + (t("jexp.38", p0=list_join(changes, "clauses")) if changes else ""))
 
     if entry["decision"] is not None:
         reasons = reason_labels(entry["decision"], entry["reasons"])
-        lines.append(f"- 我的决定：{decision_label(entry['decision'])}" + (f"；原因：{'、'.join(reasons)}" if reasons else ""))
+        lines.append(t("jexp.39", p0=decision_label(entry['decision'])) + (t("jexp.40", p0=list_join(reasons)) if reasons else ""))
 
         if entry["note"]:
-            lines.append(f"- 备注：{entry['note']}")
+            lines.append(t("jexp.41", p0=entry['note']))
 
     for item in entry["feedback"]:
-        lines.append(f"- 指出不准：{feedback_label(item['field'], item['reason'])}" + (f"（{item['note']}）" if item["note"] else ""))
+        lines.append(t("jexp.42", p0=feedback_label(item['field'], item['reason'])) + (t("jexp.43", p0=item['note']) if item["note"] else ""))
 
     if entry.get("user_text"):
         # As it was pasted, never read as Markdown: its fence is longer than any run of backticks in it (U3-D4d).
         text = entry["user_text"]["text"]
         fence = _fence(text)
-        lines += [f"- 你提供的原文（{entry['user_text']['chars']} 字，保存前你确认过的样子）：", "", fence, text, fence]
+        lines += [t("jexp.44", p0=entry['user_text']['chars']), "", fence, text, fence]
 
     return lines + [""]
 
@@ -498,54 +497,51 @@ def _analysis_lines(number: int, entry: dict) -> list[str]:
     facts, content = entry["facts"], entry["content"]
     versions = {source["item_id"]: source["version_number"] for source in content["sources"]}
     lines = [
-        f"### {number}. {facts['title']}（{facts['company']}）",
+        t("jexp.25", p0=number, p1=facts['title'], p2=facts['company']),
         "",
-        f"- 状态：{'在用' if entry['kept_as'] == IN_USE else '在回收站，恢复截止 ' + _local(entry['restore_deadline'])}",
-        f"- 分类：{CATEGORY_WORDS.get(content['category'], content['category'])}",
-        f"- 依据：{entry['basis']}",
-        f"- 来源：{facts['source_name']}，岗位编号 {entry['posting_id']}；来源核对：{CHECK_WORDS.get(facts['check']['status'], facts['check']['status'])}",
-        f"- 分析时间：{_local(entry['analysed_at'])}；保存时间：{_local(entry['saved_at'])}",
+        t("jexp.24", p0=t("jexp.in_use") if entry['kept_as'] == IN_USE else t("jexp.in_bin_until", when=_local(entry['restore_deadline']))),
+        t("jexp.45", p0=CATEGORY_WORDS.get(content['category'], content['category'])),
+        t("jexp.46", p0=entry['basis']),
+        t("jexp.47", p0=source_label(facts['source_name']), p1=entry['posting_id'], p2=CHECK_WORDS.get(facts['check']['status'], facts['check']['status'])),
+        t("jexp.48", p0=_local(entry['analysed_at']), p1=_local(entry['saved_at'])),
     ]
 
-    lines += [f"- 申请前先确认：{line}" for line in content["first_checks"]]
-    lines += [f"- 说明：{note}" for note in content["notes"]]
+    lines += [t("jexp.49", p0=line) for line in content["first_checks"]]
+    lines += [t("jexp.50", p0=note) for note in content["notes"]]
 
     for finding in content["findings"]:
         # The condition its posting quote lays down and the items its words list (U3-D6 R4): absent before then.
         condition, state, fact = finding.get("condition", ""), finding.get("condition_state", ""), finding.get("condition_fact", "")
         lines.append(
-            f"- 招聘条件：{requirement_text(finding['text'], condition, state)}（{group_heading(finding['group'])}；岗位原文：「{finding['job_posting_quote']}」）"
-            f"：{conclusion_text(finding['group'], finding['conclusion'])}{_reasons(finding['reasons'])}"
+            t("jexp.51", p0=requirement_text(finding['text'], condition, state), p1=group_heading(finding['group']), p2=finding['job_posting_quote'], p3=conclusion_text(finding['group'], finding['conclusion']), p4=_reasons(finding['reasons']))
         )
 
         if fact:
-            lines.append(f"  - 岗位写明的事实：「{fact}」")
+            lines.append(t("jexp.52", p0=fact))
 
         if finding.get("listed"):
             shown, unshown = listed_parts(finding["listed"], finding.get("named", []))
             lines.append(
-                f"  - 这一条列出的几项（{LISTED_MODES[finding['listed_mode']]}）：引文写到的：{'、'.join(shown) or '没有'}；"
-                f"还没有依据的：{'、'.join(unshown) or '没有'}"
+                t("jexp.53", p0=LISTED_MODES[finding['listed_mode']], p1=list_join(shown) or t("common.none"), p2=list_join(unshown) or t("common.none"))
             )
 
         for citation in finding["citations"]:
-            lines.append(f"  - 经历引文（{_cited_from(citation, versions)}）：「{citation['quote']}」")
+            lines.append(t("jexp.54", p0=_cited_from(citation, versions), p1=citation['quote']))
 
             if citation["context"] and citation["context"] != [citation["quote"]]:
-                lines.append(f"    - 分析时读的那句话：「{'／'.join(citation['context'])}」")
+                lines.append(t("jexp.55", p0=list_join(citation['context'], "slash")))
 
     if content["preferences"] != "compared":
-        lines.append("- 偏好：本次未参考偏好")
+        lines.append(t("jexp.56"))
 
     for finding in content["preference_findings"]:
         lines.append(
-            f"- 偏好：「{finding['text']}」（{preference_name(finding['field'])}）"
-            f"：{preference_text(finding['conclusion'])}{_reasons(finding['reasons'])}"
+            t("jexp.57", p0=finding['text'], p1=preference_name(finding['field']), p2=preference_text(finding['conclusion']), p3=_reasons(finding['reasons']))
         )
-        lines += [f"  - 岗位原文：「{quote}」" for quote in finding["job_quotes"]]
+        lines += [t("jexp.58", p0=quote) for quote in finding["job_quotes"]]
 
     for item in entry["feedback"]:
-        lines.append(f"- 指出不准：{analysis_feedback_label(item['target'], item['reason'])}" + (f"（{item['note']}）" if item["note"] else ""))
+        lines.append(t("jexp.42", p0=analysis_feedback_label(item['target'], item['reason'])) + (t("jexp.43", p0=item['note']) if item["note"] else ""))
 
     return lines + [""]
 
@@ -556,7 +552,7 @@ def preference_name(field: str) -> str:
     for _, label, fields in PREFERENCE_GROUPS:
         for item in fields:
             if item.name == field:
-                return f"{label}（{item.label}）"
+                return t("jexp.59", p0=label, p1=item.label)
 
     for item in PREFERENCE_SINGLES:
         if item.name == field:
@@ -568,18 +564,17 @@ def preference_name(field: str) -> str:
 def _reasons(reasons) -> str:
     words = analysis_reasons(reasons)
 
-    return f"；理由：{'；'.join(words)}" if words else ""
+    return t("jexp.60", p0=list_join(words, "clauses")) if words else ""
 
 
 def _cited_from(citation: dict, versions: dict) -> str:
     """Where a quote stands, as kept: the record by its id, its kind, the confirmed version used, the field, and what
     the quote shows (its basis)."""
     number = versions.get(citation["item_id"])
-    version = f"确认版 {number}" if number is not None else "版本未记录"
+    version = t("jexp.61", p0=number) if number is not None else t("jexp.62")
 
     return (
-        f"经历 {citation['item_id'][:8]}，{CATEGORY_LABELS.get(citation['category'], citation['category'])}，{version}，"
-        f"{field_label(citation['category'], citation['field'])}；{BASIS_LABELS.get(citation['basis'], citation['basis'])}"
+        t("jexp.63", p0=citation['item_id'][:8], p1=CATEGORY_LABELS.get(citation['category'], citation['category']), p2=version, p3=field_label(citation['category'], citation['field']), p4=BASIS_LABELS.get(citation['basis'], citation['basis']))
     )
 
 
@@ -588,15 +583,15 @@ def _search_lines(number: int, entry: dict) -> list[str]:
     counts = summary["counts"]
 
     return [
-        f"### {number}. 查找 {entry['search']}",
+        t("jexp.64", p0=number, p1=entry['search']),
         "",
-        f"- 状态：{'在用' if entry['kept_as'] == IN_USE else '在回收站，恢复截止 ' + _local(entry['restore_deadline'])}",
-        f"- 保存时间：{_local(entry['kept_at'])}",
-        f"- 要找的岗位：{'、'.join(summary['scope']['targets'])}",
-        f"- 来源：{'、'.join(source['name'] for source in summary['sources'])}",
-        f"- 完整分析结果 {counts['results']} 个，初筛候选 {counts['leads']} 个；检索 {len(summary['searches'])} 次"
+        t("jexp.24", p0=t("jexp.in_use") if entry['kept_as'] == IN_USE else t("jexp.in_bin_until", when=_local(entry['restore_deadline']))),
+        t("jexp.29", p0=_local(entry['kept_at'])),
+        t("jexp.65", p0=list_join(summary['scope']['targets'])),
+        t("jexp.66", p0=list_join(source['name'] for source in summary['sources'])),
+        t("jexp.67", p0=counts['results'], p1=counts['leads'], p2=len(summary['searches']))
         # Kept since summary version 3 (U3-D3c); an older summary says nothing of skips, and none is made up for it.
-        + (f"；你跳过的岗位又遇到 {counts['skipped']} 个，没有列出" if counts.get("skipped") else ""),
+        + (t("jexp.68", p0=counts['skipped']) if counts.get("skipped") else ""),
         "",
     ]
 
@@ -607,4 +602,4 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def _local(value: str | None) -> str:
-    return "未知" if value is None else format_local(datetime.fromisoformat(value))
+    return t("jexp.69") if value is None else format_local(datetime.fromisoformat(value))

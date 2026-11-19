@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% import "_icons.html" as i %}
+{% block title %}{{ t("nav.workspace") }}{% endblock %}
+{#- 工作台 (owner redesign, plan 8, image 15): four tasks to start at the top; below, what is waiting for the person
+    (drafts to review, searches and analyses running or kept for a while) and what was saved lately. It only reads:
+    nothing here saves, starts or sends anything. "最近查看" in the image is "最近保存" here: what the app knows is
+    what was saved, not what was looked at. -#}
+{% block layout %}
+<main id="main" class="home" tabindex="-1">
+  {% if notice %}
+  <p class="notice" role="status">{{ notice }}</p>
+  {% endif %}
+  <header class="page-head">
+    <h1>{{ t("nav.workspace") }}</h1>
+    <div class="page-actions"><a class="button secondary" href="/imports">{{ i.icon("upload") }}{{ t("ws.import") }}</a></div>
+  </header>
+  <nav class="task-entries" aria-label="{{ t('ws.tasks') }}">
+    <a href="/experiences/new">{{ i.icon("file-text") }}<span>{{ t("ws.task_experience") }}</span></a>
+    <a href="/directions">{{ i.icon("compass") }}<span>{{ t("ws.task_explore") }}</span></a>
+    <a href="/discover">{{ i.icon("briefcase") }}<span>{{ t("ws.task_discover") }}</span></a>
+    <a href="/job-analysis">{{ i.icon("search") }}<span>{{ t("ws.task_analyse") }}</span></a>
+  </nav>
+  <div class="home-grid">
+    <section class="home-panel" aria-labelledby="continue-title">
+      <h2 id="continue-title">{{ t("ws.pending") }}</h2>
+      {% if continuing %}
+      <ul class="home-rows">
+        {% for entry in continuing %}
+        <li class="home-row">
+          <span class="home-row-icon">{{ i.icon("file-text") }}</span>
+          <span class="home-row-main">
+            <span class="home-row-title">{{ entry.title }}</span>
+            <span class="home-row-meta">{% if entry.state == "draft" %}{{ t("ws.draft_saved") }} · {{ t("ws.last_saved", at=when(entry.saved_at, now)) }}{% elif entry.state == "running" %}{{ t("ws.running") }}{% else %}{{ t("ws.held_until", at=when(entry.until, now)) }}{% endif %}{% if entry.detail %} · {{ entry.detail }}{% endif %}</span>
+          </span>
+          {% if entry.state == "draft" %}
+          <a class="button{% if loop.first %} primary{% else %} secondary{% endif %}" href="{{ entry.href }}">{{ t("ws.continue_review") }}</a>
+          {% elif entry.state == "running" %}
+          <a class="button secondary" href="{{ entry.href }}">{{ t("ws.view_progress") }}</a>
+          {% else %}
+          <a class="button secondary" href="{{ entry.href }}">{{ t("ws.view_results") }}</a>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="home-empty">{{ t("ws.nothing_to_continue") }}</p>
+      {% endif %}
+    </section>
+    <section class="home-panel" aria-labelledby="recent-title">
+      <h2 id="recent-title">{{ t("ws.recently_saved") }}</h2>
+      {% if recent %}
+      <ul class="home-rows">
+        {% for entry in recent %}
+        <li class="home-row">
+          <span class="home-row-main">
+            <a class="home-row-title" href="{{ entry.href }}">{{ entry.title }}</a>
+            <span class="home-row-meta">{{ entry.kind }} · {{ when(entry.saved_at, now) }}</span>
+          </span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="home-empty">{{ t("ws.nothing_saved") }}</p>
+      {% endif %}
+    </section>
+  </div>
+</main>
+{% endblock %}

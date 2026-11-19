@@ -8,29 +8,29 @@
 <details class="fold finding">
   <summary><span class="fold-title finding-text"><span class="finding-group">{{ requirement_group(finding.group) }}</span>{{ requirement_words(finding) }}</span><span class="finding-verdict">{{ conclusion_label(finding) }}</span><span class="chevron">{{ i.icon("chevron-right") }}</span></summary>
   <div class="finding-body">
-    <p class="finding-label">岗位原文</p>
+    <p class="finding-label">{{ t("job._findings.1") }}</p>
     <blockquote class="quote">{{ finding.job_posting_quote }}</blockquote>
     {% if finding.condition %}
-    <p class="finding-label">原文条件</p>
+    <p class="finding-label">{{ t("job._findings.2") }}</p>
     <blockquote class="quote">{{ finding.condition }}</blockquote>
     {% if finding.condition_fact %}
-    <p class="finding-label">岗位写明的事实</p>
+    <p class="finding-label">{{ t("job._findings.3") }}</p>
     <blockquote class="quote">{{ finding.condition_fact }}</blockquote>
     {% endif %}
     {% endif %}
     {% if finding.listed %}
     {% set shown, unshown = listed_parts(finding.listed, finding.named) %}
-    <p class="finding-label">这一条列出的几项<span>{{ LISTED_MODES[finding.listed_mode] }}</span></p>
+    <p class="finding-label">{{ t("job._findings.4") }}<span>{{ LISTED_MODES[finding.listed_mode] }}</span></p>
     <ul class="reasons">
-      <li>引文写到的：{{ shown|join("、") if shown else "没有" }}</li>
-      <li>还没有依据的：{{ unshown|join("、") if unshown else "没有" }}</li>
+      <li>{{ t("job._findings.5") }}{{ list_join(shown) if shown else t("common.none") }}</li>
+      <li>{{ t("job._findings.6") }}{{ list_join(unshown) if unshown else t("common.none") }}</li>
     </ul>
     {% endif %}
     {% for citation in finding.citations %}
-    <p class="finding-label">{{ titles[citation.item_id].title }}<span>{{ CATEGORY_LABELS[citation.category] }}</span><span>确认版 {{ versions[citation.item_id] }}</span><span>{{ field_label(citation.category, citation.field) }}</span><span>{{ BASIS_LABELS[citation.basis] }}</span></p>
+    <p class="finding-label">{{ titles[citation.item_id].title }}<span>{{ CATEGORY_LABELS[citation.category] }}</span><span>{{ t("job._findings.7", p0=(versions[citation.item_id])) }}</span><span>{{ field_label(citation.category, citation.field) }}</span><span>{{ BASIS_LABELS[citation.basis] }}</span></p>
     <blockquote class="quote">{{ citation.quote }}</blockquote>
     {% if citation.context|list != [citation.quote] %}
-    <p class="finding-context">所在句子：{{ citation.context|join("／") }}</p>
+    <p class="finding-context">{{ t("job._findings.8") }}{{ list_join(citation.context, "slash") }}</p>
     {% endif %}
     {% endfor %}
     <ul class="reasons">
@@ -42,34 +42,99 @@
 </details>
 {% endmacro %}
 
+{#- 岗位要求依据覆盖 (owner redesign, plan 7; app.evidence_coverage, evidence_coverage_v1): of the REQUIRED and
+    PREFERRED requirements, how many the material supports, with both counts beside the percentage. No percentage when
+    the analysis is not complete, has no countable requirement or cannot be checked: the reason instead, never 0%. A
+    hard condition in conflict is said here as well, whatever the percentage. It is not the weighted skill coverage
+    (required 80%, preferred 20%), which keeps its own name and meaning and is not shown beside it. -#}
+{% macro coverage_card(analysis, conflicts=()) %}
+{% set coverage = evidence_coverage(analysis) %}
+<section class="coverage-card" aria-labelledby="coverage-{{ coverage_id(analysis) }}">
+  {% if coverage.total is defined %}
+  <div class="coverage-lead">
+    <p class="coverage-headline">{{ t("cov.lead", n=coverage.supported, d=coverage.total) }}</p>
+    <p class="coverage-detail">{{ t("cov.detail", c=coverage.needs_confirmation, e=coverage.no_evidence) }}</p>
+  </div>
+  <div class="coverage-figure">
+    <h2 class="coverage-title" id="coverage-{{ coverage_id(analysis) }}">{{ t("cov.title") }}<span class="coverage-sub">{{ t("cov.sub") }}</span></h2>
+    <p class="coverage-value"><span class="coverage-percent" data-coverage-version="{{ coverage.version }}">{{ t("cov.percent", p=coverage.percent) }}</span><span class="coverage-count">{{ t("cov.count", n=coverage.supported, d=coverage.total) }}</span></p>
+  </div>
+  {% else %}
+  <div class="coverage-lead">
+    <h2 class="coverage-title" id="coverage-{{ coverage_id(analysis) }}">{{ t("cov.title") }}<span class="coverage-sub">{{ t("cov.sub") }}</span></h2>
+    <p class="coverage-detail">{{ t("cov.none." ~ coverage) }}</p>
+  </div>
+  {% endif %}
+  {% if conflicts %}
+  <p class="result-alert coverage-conflict">{{ t("cov.conflict") }}</p>
+  {% endif %}
+</section>
+{% endmacro %}
+
+{#- The experiences behind the supported requirements, and what is still to add or confirm (image 03): the first
+    citation of each supported requirement with its experience; the others with their conclusion. The full rows stay
+    below. -#}
+{% macro evidence_summary(analysis) %}
+{% set counted = counted_findings(analysis) %}
+<div class="evidence-summary">
+  <section aria-labelledby="related-title">
+    <h3 class="section-title" id="related-title">{{ t("cov.related") }}</h3>
+    {% set supported = counted|selectattr("conclusion", "equalto", "supported")|list %}
+    {% for finding in supported %}
+    <div class="evidence-item">
+      <p class="evidence-name">{{ requirement_words(finding) }}<span class="finding-verdict is-supported">{{ conclusion_label(finding) }}</span></p>
+      {% if finding.citations %}
+      {% set citation = finding.citations[0] %}
+      <blockquote class="quote">{{ citation.quote }}</blockquote>
+      <p class="evidence-source">{{ titles[citation.item_id].title if citation.item_id in titles else "" }}</p>
+      {% endif %}
+    </div>
+    {% else %}
+    <p class="empty">{{ t("cov.none_related") }}</p>
+    {% endfor %}
+  </section>
+  <section aria-labelledby="pending-title">
+    <h3 class="section-title" id="pending-title">{{ t("cov.pending") }}</h3>
+    {% set pending = counted|rejectattr("conclusion", "equalto", "supported")|list %}
+    {% for finding in pending %}
+    <p class="evidence-item evidence-pending">{{ requirement_words(finding) }}<span class="finding-verdict">{{ conclusion_label(finding) }}</span></p>
+    {% else %}
+    <p class="empty">{{ t("cov.none_pending") }}</p>
+    {% endfor %}
+  </section>
+</div>
+{% endmacro %}
+
 {# A complete analysis as a result page shows it (U3-A3), and a kept analysis as its record page shows it again (U3-D3b):
    the requirements judged, the experiences cited with what they were read with, the preferences compared. #}
 {% macro analysis_body(analysis) %}
-  <p class="result-label">招聘条件</p>
+  {{ coverage_card(analysis, analysis.findings|selectattr("group", "equalto", Group.HARD_CONSTRAINT)|selectattr("conclusion", "equalto", "conflict")|list) }}
+  <p class="result-label">{{ t("job._findings.9") }}</p>
   {% for finding in analysis.findings if finding.group == Group.HARD_CONSTRAINT %}
   {{ finding_row(finding) }}
   {% else %}
-  <p class="empty">岗位里没有找到明确的硬性条件。</p>
+  <p class="empty">{{ t("job._findings.10") }}</p>
   {% endfor %}
-  <p class="result-label">经历支持</p>
+  <p class="result-label">{{ t("job._findings.11") }}</p>
   {% for finding in analysis.findings if finding.group != Group.HARD_CONSTRAINT %}
   {{ finding_row(finding) }}
   {% else %}
-  <p class="empty">岗位里没有找到技能要求。</p>
+  <p class="empty">{{ t("job._findings.12") }}</p>
   {% endfor %}
-  <p class="result-label">工作偏好</p>
+  <p class="result-label">{{ t("job._findings.13") }}</p>
   {% if analysis.preferences != "compared" %}
-  <p class="empty">本次未参考偏好。</p>
+  <p class="empty">{{ t("job._findings.14") }}</p>
   {% else %}
   {% for finding in analysis.preference_findings %}
-  {% set topic = PREFERENCE_TOPICS[finding.field] %}
+  {# Named in the page's language; the analysis prompt keeps its own words for the preference. #}
+  {% set topic = preference_parts(finding.field) %}
   <details class="fold finding">
-    <summary><span class="fold-title finding-text">{{ topic[0] }}{% if topic[2] %}（{{ topic[2] }}）{% endif %}</span><span class="finding-verdict">{{ preference_label(finding) }}</span><span class="chevron">{{ i.icon("chevron-right") }}</span></summary>
+    <summary><span class="fold-title finding-text">{{ topic[0] }}{% if topic[1] %}{{ t("job._findings.15", p0=topic[1]) }}{% endif %}</span><span class="finding-verdict">{{ preference_label(finding) }}</span><span class="chevron">{{ i.icon("chevron-right") }}</span></summary>
     <div class="finding-body">
-      <p class="finding-label">你的偏好</p>
+      <p class="finding-label">{{ t("job._findings.16") }}</p>
       <blockquote class="quote">{{ finding.text }}</blockquote>
       {% for quote in finding.job_quotes %}
-      <p class="finding-label">岗位原文</p>
+      <p class="finding-label">{{ t("job._findings.1") }}</p>
       <blockquote class="quote">{{ quote }}</blockquote>
       {% endfor %}
       <ul class="reasons">

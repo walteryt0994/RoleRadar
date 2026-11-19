@@ -233,7 +233,7 @@ def test_without_a_save_permission_nothing_is_kept_checked_or_read_from_a_link(d
     before = handed(run_dir)
 
     # The result offers no keeping, and the review said so before it started.
-    assert "加入我的岗位或做决定" not in page and "保存这次查找的摘要" not in page
+    assert "加入我的岗位或做决定" not in page and "保存查找摘要" not in page
     task = stored(app, browser, url)
     result = task.finished.outcome.results[0]
     refused = browser.post(f"{url}/keep", {"csrf_token": browser.csrf_token(), "source": SOURCE, "posting": result.ref.posting_id, "action": "keep", "record": "", "revision": ""})

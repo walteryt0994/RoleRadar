@@ -41,6 +41,8 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import ClientDisconnect
 
 from app.analysis_words import LISTED_MODES, listed_parts, requirement_group, requirement_words
+from app import i18n
+from app.i18n import LANGUAGE_NAMES, LANGUAGES, LanguageMiddleware, MessageMap, format_when, html_lang, lazy, t, tn, word
 from app.library.attachments import (
     MAX_ATTACHMENTS,
     TYPE_LABELS,
@@ -59,7 +61,14 @@ from app.library.attachments import (
 from app.library.clock import Clock
 from app.library.config import LibraryConfig
 from app.library.content import (
+    TITLE_FIELDS,
     ALL_KINDS,
+    BODY,
+    BODY_SOURCES,
+    MAIN_FIELDS,
+    MORE_FIELDS,
+    compose_body,
+    split_fields_in,
     CATEGORY_FIELDS,
     CATEGORY_LABELS,
     DOCUMENT_KINDS,
@@ -144,9 +153,34 @@ from app.library.lifecycle import (
     version_cleanups,
     version_state,
 )
+from app.library.job_words import source_label, type_word
 from app.library.models import User
+from app.library.places import CITY_CHOICES
+from app.library.months import MONTHS, PICKER_FIELDS, YEARS, period_fits, picker_values, with_period
+from app.library.preference_rows import (
+    JOB_TYPES,
+    MAX_ROWS,
+    ROWS_KEY,
+    STEPS,
+    fold_rows,
+    posted_rows,
+    requirement_parts,
+    rows_kept,
+    rows_of,
+    start_of,
+    type_label,
+    with_rows,
+)
 from app.library.presentation import (
     CATEGORY_GROUPS,
+    CATEGORY_NAMES,
+    group_label,
+    hint_of,
+    label_of,
+    preference_label,
+    preference_parts,
+    preference_topic,
+    shown_fields,
     CLEANUP_NOUNS,
     DOCUMENT_PAGES,
     EDIT_HEADINGS,
@@ -210,110 +244,63 @@ CONTENT_SECURITY_POLICY = (
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; "
     "form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
 )
-SAVE_FAILED = (
-    "保存失败：这次填写的内容还没有保存，最后一次成功保存的内容没有变化。"
-    "你填写的内容还在下面，可以稍后再试。"
-)
-GONE_WHILE_EDITING = (
-    "这条经历已经不存在，或已被删除，所以这次修改没有保存。你填写的内容还在下面，"
-    "可以另存为一条新的经历，或者复制到别处。"
-)
-DOCUMENT_GONE = {
-    PROFILE: (
-        "基本资料在你编辑期间已被删除，所以这次修改没有保存。你填写的内容还在下面，"
-        "可以保存为一份新的基本资料。"
-    ),
-    PREFERENCES: (
-        "求职偏好在你编辑期间已被删除，所以这次修改没有保存。你填写的内容还在下面，"
-        "可以保存为一份新的求职偏好。"
-    ),
-}
+SAVE_FAILED = lazy("lib.save_failed")
+GONE_WHILE_EDITING = lazy("lib.gone_while_editing")
+DOCUMENT_GONE = MessageMap({PROFILE: "lib.profile_gone", PREFERENCES: "lib.preferences_gone"})
 # The longest search the record list accepts; anything longer is cut there.
 MAX_QUERY_LENGTH = 100
-NOTICES = {
-    # The record page right below says that saving is not confirming.
-    "created": "已保存（待核对）。",
-    "saved": "已保存修改（待核对）。",
-    "unchanged": "内容没有变化，这次没有产生新的保存。",
-    # After saving from the leave dialog the user lands on the page they
-    # chose, which may show another record: say what was saved.
-    "created_before_leaving": "已保存你刚才新建的记录（待核对）。",
-    "saved_before_leaving": "已保存你刚才编辑的内容（待核对）。",
-    "unchanged_before_leaving": "你刚才编辑的内容没有变化，这次没有产生新的保存。",
-    "confirmed": "已确认属实：这一版已记为新的确认版本，可以在历史里查看。",
-    "deleted": "已移到回收站：它已停止在经历列表和导出的当前部分中使用，7 天内可以恢复。",
-    "restored": "已从回收站恢复。",
-    "purged": "已永久删除，清理已完成。",
-    "purge_pending": (
-        "已永久删除：内容已经不能访问或恢复。数据清理暂未完成，系统会自动重试，进度见回收站。"
-    ),
-    "import_draft_purged": (
-        "导入草稿已永久删除：原文件、读到的文字、整理出的条目和你的修改都已经删除。已经加入的内容不受影响。"
-    ),
-    "import_draft_purge_pending": (
-        "导入草稿已永久删除：它已经不能查看或恢复。清理还没有全部完成或还没有确认完成，系统会自动重试。"
-        "已经加入的内容不受影响。"
-    ),
-    "version_deleted": "已删除这个历史版本，7 天内可以在本页恢复。",
-    "version_restored": "已恢复这个历史版本。",
-    "version_purged": "已永久删除这个历史版本，清理已完成。",
-    "version_purge_pending": (
-        "已永久删除这个历史版本：内容已经不能访问或恢复。清理暂未完成，系统会自动重试。"
-    ),
-    "saved_logged_out": "已保存草稿（待核对），并已退出。",
-    "logged_out": "已退出。",
-    # The profile and the preferences are saved as they are; nothing waits for confirmation.
-    "profile_created": "已保存基本资料。",
-    "profile_saved": "已保存基本资料的修改。",
-    "profile_unchanged": "基本资料没有变化，这次没有产生新的保存。",
-    "profile_created_before_leaving": "已保存你刚才填写的基本资料。",
-    "profile_saved_before_leaving": "已保存你刚才编辑的基本资料。",
-    "profile_unchanged_before_leaving": "你刚才编辑的基本资料没有变化，这次没有产生新的保存。",
-    "profile_deleted": "基本资料已移到回收站：它已停止使用，7 天内可以恢复。",
-    "preferences_created": "已保存求职偏好。",
-    "preferences_saved": "已保存求职偏好的修改。",
-    "preferences_unchanged": "求职偏好没有变化，这次没有产生新的保存。",
-    "preferences_created_before_leaving": "已保存你刚才填写的求职偏好。",
-    "preferences_saved_before_leaving": "已保存你刚才编辑的求职偏好。",
-    "preferences_unchanged_before_leaving": "你刚才编辑的求职偏好没有变化，这次没有产生新的保存。",
-    "preferences_deleted": "求职偏好已移到回收站：它已停止使用，7 天内可以恢复。",
-    "document_saved_logged_out": "已保存，并已退出。",
-    "attachment_added": "已上传附件。",
-    "attachment_already_added": "这个文件刚才已经上传过了，这次没有重复保存。",
-    "attachment_deleted": "已删除这个附件：它已移到回收站，不能再下载；7 天内可以在本页下方恢复。",
-    "attachment_restored": "已恢复这个附件。",
-    "attachment_purged": "已永久删除这个附件，它的文件已从附件目录中删除。",
-    "attachment_purge_pending": (
-        "已永久删除这个附件：它已经不能下载或恢复。文件清理暂未完成，系统会自动重试。"
-    ),
-}
-CHOOSE_AGAIN = "请重新选择文件后再上传（浏览器不会自动保留刚才选择的文件）。"
-UPLOAD_FULL = (
-    f"这条经历已经有 {MAX_ATTACHMENTS} 个附件（包括回收站里还能恢复的），达到上限，这个文件没有上传。"
-)
+# The notices a page shows after an action, by code; the words are read in the page's language.
+NOTICES = MessageMap({code: f"notice.{code}" for code in (
+    "created",
+    "saved",
+    "unchanged",
+    "created_before_leaving",
+    "saved_before_leaving",
+    "unchanged_before_leaving",
+    "confirmed",
+    "deleted",
+    "restored",
+    "purged",
+    "purge_pending",
+    "import_draft_purged",
+    "import_draft_purge_pending",
+    "version_deleted",
+    "version_restored",
+    "version_purged",
+    "version_purge_pending",
+    "saved_logged_out",
+    "logged_out",
+    "profile_created",
+    "profile_saved",
+    "profile_unchanged",
+    "profile_created_before_leaving",
+    "profile_saved_before_leaving",
+    "profile_unchanged_before_leaving",
+    "profile_deleted",
+    "preferences_created",
+    "preferences_saved",
+    "preferences_unchanged",
+    "preferences_created_before_leaving",
+    "preferences_saved_before_leaving",
+    "preferences_unchanged_before_leaving",
+    "preferences_deleted",
+    "document_saved_logged_out",
+    "attachment_added",
+    "attachment_already_added",
+    "attachment_deleted",
+    "attachment_restored",
+    "attachment_purged",
+    "attachment_purge_pending",
+)})
 UPLOAD_PROBLEMS = {
-    UploadOutcome.IN_PROGRESS: (409, "同一次上传还在处理中，这次没有重复保存。请稍等一下，再刷新页面查看。"),
-    UploadOutcome.FORM_USED: (
-        409,
-        "这个上传表单已经用过了（可能是返回了旧页面），为了不重复保存，这次没有上传。" + CHOOSE_AGAIN,
-    ),
-    UploadOutcome.FULL: (409, UPLOAD_FULL),
-    UploadOutcome.FAILED: (
-        500,
-        "上传没有完成：保存文件或记录时出错，这个文件没有保存，已有的附件和经历内容不受影响。"
-        "请稍后" + CHOOSE_AGAIN,
-    ),
+    UploadOutcome.IN_PROGRESS: (409, lazy("lib.upload_in_progress")),
+    UploadOutcome.FORM_USED: (409, lazy("lib.upload_form_used")),
+    UploadOutcome.FULL: (409, lazy("lib.upload_full", most=MAX_ATTACHMENTS)),
+    UploadOutcome.FAILED: (500, lazy("lib.upload_failed")),
 }
-FILE_PROBLEMS = {
-    MissingFile: "这个附件的文件在附件目录里找不到了，所以没有下载。附件记录还在：可以删除它，再重新上传。",
-    ChangedFile: "这个附件的文件和上传时记录的大小或校验值不一致（可能已损坏），所以没有下载。",
-}
-UNREADABLE_FILE = "这个附件的文件现在无法读取（可能是权限问题，或文件被替换了），所以没有下载。"
-HTTP_MESSAGES = {
-    400: "请求的格式不对，没有执行任何操作。",
-    404: "找不到这个页面或内容。它可能不存在、属于其他用户，或者已经超过恢复期限。",
-    405: "这个地址不支持这种操作。",
-}
+FILE_PROBLEMS = MessageMap({MissingFile: "lib.file_missing_problem", ChangedFile: "lib.file_changed_problem"})
+UNREADABLE_FILE = lazy("lib.file_unreadable_problem")
+HTTP_MESSAGES = MessageMap({400: "lib.http_400", 404: "lib.http_404", 405: "lib.http_405"})
 
 logger = logging.getLogger("roleradar.library")
 router = APIRouter()
@@ -326,9 +313,14 @@ class LibraryRuntime:
     clock: Clock
     templates: Jinja2Templates
     files: FileStore
-    # Told the token hash of a session that ended here (logging out, or
-    # signing in as another user), so work tied to it stops (U2-A2).
+    # Told the token hash of a session that ended here (logging out, signing
+    # in as another user, or its time running out and the clean-up removing
+    # it), so work tied to it stops (U2-A2; Codex R1 review of the UI batch).
     session_end_listeners: list = field(default_factory=list)
+    # More of the clean-up pass, run after its own steps: what other parts of
+    # the app hold for a while and free when its time is up (the built export
+    # packages, Codex R1 review), so a pass frees it without another request.
+    cleanup_steps: list = field(default_factory=list)
     # The resume readings running in child processes (U2-B1).
     readings: Readings = field(default_factory=Readings)
     # Who turns an import's text into candidates here: the local simulation (U2-B2a).
@@ -349,7 +341,8 @@ class LibraryRuntime:
     def run_cleanup(self) -> PurgeReport | None:
         """One clean-up pass: due purge jobs, what unfinished uploads left
         behind, expired and ended resume imports, leftover staging, export
-        and import files, then expired sessions.
+        and import files, then expired sessions (each told to the session-end
+        listeners once removed), then the steps others added (cleanup_steps).
 
         A step that fails is logged and retried on the next pass; the steps
         after it still run. Returns the purge report, or None if a step failed.
@@ -378,12 +371,30 @@ class LibraryRuntime:
             logger.exception("cleaning up unfinished uploads failed; it will be retried on the next run")
             failed = True
 
+        expired: list[str] = []
+
         try:
             with self.database.transaction() as db:
-                remove_expired_sessions(db, now)
+                expired = remove_expired_sessions(db, now)
         except LibraryError:
             logger.exception("removing expired sessions failed; it will be retried on the next run")
             failed = True
+
+        # A login whose time ran out has ended like one signed out (Codex R1 review): told once it is removed, so
+        # what was tied to it (a built export package, a running task) stops and is freed now, not at its own expiry.
+        for session in expired:
+            try:
+                self.session_ended(session)
+            except Exception:  # one listener's failure leaves the others and the next steps to run
+                logger.exception("ending the work of an expired session failed")
+                failed = True
+
+        for step in self.cleanup_steps:
+            try:
+                step()
+            except Exception:  # retried on the next pass; the steps after it still run
+                logger.exception("a clean-up step failed; it will be retried on the next run")
+                failed = True
 
         return None if failed else report
 
@@ -396,6 +407,52 @@ class CsrfRejected(Exception):
     pass
 
 
+PASTED_SOURCE_ID = "user-provided"
+
+
+def posting_source(facts, source_id: str) -> str:
+    """A kept posting's source as a page names it: a pasted one by the words of the interface language (its record
+    keeps the stable source id it was saved under); any other by the name its source has."""
+    if source_id == PASTED_SOURCE_ID:
+        return t("job.pasted_source")
+
+    return source_label((facts or {}).get("source_name")) or source_id
+
+
+JS_MESSAGES = (
+    "js.running", "js.unsaved", "js.import.both", "js.import.none", "js.import.doc", "js.import.chosen", "js.import.type", "js.import.empty",
+    "js.import.large", "js.import.reading", "js.import.reading_note", "js.upload.none", "js.upload.type", "js.upload.empty",
+    "js.upload.large", "js.upload.uploading", "js.upload.uploading_note", "js.motion.opening", "js.motion.retry", "js.motion.slow",
+)
+
+
+def ui_text() -> dict[str, str]:
+    """The words the page scripts say, in the page's language: a data attribute of the page, never code (the CSP and
+    the pages' own scripts stay as they are)."""
+    return {key: t(key) for key in JS_MESSAGES}
+
+
+def identity_names(parts) -> list[str]:
+    """The parts a pasted posting is compared by (app.discovery.records.IDENTITY_PARTS, stable codes), as a page
+    says them."""
+    return [t(f"job.identity.{part}") for part in parts]
+
+
+def _evidence_coverage(analysis):
+    """岗位要求依据覆盖 for a page (app.evidence_coverage, owner redesign plan 7), loaded only when an analysis is
+    shown: the library itself never loads the analysis contracts (test_library_isolation)."""
+    from app.evidence_coverage import evidence_coverage
+
+    return evidence_coverage(analysis)
+
+
+def _counted_findings(analysis):
+    """The requirements the share is made of, loaded the same way."""
+    from app.evidence_coverage import counted_findings
+
+    return counted_findings(analysis)
+
+
 def build_templates(config: LibraryConfig) -> Jinja2Templates:
     env = jinja2.Environment(
         loader=jinja2.FileSystemLoader(PACKAGE_DIR / "templates"),
@@ -406,17 +463,67 @@ def build_templates(config: LibraryConfig) -> Jinja2Templates:
     )
     env.filters["localtime"] = format_local
     env.filters["shorttime"] = format_short
+    # A kept source name as the page's language names the ones this app registers (UI R4); any other as written.
+    env.filters["source_label"] = source_label
+    env.filters["type_word"] = lambda value: type_word(value) or value
+    # The interface language layer (app.i18n): every system text is a message key; the user's words never go through it.
+    env.globals.update(
+        posting_source=posting_source,
+        source_label=source_label,
+        type_word=type_word,
+        ui_text=ui_text,
+        identity_names=identity_names,
+        t=t,
+        tn=tn,
+        word=word,
+        html_lang=html_lang,
+        when=format_when,
+        list_join=i18n.list_join,
+        LANGUAGES=LANGUAGES,
+        LANGUAGE_NAMES=LANGUAGE_NAMES,
+        label_of=label_of,
+        hint_of=hint_of,
+        group_label=group_label,
+        preference_label=preference_label,
+        preference_topic=preference_topic,
+        preference_parts=preference_parts,
+        shown_fields=shown_fields,
+        compose_body=compose_body,
+        split_fields_in=split_fields_in,
+        BODY=BODY,
+        BODY_SOURCES=BODY_SOURCES,
+        MAIN_FIELDS=MAIN_FIELDS,
+        MORE_FIELDS=MORE_FIELDS,
+        # The year-and-month picker of an experience's time (owner redesign, plan 3.1).
+        YEARS=YEARS,
+        MONTHS=MONTHS,
+        period_fits=period_fits,
+        # The job preferences' overview and three-step editor (owner redesign, plan 3.3).
+        PREFERENCE_STEPS=STEPS,
+        JOB_TYPES=JOB_TYPES,
+        MAX_PREFERENCE_ROWS=MAX_ROWS,
+        preference_rows=rows_of,
+        requirement_start=start_of,
+        type_label=type_label,
+        CITY_CHOICES=CITY_CHOICES,
+        TITLE_FIELD_OF=TITLE_FIELDS,
+        # 岗位要求依据覆盖 above every analysis (owner redesign, plan 7).
+        evidence_coverage=_evidence_coverage,
+        coverage_id=lambda analysis: format(id(analysis), "x"),
+        counted_findings=_counted_findings,
+    )
     env.globals.update(
         FIELDS=CATEGORY_FIELDS[PROJECT],
         FIELD_GROUPS=FIELD_GROUPS,
         FOLDED_GROUPS=FOLDED_GROUPS,
         READING_LABELS=READING_LABELS,
         NOTE_FIELD=NOTE_FIELD,
-        NOT_FILLED=NOT_FILLED,
-        NOT_DECIDED=NOT_DECIDED,
+        # Read when a page renders, in its language (the stored Chinese names stay in app.library.content).
+        NOT_FILLED=i18n.lazy("content.not_filled"),
+        NOT_DECIDED=i18n.lazy("content.not_decided"),
         CATEGORY_FIELDS=CATEGORY_FIELDS,
         CATEGORY_GROUPS=CATEGORY_GROUPS,
-        CATEGORY_LABELS=CATEGORY_LABELS,
+        CATEGORY_LABELS=CATEGORY_NAMES,
         EXPERIENCE_CATEGORIES=EXPERIENCE_CATEGORIES,
         DOCUMENT_KINDS=DOCUMENT_KINDS,
         PROFILE=PROFILE,
@@ -433,9 +540,9 @@ def build_templates(config: LibraryConfig) -> Jinja2Templates:
         record_page=record_page,
         field_label=field_label,
         RESTORE_DAYS=RESTORE_WINDOW.days,
-        clock_note=_clock_note(config),
-        # Set by the job analysis pages when the local simulation is slowed down on purpose.
-        simulation_note=None,
+        clock_days=_clock_days(config),
+        # Set by the job analysis pages when the local simulation is slowed down on purpose (seconds, as written).
+        simulation_seconds=None,
         display_title=display_title,
         link_lines=link_lines,
         state_label=state_label,
@@ -459,16 +566,12 @@ def build_templates(config: LibraryConfig) -> Jinja2Templates:
     return Jinja2Templates(env=env)
 
 
-def _clock_note(config: LibraryConfig) -> str | None:
+def _clock_days(config: LibraryConfig) -> str | None:
+    """How many days the development clock is set ahead, as the banner writes it (None when it is not)."""
     if not config.dev_clock_offset:
         return None
 
-    days = config.dev_clock_offset.total_seconds() / 86400
-
-    return (
-        f"开发时钟已往后拨 {days:g} 天：页面上的时间、恢复期限和清理都按偏移后的时间计算。"
-        "只用于本地验证。"
-    )
+    return f"{config.dev_clock_offset.total_seconds() / 86400:g}"
 
 
 def install_web(app: FastAPI, config: LibraryConfig) -> None:
@@ -493,6 +596,8 @@ def install_web(app: FastAPI, config: LibraryConfig) -> None:
     )
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
     app.add_middleware(LocalOnly)
+    # Outermost: every response, the refusals of the guards above included, is written in the browser's chosen language.
+    app.add_middleware(LanguageMiddleware)
 
 
 # --- request guards -------------------------------------------------------
@@ -511,7 +616,7 @@ class LocalOnly:
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http" and not _is_loopback(scope.get("client")):
-            response = PlainTextResponse("本地开发版只接受本机访问。", status_code=403)
+            response = PlainTextResponse(t("error.local_only"), status_code=403)
             await response(scope, receive, send)
             return
 
@@ -558,12 +663,12 @@ class FormSizeLimit:
             limit = self.limit_for(scope["path"])
 
             if length is None:
-                response = PlainTextResponse("提交缺少长度信息。", status_code=411)
+                response = PlainTextResponse(t("error.no_length"), status_code=411)
                 await response(scope, receive, send)
                 return
 
             if not length.isdigit() or int(length) > limit:
-                response = PlainTextResponse("提交的内容太大。", status_code=413)
+                response = PlainTextResponse(t("error.too_large"), status_code=413)
                 await response(scope, receive, send)
                 return
 
@@ -609,7 +714,17 @@ def current_user(request: Request) -> CurrentUser:
 
 async def submitted_form(request: Request) -> dict[str, str]:
     """Text fields of a form post; the first value of a repeated name wins."""
-    form = await request.form(max_files=0, max_fields=100)
+    return await _form_fields(request, 100)
+
+
+async def submitted_large_form(request: Request) -> dict[str, str]:
+    """Like submitted_form, for the one form with many rows: the preferences editor (owner redesign, plan 3.3), whose
+    five dimensions hold at most MAX_ROWS rows each."""
+    return await _form_fields(request, 200)
+
+
+async def _form_fields(request: Request, most: int) -> dict[str, str]:
+    form = await request.form(max_files=0, max_fields=most)
     values = {}
 
     for key, value in form.multi_items():
@@ -646,6 +761,15 @@ def checked_form(
         raise CsrfRejected()
 
     return form
+
+
+def checked_large_form(
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+    form: dict[str, str] = Depends(submitted_large_form),
+) -> dict[str, str]:
+    """checked_form for the preferences editor's longer form."""
+    return checked_form(request, user, form)
 
 
 def _tokens_match(expected: str | None, submitted: str | None) -> bool:
@@ -710,10 +834,42 @@ def message_page(
     return render(
         request,
         "message.html",
-        {"title": title, "message": message, "links": links or []},
+        {"title": title, "message": message, "links": links or [], **place_of(request.url.path)},
         user=user,
         status_code=status_code,
     )
+
+
+# Where a page of each address belongs in the side bar and among its area's parts (plan 2), for the pages every area
+# shares, such as a message that a result is gone: a jobs page's message stays in 岗位机会.
+PLACES = (
+    ("/workspace", "workspace", "workspace"),
+    ("/directions/records", "directions", "records"),
+    ("/directions/explorations", "directions", "records"),
+    ("/directions/decisions", "directions", "records"),
+    ("/directions", "directions", "explore"),
+    ("/job-records/history", "jobs", "history"),
+    ("/job-records/searches", "jobs", "history"),
+    ("/job-records/analyses", "jobs", "history"),
+    ("/job-records", "jobs", "my_jobs"),
+    ("/discover", "jobs", "discover"),
+    ("/job-analysis", "jobs", "discover"),
+    ("/data/trash", "data", "trash"),
+    ("/data/export", "data", "export"),
+    ("/data", "data", "overview"),
+    ("/basic-profile", "profile", "profile"),
+    ("/job-preferences", "profile", "preferences"),
+    ("/imports", "profile", "imports"),
+)
+
+
+def place_of(path: str) -> dict[str, str]:
+    """The area and part a shared page shows as current for this address; 我的资料's 经历库 when none is named."""
+    for prefix, area, section in PLACES:
+        if path == prefix or path.startswith(prefix + "/"):
+            return {"area": area, "section": section}
+
+    return {}
 
 
 def confirm_page(
@@ -773,6 +929,27 @@ def list_filter(request: Request) -> tuple[str, str]:
     return category, query
 
 
+# The states the library's list can be narrowed to (owner redesign, image 04): confirmed records, and those still
+# waiting for the person (待核对 and 修改后待核对, both drafts). Any other value shows every record.
+LIST_STATES = ("confirmed", "review")
+
+
+def list_state(request: Request) -> str:
+    state = request.query_params.get("state", "")
+
+    return state if state in LIST_STATES else ""
+
+
+def in_state(item, state: str) -> bool:
+    if state == "confirmed":
+        return item.state == "confirmed"
+
+    if state == "review":
+        return item.state != "confirmed"
+
+    return True
+
+
 def library_sidebar(
     request: Request,
     user: CurrentUser,
@@ -796,6 +973,7 @@ def library_sidebar(
     same filtered list in its main area instead of beside it.
     """
     category, query = list_filter(request)
+    state = list_state(request)
     filtering = bool(category or query)
 
     try:
@@ -803,16 +981,25 @@ def library_sidebar(
             if items is None:
                 items = list_experiences(db, user.id)
 
-            shown = (
+            found = (
                 list_experiences(db, user.id, category=category, query=query)
                 if filtering
                 else items
             )
     except StorageError as error:
         logger.error("reading the record list failed (%s)", type(error.__cause__).__name__)
-        items = shown = None
+        items = found = None
 
-    asked = {key: value for key, value in (("category", category), ("q", query)) if value}
+    # The state chips count what the words and the category found; the list shows the chosen state of those.
+    shown = [item for item in found if in_state(item, state)] if found is not None else None
+    state_counts = (
+        {"": len(found), **{name: sum(1 for item in found if in_state(item, name)) for name in LIST_STATES}}
+        if found is not None
+        else {}
+    )
+    asked = {key: value for key, value in (("category", category), ("q", query), ("state", state)) if value}
+    # The same filter without the state: what each state chip links to, with its own state added.
+    words_only = {key: value for key, value in (("category", category), ("q", query)) if value}
 
     return {
         "sidebar_items": shown,
@@ -821,6 +1008,12 @@ def library_sidebar(
         "focus": focus,
         "filter_category": category,
         "filter_query": query,
+        "filter_state": state,
+        "state_counts": state_counts,
+        "state_links": {
+            name: "/experiences" + (f"?{urlencode({**words_only, **({'state': name} if name else {})})}" if words_only or name else "")
+            for name in ("",) + LIST_STATES
+        },
         "filter_suffix": f"?{urlencode(asked)}" if asked else "",
         "overview": overview,
     }
@@ -842,6 +1035,8 @@ def form_page(
     status_code: int = 200,
 ) -> Response:
     """The new/edit form. Without item_id the form creates a new experience."""
+    values = with_body(values, category)
+
     return render(
         request,
         "form.html",
@@ -857,7 +1052,9 @@ def form_page(
             "notice": notice,
             # A page shown again after a failed save may hold text that exists
             # nowhere else yet; the leave guard must treat it as unsaved.
-            "unsaved_input": bool(error) and any(value.strip() for value in values.values()),
+            # The picker's own parts (which way, the time as read) are not something typed.
+            "unsaved_input": bool(error)
+            and any(value.strip() for name, value in values.items() if name not in PICKER_FIELDS or name.endswith(("_year", "_month"))),
             "action": f"/experiences/{item_id}/draft" if item_id else "/experiences",
             **library_sidebar(request, user, selected_id=item_id, focus=True),
         },
@@ -887,13 +1084,42 @@ def stored_values(item=None, category: str = PROJECT) -> dict[str, str]:
 
         if category in EXPERIENCE_CATEGORIES:
             values[NOTE_FIELD.name] = item.private_note
+            # The experience details offered for editing (plan 5.2): what the record says in one text, the older
+            # split fields joined in their stable order. Shown only; nothing is written until the user saves. The
+            # split fields themselves are shown to read beside it, never as inputs of their own.
+            values[BODY] = compose_body(item.content, category)
+            values.update({name: "" for name in BODY_SOURCES.get(category, ())})
+
+    if has_period(category):
+        values.update(picker_values(values.get("period", "")))
 
     return values
 
 
+def has_period(category: str) -> bool:
+    """Whether a category's time is offered in the year-and-month picker (owner redesign, plan 3.1)."""
+    return any(field.name == "period" for field in CATEGORY_FIELDS.get(category, ()))
+
+
+def with_body(values: dict[str, str], category: str) -> dict[str, str]:
+    """Submitted values as the form shows them again: text a client sent in the older split fields (an older page,
+    another tool) is joined into the experience details, so nothing typed is ever out of sight (plan 5.2)."""
+    sources = BODY_SOURCES.get(category, ())
+
+    if category not in EXPERIENCE_CATEGORIES or not any(values.get(name) for name in sources):
+        return values
+
+    return {**values, BODY: compose_body(values, category), **{name: "" for name in sources}}
+
+
 def submitted_values(form: dict[str, str], category: str = PROJECT) -> dict[str, str]:
-    """Exactly what the user typed, so a failed save loses nothing."""
-    return {name: form.get(name, "") for name in value_names(category)}
+    """Exactly what the user typed, so a failed save loses nothing (the picker's choices included)."""
+    values = {name: form.get(name, "") for name in value_names(category)}
+
+    if has_period(category):
+        values.update(picker_values(values.get("period", ""), form))
+
+    return values
 
 
 def submitted_category(form: dict[str, str]) -> str:
@@ -973,21 +1199,25 @@ def finish_save(
         logger.error("logging out after a save failed (%s)", type(error.__cause__).__name__)
         return message_page(
             request,
-            title="已保存，但还没有退出" if document else "草稿已保存，但还没有退出",
-            message=(
-                "内容已经保存" if document else "草稿已经保存（待核对）"
-            ) + "，但退出时数据库操作失败，你仍处于登录状态。请再点一次“退出”。",
+            title=t("lib.saved_not_out_document" if document else "lib.saved_not_out_draft"),
+            message=t("lib.logout_failed_document" if document else "lib.logout_failed_draft"),
             status_code=500,
             user=user,
-            links=[(default_path, "查看已保存的内容")],
+            links=[(default_path, t("lib.view_saved"))],
         )
 
 
 def conflict_page(request: Request, user: CurrentUser, current, mine: dict[str, str]) -> Response:
     """Both versions side by side after a save lost a race, with mine kept for saving."""
     fields = list(CATEGORY_FIELDS[current.category])
+    # The comparison is of what is stored, never of the joined text an edit form offers (plan 5.2).
+    theirs = {field.name: current.content.get(field.name, "") for field in fields}
 
     if current.category in EXPERIENCE_CATEGORIES:
+        theirs[NOTE_FIELD.name] = current.private_note
+        # An older split field empty on both sides has nothing to compare.
+        split = BODY_SOURCES.get(current.category, ())
+        fields = [field for field in fields if field.name not in split or mine.get(field.name) or theirs.get(field.name)]
         fields.append(NOTE_FIELD)
         action = f"/experiences/{current.id}/draft"
     else:
@@ -1001,7 +1231,7 @@ def conflict_page(request: Request, user: CurrentUser, current, mine: dict[str, 
             "fields": fields,
             "action": action,
             "mine": mine,
-            "theirs": stored_values(current),
+            "theirs": theirs,
         },
         user=user,
         status_code=409,
@@ -1021,40 +1251,40 @@ async def _not_authenticated(request: Request, exc: NotAuthenticated):
 
     return message_page(
         request,
-        title="需要重新进入",
-        message="登录状态已失效，这次提交没有保存。请重新进入后再试。",
+        title=t("lib.sign_in_again_title"),
+        message=t("lib.sign_in_again"),
         status_code=401,
-        links=[("/login", "重新进入")],
+        links=[("/login", t("lib.sign_in_again_link"))],
     )
 
 
 async def _csrf_rejected(request: Request, exc: CsrfRejected):
     return message_page(
         request,
-        title="表单已失效",
-        message="这个表单来自旧页面或其他网站，为了安全没有执行。请回到页面刷新后重试。",
+        title=t("lib.form_expired_title"),
+        message=t("lib.form_expired"),
         status_code=403,
-        links=[("/experiences", "回到我的经历")],
+        links=[("/workspace", t("common.go_workspace"))],
     )
 
 
 async def _not_found(request: Request, exc: NotFound):
     return message_page(
         request,
-        title="找不到这条内容",
+        title=t("lib.not_found_title"),
         message=HTTP_MESSAGES[404],
         status_code=404,
-        links=[("/experiences", "回到我的经历")],
+        links=[("/workspace", t("common.go_workspace"))],
     )
 
 
 async def _not_allowed(request: Request, exc: NotAllowed):
     return message_page(
         request,
-        title="这个操作现在不能执行",
+        title=t("lib.not_allowed_title"),
         message=exc.reason,
         status_code=409,
-        links=[("/experiences", "回到我的经历")],
+        links=[("/workspace", t("common.go_workspace"))],
     )
 
 
@@ -1063,39 +1293,30 @@ async def _conflict(request: Request, exc: Conflict):
 
     return message_page(
         request,
-        title="操作没有执行：内容已经更新",
-        message=(
-            "这条经历在你打开页面之后有了新的保存或状态变化。为了不覆盖或处理你没有看到的内容，"
-            "这次操作没有执行。请先查看最新内容，再决定下一步。"
-        ),
+        title=t("lib.conflict_title"),
+        message=t("lib.conflict"),
         status_code=409,
-        links=[(_latest_page(item), "查看最新内容")],
+        links=[(_latest_page(item), t("lib.view_latest"))],
     )
 
 
 async def _version_conflict(request: Request, exc: VersionConflict):
     return message_page(
         request,
-        title="操作没有执行：这个历史版本的状态已经变化",
-        message=(
-            "你打开这个页面之后，这个历史版本又被删除或恢复过（可能是在另一个标签页）。"
-            "为了不处理你没有看到的那一次删除，这次操作没有执行。请回到历史页查看它现在的状态，再决定下一步。"
-        ),
+        title=t("lib.version_conflict_title"),
+        message=t("lib.version_conflict"),
         status_code=409,
-        links=[(f"/experiences/{exc.item_id}/history", "查看历史")],
+        links=[(f"/experiences/{exc.item_id}/history", t("lib.view_history"))],
     )
 
 
 async def _attachment_conflict(request: Request, exc: AttachmentConflict):
     return message_page(
         request,
-        title="操作没有执行：这个附件的状态已经变化",
-        message=(
-            "你打开这个页面之后，这个附件又被删除或恢复过（可能是在另一个标签页）。"
-            "为了不处理你没有看到的那一次删除，这次操作没有执行。请回到经历页面查看它现在的状态，再决定下一步。"
-        ),
+        title=t("lib.attachment_conflict_title"),
+        message=t("lib.attachment_conflict"),
         status_code=409,
-        links=[(f"/experiences/{exc.item_id}", "查看这条经历")],
+        links=[(f"/experiences/{exc.item_id}", t("lib.view_this_experience"))],
     )
 
 
@@ -1116,20 +1337,20 @@ async def _storage_error(request: Request, exc: StorageError):
 
     return message_page(
         request,
-        title="操作没有完成",
-        message="数据库操作失败，这次操作没有生效，已保存的数据保持原样。请稍后再试。",
+        title=t("lib.storage_title"),
+        message=t("lib.storage"),
         status_code=500,
-        links=[("/experiences", "回到我的经历")],
+        links=[("/workspace", t("common.go_workspace"))],
     )
 
 
 async def _http_error(request: Request, exc: StarletteHTTPException):
     return message_page(
         request,
-        title="没有执行",
-        message=HTTP_MESSAGES.get(exc.status_code, "请求没有执行。"),
+        title=t("lib.http_title"),
+        message=HTTP_MESSAGES.get(exc.status_code) or t("lib.http_other"),
         status_code=exc.status_code,
-        links=[("/experiences", "回到我的经历")],
+        links=[("/workspace", t("common.go_workspace"))],
     )
 
 
@@ -1138,7 +1359,34 @@ async def _http_error(request: Request, exc: StarletteHTTPException):
 
 @router.get("/")
 def home():
-    return see_other("/experiences")
+    # The workspace is where the product starts (UI bilingual batch, 5.1).
+    return see_other("/workspace")
+
+
+@router.post("/language")
+def switch_language(request: Request, form: dict[str, str] = Depends(submitted_form)):
+    """Remember this browser's interface language (plan 6.1): only a whitelisted value, from this site's own pages.
+
+    Not an account setting and not a business write: it changes no record, task, result or permission. The choice
+    is kept in a cookie for this browser; the page asked for comes back in that language.
+    """
+    check_same_origin(request)
+    chosen = i18n.chosen(form.get("lang"))
+
+    if chosen is None:
+        raise HTTPException(status_code=400)
+
+    response = see_other(safe_next(form.get("next", "")) or "/workspace")
+    response.set_cookie(
+        i18n.LANGUAGE_COOKIE,
+        chosen,
+        max_age=i18n.LANGUAGE_COOKIE_SECONDS,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+
+    return response
 
 
 @router.get("/health")
@@ -1199,7 +1447,7 @@ def dev_login(request: Request, form: dict[str, str] = Depends(submitted_form)):
     if previous:
         rt.session_ended(token_hash(previous))
 
-    response = see_other("/experiences")
+    response = see_other("/workspace")
     response.set_cookie(
         SESSION_COOKIE,
         token,
@@ -1231,19 +1479,36 @@ def experience_list(
     filter, in the main area. A list that cannot be read is said to be
     unreadable there, never shown as an empty library.
     """
-    rt = runtime(request)
-    now = rt.now()
-
     if tab != "trash":
+        sidebar = library_sidebar(request, user, overview=True)
+        # Beside the list, the first record found is open (owner redesign, image 04); narrow screens show the list.
+        # Opened on its own, it keeps its private note back: that is shown when the record itself is opened.
+        shown = sidebar["sidebar_items"] or []
+        record = {**record_context(request, user, shown[0].id), "private_shown": False} if shown else {}
+
         return render(
             request,
             "list.html",
-            {"tab": "current", "notice": NOTICES.get(notice), **library_sidebar(request, user, overview=True)},
+            {
+                "tab": "current",
+                "notice": NOTICES.get(notice),
+                **sidebar,
+                **record,
+                "selected_id": shown[0].id if shown else None,
+            },
             user=user,
         )
 
+    # The recycle bin now belongs to 数据管理 (UI bilingual batch); this older address still shows it, as it was.
+    return trash_page(request, user, notice)
+
+
+def trash_page(request: Request, user: CurrentUser, notice: str = "") -> Response:
+    """The recycle bin (数据管理 → 回收站): everything the user deleted that can still be restored, by kind."""
+    rt = runtime(request)
+    now = rt.now()
+
     with rt.database.transaction() as db:
-        items = list_experiences(db, user.id)
         trash = trash_view(db, user.id, now)
         # Resume import drafts the user deleted (U2-B3a): restored or removed from here too.
         drafts = binned_drafts(db, user.id, now)
@@ -1255,7 +1520,7 @@ def experience_list(
 
     return render(
         request,
-        "list.html",
+        "trash.html",
         {
             "tab": "trash",
             "trash": trash,
@@ -1265,7 +1530,6 @@ def experience_list(
             "jobs": jobs,
             "now": now,
             "notice": NOTICES.get(notice),
-            **library_sidebar(request, user, items=items, focus=True),
         },
         user=user,
     )
@@ -1308,7 +1572,13 @@ def create_experience_page(
     if category not in EXPERIENCE_CATEGORIES:
         raise HTTPException(status_code=400)
 
+    # The time as the year-and-month picker says (owner redesign, plan 3.1); the person's own words otherwise.
+    form, period_error = with_period(form)
+
     try:
+        if period_error:
+            raise ContentError(t("content.fix_and_save"), {"period": period_error})
+
         entry = parse_experience_form(form, category)
 
         with rt.database.transaction() as db:
@@ -1358,7 +1628,24 @@ def detail_page(
     upload_error: str | None = None,
     status_code: int = 200,
 ) -> Response:
-    """The reading page of an experience, with its attachments and a fresh upload form."""
+    """The reading page of an experience, with its attachments and a fresh upload form, beside the library's list."""
+    record = record_context(request, user, item_id, upload_error=upload_error)
+
+    return render(
+        request,
+        "detail.html",
+        {
+            **record,
+            "notice": notice,
+            **library_sidebar(request, user, selected_id=record["item"].id, focus=True),
+        },
+        user=user,
+        status_code=status_code,
+    )
+
+
+def record_context(request: Request, user: CurrentUser, item_id: str, *, upload_error: str | None = None) -> dict:
+    """What the reading of one experience shows: the record, its attachments and a fresh upload form."""
     rt = runtime(request)
     now = rt.now()
 
@@ -1368,29 +1655,21 @@ def detail_page(
         binned = binned_attachments(db, user.id, item, now)
         taken = places_taken(db, item.id)
 
-    return render(
-        request,
-        "detail.html",
-        {
-            "item": item,
-            "notice": notice,
-            "attachments": attachments,
-            # A record whose file is gone says so instead of offering a download that fails.
-            "file_states": {
-                attachment.id: rt.files.kept_file_state(attachment.owner_id, attachment.storage_key)
-                for attachment in attachments
-            },
-            "binned_attachments": binned,
-            "places_left": max(0, MAX_ATTACHMENTS - taken),
-            # A new key for every page: posting this form again cannot add the file twice.
-            "upload_key": secrets.token_urlsafe(24),
-            "upload_error": upload_error,
-            "now": now,
-            **library_sidebar(request, user, selected_id=item.id, focus=True),
+    return {
+        "item": item,
+        "attachments": attachments,
+        # A record whose file is gone says so instead of offering a download that fails.
+        "file_states": {
+            attachment.id: rt.files.kept_file_state(attachment.owner_id, attachment.storage_key)
+            for attachment in attachments
         },
-        user=user,
-        status_code=status_code,
-    )
+        "binned_attachments": binned,
+        "places_left": max(0, MAX_ATTACHMENTS - taken),
+        # A new key for every page: posting this form again cannot add the file twice.
+        "upload_key": secrets.token_urlsafe(24),
+        "upload_error": upload_error,
+        "now": now,
+    }
 
 
 @router.get("/experiences/{item_id}/edit")
@@ -1423,10 +1702,16 @@ def save_experience_draft(
     # The stored record decides which fields it has; the form's own category
     # is only used to show the form again if the record is gone.
     category = submitted_category(form)
+    # The time as the year-and-month picker says (owner redesign, plan 3.1); the person's own words otherwise.
+    form, period_error = with_period(form)
 
     try:
         with rt.database.transaction() as db:
             category = active_item(db, user.id, item_id).category
+
+            if period_error:
+                raise ContentError(t("content.fix_and_save"), {"period": period_error})
+
             entry = parse_experience_form(form, category)
             item, changed = save_draft(db, user.id, item_id, expected, entry, rt.now())
     except ContentError as error:
@@ -1491,14 +1776,11 @@ def confirm_experience_page(
     except Conflict:
         return message_page(
             request,
-            title="确认没有生效",
-            message=(
-                "这条经历在你打开页面之后有了新的保存或状态变化。为了不确认你没有看到的内容，"
-                "这次确认没有生效。请先查看最新内容，再决定是否确认。"
-            ),
+            title=t("lib.confirm_failed_title"),
+            message=t("lib.confirm_failed"),
             status_code=409,
             user=user,
-            links=[(f"/experiences/{item_id}", "查看最新内容")],
+            links=[(f"/experiences/{item_id}", t("lib.view_latest"))],
         )
 
     return see_other(f"/experiences/{item_id}?notice=confirmed")
@@ -1509,6 +1791,7 @@ def history_page(
     item_id: str,
     request: Request,
     notice: str = "",
+    tab: str = "versions",
     user: CurrentUser = Depends(current_user),
 ):
     rt = runtime(request)
@@ -1550,6 +1833,8 @@ def history_page(
             "version_states": states,
             "along": along,
             "analyses_with": analyses_with,
+            # 历史版本 or 操作记录 (owner redesign, plan 3.1): two tabs, chosen in the address.
+            "history_tab": "events" if tab == "events" else "versions",
         },
         user=user,
     )
@@ -1603,24 +1888,23 @@ def _version_delete_confirm(request, user, item_id, version_id, error=None, stat
     return confirm_page(
         request,
         user,
-        title=f"删除历史版本：{version_label(version)}",
+        title=t("lib.delete_version_title", version=version_label(version)),
         points=[
-            f"只删除这一个历史版本；{_owner_noun(item)}的当前内容和其他版本不受影响。",
-            "删除后它立即不能查看；恢复期内导出时仍会带上它，并标明“已单独删除”和恢复期限。",
-            f"{RESTORE_WINDOW.days} 天内（截至 {format_local(now + RESTORE_WINDOW)}）"
-            "可以在历史页恢复，也可以提前永久删除。",
-            "已经下载到本机的导出文件如果包含这个版本，需要你自己处理。",
+            t("lib.delete_version_only", owner=_owner_noun(item)),
+            t("lib.delete_version_hidden"),
+            t("lib.delete_version_restore", days=RESTORE_WINDOW.days, until=format_local(now + RESTORE_WINDOW)),
+            t("lib.delete_version_downloads"),
             *_version_direction_points(references),
         ],
         action=f"/experiences/{item.id}/versions/{version.id}/delete",
-        button="删除这个历史版本",
+        button=t("lib.delete_version_button"),
         cancel=f"/experiences/{item.id}/history",
         hidden={"expected_state": state},
         section=section_of(item),
         error=error,
         status_code=status_code,
-        along=_along_choice(resting, "这个版本"),
-        along_analyses=_analyses_choice(resting_kept, "这个版本"),
+        along=_along_choice(resting, t("lib.this_version")),
+        along_analyses=_analyses_choice(resting_kept, t("lib.this_version")),
     )
 
 
@@ -1684,10 +1968,7 @@ def version_purge_page(
 
 # Deleting along the explorations resting on what is deleted (U3-C3b): offered only when some do, never ticked,
 # and taken only as the page listed them (lifecycle.check_chosen_along).
-ALONG_CHANGED = (
-    "你打开这个页面之后，下面列出的方向探索或岗位分析有了变化（删除过、恢复过、改过，或者不再以它为依据），"
-    "所以这次什么都没有删除。下面是现在的情况；要一并删除的话，请重新勾选。"
-)
+ALONG_CHANGED = lazy("lib.along_changed")
 # The kept analyses (U3-D3b) are offered apart from the explorations, under their own names.
 ANALYSES_VALUE, ANALYSES_TOGGLE = "analyses_along", "delete_analyses_along"
 
@@ -1710,14 +1991,17 @@ def _along_choice(explorations, what: str) -> AlongChoice | None:
         return None
 
     return AlongChoice(
-        legend=f"以{what}为依据的方向探索",
+        legend=t("lib.along_explorations_legend", what=what),
         lines=tuple(
-            "、".join(f"“{direction['name']}”" for direction in exploration.content["directions"])
-            + f"，保存于 {format_short(exploration.saved_at)}"
+            t(
+                "lib.along_exploration_line",
+                names=i18n.list_join(t("lib.quoted", text=direction["name"]) for direction in exploration.content["directions"]),
+                at=format_short(exploration.saved_at),
+            )
             for exploration in explorations
         ),
         value=",".join(record_ref(exploration.id, exploration.revision) for exploration in explorations),
-        label=f"同时把这 {len(explorations)} 次方向探索移到回收站（恢复{what}时一起恢复；方向决定不会删除）",
+        label=t("lib.along_explorations_label", n=len(explorations), what=what),
     )
 
 
@@ -1727,13 +2011,18 @@ def _analyses_choice(analyses, what: str) -> AlongChoice | None:
         return None
 
     return AlongChoice(
-        legend=f"以{what}为依据的岗位分析",
+        legend=t("lib.along_analyses_legend", what=what),
         lines=tuple(
-            f"“{analysis.facts.get('title', '')}”（{analysis.facts.get('company', '')}），保存于 {format_short(analysis.saved_at)}"
+            t(
+                "lib.along_analysis_line",
+                title=analysis.facts.get("title", ""),
+                company=analysis.facts.get("company", ""),
+                at=format_short(analysis.saved_at),
+            )
             for analysis in analyses
         ),
         value=",".join(record_ref(analysis.id, analysis.revision) for analysis in analyses),
-        label=f"同时把这 {len(analyses)} 份岗位分析移到回收站（恢复{what}时一起恢复）",
+        label=t("lib.along_analyses_label", n=len(analyses), what=what),
         value_name=ANALYSES_VALUE,
         toggle_name=ANALYSES_TOGGLE,
     )
@@ -1742,8 +2031,8 @@ def _analyses_choice(analyses, what: str) -> AlongChoice | None:
 def _purged_along_points(count: int, analyses: int = 0) -> list[str]:
     """The lines a purge page adds for the explorations (U3-C3b) and the kept analyses (U3-D3b) the user deleted
     along, which go now too."""
-    return [f"一起删除的 {count} 次方向探索也会永久删除。"] * bool(count) + [
-        f"一起删除的 {analyses} 份岗位分析也会永久删除。"
+    return [t("lib.purged_along_explorations", n=count)] * bool(count) + [
+        t("lib.purged_along_analyses", n=analyses)
     ] * bool(analyses)
 
 
@@ -1773,20 +2062,20 @@ def _version_purge_confirm(request, user, item, version, state, references, alon
     return confirm_page(
         request,
         user,
-        title=f"永久删除历史版本：{version_label(version)}",
+        title=t("lib.purge_version_title", version=version_label(version)),
         points=[
-            "永久删除后无法恢复。",
-            f"只删除这一个历史版本，{_owner_noun(item)}的当前内容和其他版本不受影响。",
+            t("lib.purge_cannot_undo"),
+            t("lib.purge_version_only", owner=_owner_noun(item)),
             *_purged_along_points(along, kept_along),
-            "清理会立即开始；如果暂时没有完成，这个版本也已经不能访问或恢复，系统会自动重试。",
-            "已经下载到本机的导出文件不受影响。",
+            t("lib.purge_version_cleanup"),
+            t("lib.purge_downloads"),
             *_version_direction_points(references, purge=True),
         ],
         action=f"/experiences/{item.id}/versions/{version.id}/purge",
-        button="永久删除这个历史版本",
+        button=t("lib.purge_version_button"),
         cancel=f"/experiences/{item.id}/history",
         hidden={"expected_state": state},
-        acknowledge="我了解永久删除后无法恢复",
+        acknowledge=t("lib.purge_acknowledge"),
         error=error,
         status_code=status_code,
         section=section_of(item),
@@ -1821,7 +2110,7 @@ def version_purge(
             references,
             along,
             kept_along,
-            error="请先勾选“我了解永久删除后无法恢复”。",
+            error=t("lib.purge_tick_first"),
             status_code=422,
         )
 
@@ -1837,22 +2126,19 @@ def version_purge(
 
 
 # What deleting the profile or the preferences leaves alone.
-DOCUMENT_UNTOUCHED = {
-    PROFILE: "你的经历（包括教育经历）和求职偏好不受影响。",
-    PREFERENCES: "你的经历和基本资料不受影响。",
-}
+DOCUMENT_UNTOUCHED = MessageMap({PROFILE: "lib.profile_untouched", PREFERENCES: "lib.preferences_untouched"})
 
 
 def _owner_noun(item) -> str:
     """Whose current content a history version belongs to, for its delete pages."""
-    return KIND_NOUNS[item.category] if item.category in DOCUMENT_KINDS else "这条经历"
+    return KIND_NOUNS[item.category] if item.category in DOCUMENT_KINDS else t("lib.this_experience")
 
 
 def _delete_title(item) -> str:
     if item.category in DOCUMENT_KINDS:
-        return f"删除{CATEGORY_LABELS[item.category]}"
+        return t("lib.delete_document_title", what=CATEGORY_NAMES[item.category])
 
-    return f"删除经历：{display_title(item.content, item.category)}"
+    return t("lib.delete_experience_title", title=display_title(item.content, item.category))
 
 
 @router.get("/experiences/{item_id}/delete")
@@ -1873,40 +2159,27 @@ def _delete_confirm(request, user, item_id, error=None, status_code=200):
     noun = KIND_NOUNS[item.category]
 
     if item.category in DOCUMENT_KINDS:
-        points = [f"将删除：{noun}的当前内容，以及 {scope.kept_versions} 个保留中的历史版本。"]
+        points = [t("lib.delete_document_scope", noun=noun, n=scope.kept_versions)]
     else:
-        points = [
-            f"将删除：{noun}的当前内容、私有备注，以及 {scope.kept_versions} 个保留中的历史版本。"
-        ]
+        points = [t("lib.delete_experience_scope", noun=noun, n=scope.kept_versions)]
 
     if scope.versions_already_in_bin:
-        points.append(
-            f"另有 {scope.versions_already_in_bin} 个历史版本此前已经单独删除，会保持各自原来的恢复期限。"
-        )
+        points.append(t("lib.delete_versions_already", n=scope.versions_already_in_bin))
 
     if scope.kept_attachments:
-        points.append(f"{scope.kept_attachments} 个附件会一起移到回收站，恢复这条经历时会一起恢复。")
+        points.append(t("lib.delete_attachments_along", n=scope.kept_attachments))
 
     if scope.attachments_already_in_bin:
-        points.append(
-            f"另有 {scope.attachments_already_in_bin} 个附件此前已经单独删除，会保持各自原来的恢复期限，"
-            "不会随这条经历一起恢复。"
-        )
+        points.append(t("lib.delete_attachments_already", n=scope.attachments_already_in_bin))
 
     if item.category in DOCUMENT_KINDS:
-        points += [
-            "删除后立即停止使用：不会出现在导出的当前部分，也不能再编辑或查看历史。",
-            DOCUMENT_UNTOUCHED[item.category],
-        ]
+        points += [t("lib.delete_document_stops"), DOCUMENT_UNTOUCHED[item.category]]
     else:
-        points.append(
-            "删除后立即停止使用：不会出现在经历列表和导出的当前部分，也不能再编辑、确认或查看历史。"
-        )
+        points.append(t("lib.delete_experience_stops"))
 
     points += [
-        f"{RESTORE_WINDOW.days} 天内（截至 {format_local(scope.restore_deadline)}）可以在回收站恢复，"
-        "也可以提前永久删除；到期后会被永久删除。",
-        "已经下载到本机的导出文件不受影响，需要你自己处理。",
+        t("lib.delete_restore_window", days=RESTORE_WINDOW.days, until=format_local(scope.restore_deadline)),
+        t("lib.delete_downloads"),
         reference_note(references),
     ]
 
@@ -1916,7 +2189,7 @@ def _delete_confirm(request, user, item_id, error=None, status_code=200):
         title=_delete_title(item),
         points=points,
         action=f"/experiences/{item.id}/delete",
-        button="移到回收站",
+        button=t("lib.move_to_trash"),
         cancel=record_page(item),
         hidden={"expected_revision": str(item.revision)},
         section=section_of(item),
@@ -1985,32 +2258,29 @@ def purge_page(item_id: str, request: Request, user: CurrentUser = Depends(curre
 
 def _purge_confirm(request, user, item, attachments, references, along=0, kept_along=0, error=None, status_code=200):
     if item.category in DOCUMENT_KINDS:
-        what = f"会删除{KIND_NOUNS[item.category]}的全部内容和全部历史版本。"
+        what = t("lib.purge_document_scope", noun=KIND_NOUNS[item.category])
     elif attachments:
-        what = (
-            f"会删除{KIND_NOUNS[item.category]}的全部内容、私有备注、全部历史版本，"
-            f"以及它的 {attachments} 个附件文件（包括此前单独删除、还没到期的）。"
-        )
+        what = t("lib.purge_experience_scope_files", noun=KIND_NOUNS[item.category], n=attachments)
     else:
-        what = f"会删除{KIND_NOUNS[item.category]}的全部内容、私有备注和全部历史版本。"
+        what = t("lib.purge_experience_scope", noun=KIND_NOUNS[item.category])
 
     return confirm_page(
         request,
         user,
-        title=f"永久{_delete_title(item)}",
+        title=t("lib.purge_title", title=_delete_title(item)),
         points=[
-            "永久删除后无法恢复。",
+            t("lib.purge_cannot_undo"),
             what,
             *_purged_along_points(along, kept_along),
-            "清理会立即开始；如果暂时没有完成，内容也已经不能访问或恢复，系统会自动重试，并在回收站显示进度。",
-            "已经下载到本机的导出文件不受影响。",
+            t("lib.purge_cleanup"),
+            t("lib.purge_downloads"),
             reference_note(references, purge=True),
         ],
         action=f"/experiences/{item.id}/purge",
-        button="永久删除",
-        cancel="/experiences?tab=trash",
+        button=t("common.delete_permanently"),
+        cancel="/data/trash",
         hidden={"expected_revision": str(item.revision)},
-        acknowledge="我了解永久删除后无法恢复",
+        acknowledge=t("lib.purge_acknowledge"),
         error=error,
         status_code=status_code,
         section="trash",
@@ -2044,7 +2314,7 @@ def purge_item(
             references,
             along,
             kept_along,
-            error="请先勾选“我了解永久删除后无法恢复”。",
+            error=t("lib.purge_tick_first"),
             status_code=422,
         )
 
@@ -2085,11 +2355,11 @@ def export_all(request: Request, user: CurrentUser = Depends(current_user)):
         logger.error("building an export failed (%s)", type(error).__name__)
         return message_page(
             request,
-            title="导出没有完成",
-            message="生成导出文件时出错，没有下载任何内容。经历库里的内容不受影响，请稍后再试。",
+            title=t("lib.export_failed_title"),
+            message=t("lib.export_failed"),
             status_code=500,
             user=user,
-            links=[("/experiences", "回到我的经历")],
+            links=[("/data/export", t("nav.export"))],
         )
 
     return StreamingResponse(
@@ -2160,7 +2430,7 @@ async def upload_attachment(item_id: str, request: Request):
     if not has_place:
         await _drain(chunks, length)
         return await run_in_threadpool(
-            detail_page, request, user, item_id, upload_error=UPLOAD_FULL, status_code=409
+            detail_page, request, user, item_id, upload_error=str(UPLOAD_PROBLEMS[UploadOutcome.FULL][1]), status_code=409
         )
 
     try:
@@ -2195,11 +2465,11 @@ async def upload_attachment(item_id: str, request: Request):
     if outcome == UploadOutcome.PARENT_GONE:
         return message_page(
             request,
-            title="附件没有上传",
-            message="这条经历已经不存在，或在上传期间被删除了，所以这个文件没有上传。",
+            title=t("lib.upload_not_done_title"),
+            message=t("lib.upload_parent_gone"),
             status_code=404,
             user=user,
-            links=[("/experiences", "回到我的经历")],
+            links=[("/experiences", t("lib.back_to_library"))],
         )
 
     status_code, message = UPLOAD_PROBLEMS[outcome]
@@ -2233,11 +2503,11 @@ def download_attachment(
         logger.warning("attachment %s could not be sent (%s)", attachment.id, type(error).__name__)
         return message_page(
             request,
-            title="附件没有下载",
-            message=FILE_PROBLEMS.get(type(error), UNREADABLE_FILE),
+            title=t("lib.download_not_done_title"),
+            message=str(FILE_PROBLEMS.get(type(error), UNREADABLE_FILE)),
             status_code=500,
             user=user,
-            links=[(f"/experiences/{item_id}", "回到这条经历")],
+            links=[(f"/experiences/{item_id}", t("lib.back_to_experience"))],
         )
 
     return StreamingResponse(
@@ -2267,16 +2537,15 @@ def attachment_delete_page(
     return confirm_page(
         request,
         user,
-        title=f"删除附件：{attachment.filename}",
+        title=t("lib.delete_attachment_title", name=attachment.filename),
         points=[
-            "只删除这一个附件；这条经历的内容、历史版本和其他附件不受影响。",
-            "删除后立即不能下载；恢复期内导出全部时，它会放在导出包的回收站部分，并标明恢复期限。",
-            f"{RESTORE_WINDOW.days} 天内（截至 {format_local(now + RESTORE_WINDOW)}）"
-            "可以在这条经历的页面恢复，也可以提前永久删除；在那之前它仍占用一个附件名额。",
-            "已经下载到本机的文件需要你自己处理。",
+            t("lib.delete_attachment_only"),
+            t("lib.delete_attachment_hidden"),
+            t("lib.delete_attachment_restore", days=RESTORE_WINDOW.days, until=format_local(now + RESTORE_WINDOW)),
+            t("lib.delete_attachment_downloads"),
         ],
         action=f"/experiences/{item.id}/attachments/{attachment.id}/delete",
-        button="删除这个附件",
+        button=t("lib.delete_attachment_button"),
         cancel=f"/experiences/{item.id}",
         hidden={"expected_revision": str(attachment.revision)},
     )
@@ -2333,18 +2602,18 @@ def _attachment_purge_confirm(request, user, item, attachment, error=None, statu
     return confirm_page(
         request,
         user,
-        title=f"永久删除附件：{attachment.filename}",
+        title=t("lib.purge_attachment_title", name=attachment.filename),
         points=[
-            "永久删除后无法恢复。",
-            "只删除这一个附件的文件；这条经历和其他附件不受影响。",
-            "清理会立即开始；如果暂时没有完成，这个附件也已经不能下载或恢复，系统会自动重试。",
-            "已经下载到本机的文件不受影响。",
+            t("lib.purge_cannot_undo"),
+            t("lib.purge_attachment_only"),
+            t("lib.purge_attachment_cleanup"),
+            t("lib.purge_attachment_downloads"),
         ],
         action=f"/experiences/{item.id}/attachments/{attachment.id}/purge",
-        button="永久删除这个附件",
+        button=t("lib.purge_attachment_button"),
         cancel=f"/experiences/{item.id}",
         hidden={"expected_revision": str(attachment.revision)},
-        acknowledge="我了解永久删除后无法恢复",
+        acknowledge=t("lib.purge_acknowledge"),
         error=error,
         status_code=status_code,
     )
@@ -2371,7 +2640,7 @@ def attachment_purge(
             user,
             item,
             attachment,
-            error="请先勾选“我了解永久删除后无法恢复”。",
+            error=t("lib.purge_tick_first"),
             status_code=422,
         )
 
@@ -2416,39 +2685,76 @@ def document_view(request: Request, user: CurrentUser, kind: str, notice: str) -
     )
 
 
+def _preference_error_step(field_errors: dict[str, str]) -> str:
+    """The editor's step ("1"-"3") that holds the first of these errors, in the order the steps come, or ""."""
+    for number, (_, keys) in enumerate(STEPS, start=1):
+        names = {f"{key}_{stance}" for key in keys for stance in ("ideal", "ok", "no")}
+
+        if number == 2:
+            names.add("less_content")
+
+        if number == 3:
+            names.add("must_haves")
+
+        if names & set(field_errors):
+            return str(number)
+
+    return "1" if field_errors else ""
+
+
 def document_form(
     request: Request,
     user: CurrentUser,
     kind: str,
     *,
     values: dict[str, str],
+    posted: dict[str, str] | None = None,
     item_id: str | None = None,
     expected_revision: int | None = None,
     error: str | None = None,
     field_errors: dict[str, str] | None = None,
     next_path: str = "",
     status_code: int = 200,
+    stored: dict | None = None,
 ) -> Response:
-    """The form of the profile or preferences. Without item_id it starts a new one."""
+    """The form of the profile or preferences. Without item_id it starts a new one.
+
+    The preferences are edited in three steps, each dimension as rows (plan 3.3); after a failed save the rows come
+    back as posted, so nothing typed is lost."""
     base = DOCUMENT_PAGES[kind]
+    context = {
+        "kind": kind,
+        "item_id": item_id,
+        "values": values,
+        "expected_revision": expected_revision,
+        "error": error,
+        "field_errors": field_errors or {},
+        "next_path": safe_next(next_path) or "",
+        # A page shown again after a failed save may hold text that exists
+        # nowhere else yet; the leave guard must treat it as unsaved.
+        "unsaved_input": bool(error) and any(value.strip() for value in (posted or values).values()),
+        "action": f"{base}/{item_id}/save" if item_id else base,
+        "section": kind,
+    }
+
+    if kind == PREFERENCES:
+        editing = posted is not None and posted.get("pref_rows") == "1"
+        step = request.query_params.get("step", "")
+        # A failed save opens the step of its first error (plan 3.3), worked out here: the field is shown, focused
+        # (preferences.js) and named by its error; everything posted is shown again as it was.
+        failed_step = _preference_error_step(field_errors or {})
+        context.update(
+            rows=posted_rows(posted) if editing else rows_of({**values, ROWS_KEY: rows_kept(stored or {})}),
+            must=requirement_parts(values.get("must_haves", ""), posted if editing else None),
+            step=failed_step or (step if step in ("1", "2", "3") else "1"),
+            error_step=failed_step,
+            less_content=(posted or values).get("less_content", ""),
+        )
 
     return render(
         request,
-        "document_form.html",
-        {
-            "kind": kind,
-            "item_id": item_id,
-            "values": values,
-            "expected_revision": expected_revision,
-            "error": error,
-            "field_errors": field_errors or {},
-            "next_path": safe_next(next_path) or "",
-            # A page shown again after a failed save may hold text that exists
-            # nowhere else yet; the leave guard must treat it as unsaved.
-            "unsaved_input": bool(error) and any(value.strip() for value in values.values()),
-            "action": f"{base}/{item_id}/save" if item_id else base,
-            "section": kind,
-        },
+        "preferences_form.html" if kind == PREFERENCES else "document_form.html",
+        context,
         user=user,
         status_code=status_code,
     )
@@ -2470,14 +2776,23 @@ def document_edit(request: Request, user: CurrentUser, kind: str) -> Response:
         values=stored_values(item),
         item_id=item.id,
         expected_revision=item.revision,
+        stored=item.content,
     )
 
 
 def document_create(request: Request, user: CurrentUser, form: dict[str, str], kind: str) -> Response:
     rt = runtime(request)
+    # The preferences editor posts rows; they are folded into the stored fields first (plan 3.3).
+    posted = form
 
     try:
+        if kind == PREFERENCES:
+            form = fold_rows(form)
+
         entry = parse_experience_form(form, kind)
+
+        if kind == PREFERENCES:
+            entry = with_rows(entry, form)
 
         with rt.database.transaction() as db:
             create_document(db, user.id, entry, rt.now())
@@ -2487,6 +2802,7 @@ def document_create(request: Request, user: CurrentUser, form: dict[str, str], k
             user,
             kind,
             values=submitted_values(form, kind),
+            posted=posted,
             error=error.message,
             field_errors=error.field_errors,
             next_path=form.get("next", ""),
@@ -2502,6 +2818,7 @@ def document_create(request: Request, user: CurrentUser, form: dict[str, str], k
             user,
             kind,
             values=submitted_values(form, kind),
+            posted=posted,
             error=SAVE_FAILED,
             next_path=form.get("next", ""),
             status_code=500,
@@ -2519,12 +2836,22 @@ def document_save(
 ) -> Response:
     rt = runtime(request)
     expected = _expected_revision(form)
+    # The preferences editor posts rows; they are folded into the stored fields first (plan 3.3).
+    posted = form
 
     try:
         with rt.database.transaction() as db:
             # Someone else's or a missing record is not found, whatever the form holds.
             active_item(db, user.id, item_id, kinds=(kind,))
+
+            if kind == PREFERENCES:
+                form = fold_rows(form)
+
             entry = parse_experience_form(form, kind)
+
+            if kind == PREFERENCES:
+                entry = with_rows(entry, form)
+
             _, changed = save_draft(db, user.id, item_id, expected, entry, rt.now())
     except ContentError as error:
         return document_form(
@@ -2532,6 +2859,7 @@ def document_save(
             user,
             kind,
             values=submitted_values(form, kind),
+            posted=posted,
             item_id=item_id,
             expected_revision=expected,
             error=error.message,
@@ -2547,6 +2875,7 @@ def document_save(
             user,
             kind,
             values=submitted_values(form, kind),
+            posted=posted,
             error=DOCUMENT_GONE[kind],
             status_code=404,
         )
@@ -2557,6 +2886,7 @@ def document_save(
             user,
             kind,
             values=submitted_values(form, kind),
+            posted=posted,
             item_id=item_id,
             expected_revision=expected,
             error=SAVE_FAILED,
@@ -2612,7 +2942,7 @@ def preferences_edit(request: Request, user: CurrentUser = Depends(current_user)
 def preferences_create(
     request: Request,
     user: CurrentUser = Depends(current_user),
-    form: dict[str, str] = Depends(checked_form),
+    form: dict[str, str] = Depends(checked_large_form),
 ):
     return document_create(request, user, form, PREFERENCES)
 
@@ -2622,6 +2952,6 @@ def preferences_save(
     item_id: str,
     request: Request,
     user: CurrentUser = Depends(current_user),
-    form: dict[str, str] = Depends(checked_form),
+    form: dict[str, str] = Depends(checked_large_form),
 ):
     return document_save(request, user, form, PREFERENCES, item_id)

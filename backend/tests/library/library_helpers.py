@@ -40,21 +40,44 @@ class Form:
 
 
 class _FormReader(HTMLParser):
+    """The forms of a page as a browser would send them: inputs (ticked ones only), textareas, and a list's chosen
+    option (its first one if none is marked), leaving out what a browser leaves out: a disabled list and anything inside
+    a <template> (owner redesign: the preferences editor's row template)."""
+
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.forms: list[Form] = []
         self._form: Form | None = None
         self._textarea: str | None = None
         self._button: list[str] | None = None
+        self._template = 0
+        self._select: dict | None = None
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+
+        if tag == "template":
+            self._template += 1
+            return
+
+        if self._template:
+            return
 
         if tag == "form":
             self._form = Form(action=attrs.get("action", ""), method=attrs.get("method", "get"))
             self.forms.append(self._form)
         elif self._form is None:
             return
+        elif tag == "select" and attrs.get("name"):
+            self._select = {"name": attrs["name"], "first": None, "chosen": None, "disabled": "disabled" in attrs}
+        elif tag == "option" and self._select is not None:
+            value = attrs.get("value") or ""
+
+            if self._select["first"] is None:
+                self._select["first"] = value
+
+            if "selected" in attrs:
+                self._select["chosen"] = value
         elif tag == "input" and attrs.get("name"):
             if attrs.get("type") in ("checkbox", "radio") and "checked" not in attrs:
                 return
@@ -74,7 +97,21 @@ class _FormReader(HTMLParser):
             self._button.append(data)
 
     def handle_endtag(self, tag):
-        if tag == "textarea":
+        if tag == "template":
+            self._template = max(0, self._template - 1)
+            return
+
+        if self._template:
+            return
+
+        if tag == "select" and self._select is not None:
+            chosen = self._select["chosen"] if self._select["chosen"] is not None else self._select["first"]
+
+            if self._form is not None and not self._select["disabled"]:
+                self._form.fields.setdefault(self._select["name"], chosen or "")
+
+            self._select = None
+        elif tag == "textarea":
             self._textarea = None
         elif tag == "button" and self._button is not None and self._form is not None:
             self._form.buttons.append("".join(self._button).strip())

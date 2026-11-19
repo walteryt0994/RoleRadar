@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from app.library.candidates import readable_text
 from app.library.resume_rules import LABEL_FIELDS, LABELLED
 from app.outbound_review import ADDRESS, CONFIDENTIAL, EMAIL, ID_NUMBER, LABELS, MASK, PATTERNS, PHONE, review
+from app.i18n import MessageMap
 
 # Changing a rule changes this, and with it every confirmation's fingerprint. 2: North American phone numbers
 # and English street addresses (app.outbound_review, U3-D2-2).
@@ -46,6 +47,12 @@ WITHHELD_LABELS = {
     NAME: "写着姓名",
     CITY: "写着所在城市",
 }
+# What the confirmation page calls them, in the interface language (MASK_LABELS and WITHHELD_LABELS stay as they are:
+# the placeholders sent are written with them).
+MASK_NAMES = MessageMap({EMAIL: "found.email", PHONE: "found.phone", ID_NUMBER: "found.id_number", LINK: "found.link", NAME: "found.name"})
+WITHHELD_NAMES = MessageMap(
+    {ADDRESS: "found.has_address", CONFIDENTIAL: "found.has_confidential", NAME: "found.has_name", CITY: "found.has_city"}
+)
 # A shorter labelled name is not looked for elsewhere: it would mask ordinary words.
 MIN_NAME = 2
 LATIN = re.compile(r"[A-Za-z]")

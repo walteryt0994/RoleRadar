@@ -238,13 +238,18 @@ def test_the_records_page_without_a_save_permission_says_nothing_is_tracked(d6):
     app, browser, demo = d6(Scripted(), save=None)
     page = text_of(browser.get("/job-records").text)
 
-    assert "这次运行没有可以保存岗位的来源，所以不跟踪" in page and "只限合成来源" not in page
+    # Nothing can be kept, so nothing is tracked: the page is its short empty state, with no update offered (owner
+    # redesign, plan 5.3: no update without a target); the scope's words say so wherever they are shown.
+    assert "还没有保存的岗位。" in page and "更新跟踪中的岗位" not in page and "只限合成来源" not in page
+    assert "这次运行没有可以保存岗位的来源，所以不跟踪" in presentation.tracking_scope(app.state.discovery.sources)
 
 
 def test_the_simulations_records_page_keeps_its_own_words(app, browser_a):
     page = text_of(browser_a.get("/job-records").text)
 
-    assert "只限合成来源" in page and "每轮最多 20 个岗位、60 次来源请求、2 分钟" in page
+    # Empty: no update and none of its details (plan 5.3); the simulation's own words stay what they were.
+    assert "还没有保存的岗位。" in page and "更新跟踪中的岗位" not in page
+    assert "只限合成来源" in presentation.tracking_scope(app.state.discovery.sources)
     assert app.state.discovery.refresh_limits() == updates.BatchLimits()
 
 
@@ -263,7 +268,9 @@ def test_the_review_shows_its_start_button_only_when_the_model_requests_left_cov
     assert need == 10 and (START in page) is shown
 
     if not shown:
-        assert f"模型批准还剩 {left} 次、$4.50，不够这项操作最多要用的 {need} 次、${worst / 1_000_000:.2f}" in text_of(page)
+        # Each shortfall said on its own (UI bilingual batch, plan 4.3): here the requests, not the money.
+        assert f"模型批准还剩 {left} 次请求，不够这项操作最多要用的 {need} 次" in text_of(page)
+        assert "应用内预算还剩" not in text_of(page)
 
     nothing_taken(app, run_dir, provider, routed, before)
 
@@ -279,7 +286,9 @@ def test_the_review_shows_no_start_button_when_the_money_left_cannot_cover_one_s
     page = browser.get(url).text
 
     assert START not in page
-    assert f"模型批准还剩 20 次、$2.00，不够这项操作最多要用的 {need} 次、${worst / 1_000_000:.2f}" in text_of(page)
+    # The money alone, said on its own (plan 4.3): twenty requests are enough, so they are not named as short.
+    assert f"应用内预算还剩 $2.00，不够这项操作最坏要预留的 ${worst / 1_000_000:.2f}" in text_of(page)
+    assert "次请求，不够" not in text_of(page)
     nothing_taken(app, run_dir, provider, routed, before)
 
 

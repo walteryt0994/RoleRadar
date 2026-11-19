@@ -105,98 +105,91 @@ from app.library.web import (
     see_other,
 )
 from app.library.upload import receive_form
+from app.i18n import MessageMap, lazy, t
 
 BASE = "/imports"
 
-SOURCE_LABELS = {ImportSource.PDF: "PDF", ImportSource.DOCX: "Word（.docx）", ImportSource.TEXT: "粘贴的文字"}
-STATE_LABELS = {
-    ImportState.READING: "正在读取",
-    ImportState.READ: "文字已读取",
-    ImportState.PARTIAL: "部分读取",
-    ImportState.FAILED: "读取失败",
-}
+SOURCE_LABELS = {ImportSource.PDF: "PDF", ImportSource.DOCX: lazy("imp.web.1"), ImportSource.TEXT: lazy("imp.web.2")}
+STATE_LABELS = MessageMap({
+    ImportState.READING: "imp.web.3",
+    ImportState.READ: "imp.web.4",
+    ImportState.PARTIAL: "imp.web.5",
+    ImportState.FAILED: "imp.web.6",
+})
 FAILURES = {
-    ENCRYPTED: "这个文件设置了密码或已加密，读不到文字。",
-    NO_TEXT: "这个文件里没有读到文字，它可能是扫描件或图片。",
-    DAMAGED: "这个文件无法读取，可能已经损坏。",
-    TOO_MANY_PAGES: f"这个 PDF 超过 {MAX_PDF_PAGES} 页的上限，没有读取。",
-    NOT_WORD: "这个文件无法作为 Word（.docx）文档读取：可能已经损坏，或者不是 .docx。",
-    MACROS: "这个 Word 文件带有宏。为了安全，没有读取。",
-    TOO_BIG_INSIDE: "这个文件解压后的内容超过了读取上限，没有读取。",
-    TIMEOUT: f"读取超过了 {READ_SECONDS:g} 秒的时限，已经停止。",
-    CRASHED: "读取时出了错，没有读到内容。",
-    BUSY: "当时正有其他文件在读取，这次没有开始。",
-    MISSING_FILE: "暂存的原文件找不到了，或者和上传时不一致，无法读取。",
-    INTERRUPTED: "读取被中断了（可能是应用重启了）。",
+    ENCRYPTED: lazy("imp.web.7"),
+    NO_TEXT: lazy("imp.web.8"),
+    DAMAGED: lazy("imp.web.9"),
+    TOO_MANY_PAGES: lazy("imp.web.10", p0=MAX_PDF_PAGES),
+    NOT_WORD: lazy("imp.web.11"),
+    MACROS: lazy("imp.web.12"),
+    TOO_BIG_INSIDE: lazy("imp.web.13"),
+    TIMEOUT: lazy("imp.web.14", p0=format(READ_SECONDS, 'g')),
+    CRASHED: lazy("imp.web.15"),
+    BUSY: lazy("imp.web.16"),
+    MISSING_FILE: lazy("imp.web.17"),
+    INTERRUPTED: lazy("imp.web.18"),
 }
-RETRY_HINT = "可以重新读取一次。"
-FALLBACK_HINT = "可以改为粘贴简历文字，或者放弃这次导入。"
+RETRY_HINT = lazy("imp.web.19")
+FALLBACK_HINT = lazy("imp.web.20")
 NOTICES = {
-    "import_added": "已暂存，没有加入经历库。",
-    "import_already_added": "这份内容刚才已经提交过，这次没有重复暂存。",
-    "import_read_again": "已重新读取。",
-    "import_discarded": "已放弃这次导入：原文件和读到的文字已经从本机删除。",
+    "import_added": lazy("imp.web.21"),
+    "import_already_added": lazy("imp.web.22"),
+    "import_read_again": lazy("imp.web.23"),
+    "import_discarded": lazy("imp.web.24"),
     "import_discard_pending": (
-        "已放弃这次导入：它已经不能查看或下载。文件清理暂未完成，系统会自动重试。"
+        lazy("imp.web.25")
     ),
-    "import_ended": "这次导入在读取期间已被放弃、删除或已到期，读取结果没有保存。",
-    "import_ended_structuring": "这次导入在整理期间已被放弃、删除或已到期，整理结果没有保存。",
+    "import_ended": lazy("imp.web.26"),
+    "import_ended_structuring": lazy("imp.web.27"),
     "draft_saved": (
-        "已保存为待核对草稿：原文件、读到的文字、整理出的条目和你的修改、选择都会留下，不再按 7 天到期。"
-        "保存不是加入经历库，也不代表内容已经核实。"
+        lazy("imp.web.28")
     ),
-    "draft_already": "这份导入之前已经保存为草稿，这次没有重复保存。",
+    "draft_already": lazy("imp.web.29"),
     "draft_deleted": (
-        f"草稿已移到回收站，{RESTORE_WINDOW.days} 天内可以在回收站恢复，之后会清除。"
-        "已经加入经历库或基本资料的内容不受影响。"
+        lazy("imp.web.30", p0=RESTORE_WINDOW.days)
     ),
-    "draft_restored": "草稿已恢复：条目、你的修改和选择、已加入的去向都和删除前一样，可以继续核对。",
+    "draft_restored": lazy("imp.web.31"),
     # Keeping the original and ending the import (U2-B3b, finish_web).
     "original_kept": (
-        "原文件已另存为附件：它现在是那条经历的私有附件，随经历删除、恢复和导出；结束或删除这次导入都不影响它。"
+        lazy("imp.web.32")
     ),
-    "original_kept_already": "这份原文件刚才已经另存过，这次没有重复保存。",
+    "original_kept_already": lazy("imp.web.33"),
     "import_finished": (
-        "已结束这次导入：读到的文字、没有加入的条目和你的修改、原文件都已经清理。已经加入的内容和另存的附件不受影响。"
+        lazy("imp.web.34")
     ),
     "import_finish_pending": (
-        "已结束这次导入：它已经不能查看或下载。文件清理暂未完成，系统会自动重试。已经加入的内容和另存的附件不受影响。"
+        lazy("imp.web.35")
     ),
     "draft_finished": (
-        f"已结束：草稿移到了回收站，{RESTORE_WINDOW.days} 天内可以恢复后继续核对，之后会清除。"
-        "已经加入的内容和另存的附件不受影响。"
+        lazy("imp.web.36", p0=RESTORE_WINDOW.days)
     ),
 }
 TRASH = "/experiences?tab=trash"
 STORE_PROBLEMS = {
     Stored.FORM_USED: (
         409,
-        "这个导入表单已经用过了（可能是返回了旧页面），为了不重复暂存，这次没有读取。请重新提交。",
+        lazy("imp.web.37"),
     ),
     Stored.FULL: (
         409,
-        f"已经有 {MAX_OPEN_IMPORTS} 份导入占着名额（包括保存的草稿和回收站里还能恢复的草稿），达到上限，这次没有读取。"
-        "请先放弃不需要的临时导入，或者删除不需要的草稿后在回收站永久删除，再重新选择文件。",
+        lazy("imp.web.38", p0=MAX_OPEN_IMPORTS),
     ),
     Stored.FAILED: (
         500,
-        "暂存没有完成：保存文件或记录时出错，这次的内容没有暂存，也不能查看。经历库和其他导入不受影响，请稍后再试。",
+        lazy("imp.web.39"),
     ),
     Stored.FAILED_LEFTOVER: (
         500,
-        "暂存没有完成：保存时出错。这次上传的文件还有一份留在本机的私有目录里，暂时没能删除；"
-        "它不能查看或下载，也不会加入经历库，系统会自动重试清理。经历库和其他导入不受影响。",
+        lazy("imp.web.40"),
     ),
 }
 # A refusal at the limit gives the typed text back with the form, so it is not lost.
 FULL_WITH_TEXT = (
-    f"已经有 {MAX_OPEN_IMPORTS} 份导入占着名额（包括保存的草稿和回收站里还能恢复的草稿），达到上限，这次没有暂存。"
-    "你输入的文字还在下面，可以先复制；也可以在新标签页放弃不需要的临时导入，或者删除并永久删除不需要的草稿，"
-    "再回到这里提交。"
+    lazy("imp.web.41", p0=MAX_OPEN_IMPORTS)
 )
 DRAFT_NOT_DISCARDED = (
-    "这份导入已经保存为待核对草稿，不能用“放弃”清除，这次什么都没有删除。"
-    f"需要的话，可以在草稿页选择“删除草稿”：删除后 {RESTORE_WINDOW.days} 天内可以在回收站恢复。"
+    lazy("imp.web.42", p0=RESTORE_WINDOW.days)
 )
 
 logger = logging.getLogger("roleradar.library")
@@ -220,6 +213,7 @@ def imports_page(
     error: str | None = None,
     text: str = "",
     status_code: int = 200,
+    start_mode: str = "",
 ) -> Response:
     """The import form (with a new one-time key) and the owner's open imports."""
     rt = runtime(request)
@@ -244,6 +238,7 @@ def imports_page(
             "full": full,
             "upload_key": secrets.token_urlsafe(24),
             "text": text,
+            "start_mode": "text" if start_mode == "text" else "",
             "unsaved_input": bool(text.strip()),
             "notice": notice,
             "error": error,
@@ -269,14 +264,13 @@ def _labels() -> dict:
 def gone_page(request: Request, user: CurrentUser) -> Response:
     return message_page(
         request,
-        title="找不到这次导入",
+        title=t("imp.web.43"),
         message=(
-            f"它可能已经到期清理（没有保存为草稿的导入只暂存 {IMPORT_WINDOW.days} 天）、已经放弃或永久删除、"
-            "作为草稿删除后在回收站里，或者属于其他用户。回收站里的草稿可以先恢复再打开；需要的话，也可以重新导入。"
+            t("imp.web.44", p0=IMPORT_WINDOW.days)
         ),
         status_code=404,
         user=user,
-        links=[(BASE, "回到导入简历"), (TRASH, "去回收站")],
+        links=[(BASE, t("imp.web.45")), (TRASH, t("imp.web.46"))],
     )
 
 
@@ -291,23 +285,24 @@ def _problem_lines(row) -> list[str]:
     details = row.details or {}
 
     if details.get(UNREADABLE_PAGES):
-        pages = "、".join(str(number) for number in details[UNREADABLE_PAGES])
-        lines.append(f"第 {pages} 页无法读取，可能已经损坏；下面只有能读出的页。")
+        pages = t("imp.web.47").join(str(number) for number in details[UNREADABLE_PAGES])
+        lines.append(t("imp.web.48", p0=pages))
 
     if details.get(EMPTY_PAGES):
-        pages = "、".join(str(number) for number in details[EMPTY_PAGES])
-        lines.append(f"第 {pages} 页没有读到文字，可能是图片或扫描内容。")
+        pages = t("imp.web.47").join(str(number) for number in details[EMPTY_PAGES])
+        lines.append(t("imp.web.49", p0=pages))
 
     if details.get(TRUNCATED):
-        lines.append(f"文字超过 {MAX_TEXT_CHARS // 10000} 万字，后面的部分没有读取。")
+        lines.append(t("imp.web.50", p0=MAX_TEXT_CHARS // 10000))
 
     return lines
 
 
 @router.get("/imports")
-def imports_home(request: Request, notice: str = "", user: CurrentUser = Depends(current_user)):
-    # A save made from another page's leave dialog lands here too, and says what it saved.
-    return imports_page(request, user, notice=NOTICES.get(notice) or LIBRARY_NOTICES.get(notice))
+def imports_home(request: Request, notice: str = "", mode: str = "", user: CurrentUser = Depends(current_user)):
+    # A save made from another page's leave dialog lands here too, and says what it saved. ?mode=text opens the paste
+    # panel first (改为粘贴原文 after a failed reading): it only chooses which panel shows.
+    return imports_page(request, user, notice=NOTICES.get(notice) or LIBRARY_NOTICES.get(notice), start_mode=mode)
 
 
 @router.get("/imports/{import_id}")
@@ -336,7 +331,7 @@ def import_detail(import_id: str, request: Request, notice: str = "", user: Curr
             "section": "imports",
             "row": row,
             "draft": draft,
-            "name": row.filename or "粘贴的文字",
+            "name": row.filename or t("imp.web.2"),
             # A file it holds can be kept as an attachment (U2-B3b); pasted text has none.
             "keepable": row.storage_key is not None and row.source != ImportSource.TEXT,
             "problems": _problem_lines(row),
@@ -413,6 +408,17 @@ async def start_import(request: Request):
     has_file = received.file_type is not None
     has_text = bool(text.strip())
     problem = None
+    # The form switches between uploading a file and pasting text (owner redesign, plan 3.4); only the way chosen is
+    # read. A client that does not say (an older page) still has to send one of the two.
+    mode = received.values.get("mode", "")
+
+    if mode == "text" and has_file:
+        if received.staging is not None:
+            await run_in_threadpool(received.staging.discard)
+
+        has_file = False
+    elif mode == "file" and has_text:
+        text, has_text = "", False
 
     if has_file and has_text:
         problem = (BOTH, 422)
@@ -486,11 +492,11 @@ def download_original(import_id: str, request: Request, user: CurrentUser = Depe
     except FileStoreError:
         return message_page(
             request,
-            title="原文件没有下载",
-            message="暂存的原文件现在找不到或无法读取，或者和上传时不一致，所以没有下载。可以放弃这次导入后重新导入。",
+            title=t("imp.web.51"),
+            message=t("imp.web.52"),
             status_code=500,
             user=user,
-            links=[(f"{BASE}/{row.id}", "回到这次导入")],
+            links=[(f"{BASE}/{row.id}", t("imp.web.53"))],
         )
 
     return StreamingResponse(
@@ -518,11 +524,11 @@ def download_text(import_id: str, request: Request, user: CurrentUser = Depends(
     if not row.segments:
         return message_page(
             request,
-            title="还没有可下载的文字",
-            message="这次导入还没有读到文字，所以没有可下载的内容。",
+            title=t("imp.web.54"),
+            message=t("imp.web.55"),
             status_code=409,
             user=user,
-            links=[(f"{BASE}/{row.id}", "回到这次导入")],
+            links=[(f"{BASE}/{row.id}", t("imp.web.53"))],
         )
 
     return Response(
@@ -537,11 +543,11 @@ def download_text(import_id: str, request: Request, user: CurrentUser = Depends(
 
 def text_filename(row) -> str:
     if row.filename:
-        stem = row.filename.rsplit(".", 1)[0] or "导入"
+        stem = row.filename.rsplit(".", 1)[0] or t("imp.web.56")
 
-        return f"{stem}（读到的文字）.txt"
+        return t("imp.web.57", p0=stem)
 
-    return "粘贴的文字.txt"
+    return t("imp.web.58")
 
 
 # --- reading again and discarding ----------------------------------------------------------
@@ -564,11 +570,11 @@ def retry_import(
     if not started:
         return message_page(
             request,
-            title="没有重新读取",
-            message="这次导入现在不能重新读取：它可能已经读完、正在读取，或者页面不是最新的。请回到这次导入查看。",
+            title=t("imp.web.59"),
+            message=t("imp.web.60"),
             status_code=409,
             user=user,
-            links=[(f"{BASE}/{import_id}", "回到这次导入")],
+            links=[(f"{BASE}/{import_id}", t("imp.web.53"))],
         )
 
     state = read_import(rt.database, rt.files, rt.readings, user.id, import_id, rt.now)
@@ -582,17 +588,17 @@ def retry_import(
 def _discard_points(row, structured: bool) -> list[str]:
     if row.filename:
         # A file that could not be read has nothing read to clear.
-        what = f"原文件“{row.filename}”" + ("和从中读到的文字" if row.segments else "")
+        what = t("imp.web.61", p0=row.filename) + (t("imp.web.62") if row.segments else "")
     else:
-        what = "你粘贴的文字"
+        what = t("imp.web.63")
 
     if structured:
-        what += "，以及整理出的条目和你对它们的修改、选择"
+        what += t("imp.web.64")
 
     return [
-        f"会清理这次导入在本机暂存的{what}。",
-        "经历库、基本资料、求职偏好和其他导入都不受影响。",
-        "放弃后不能再查看、下载或恢复。这不是回收站：没有 7 天恢复期。",
+        t("imp.web.65", p0=what),
+        t("imp.web.66"),
+        t("imp.web.67"),
     ]
 
 
@@ -615,10 +621,10 @@ def discard_page(import_id: str, request: Request, user: CurrentUser = Depends(c
     return confirm_page(
         request,
         user,
-        title="放弃这次导入？",
+        title=t("imp.web.68"),
         points=_discard_points(row, structured),
         action=f"{BASE}/{row.id}/discard",
-        button="放弃本次导入",
+        button=t("imp.web.69"),
         cancel=f"{BASE}/{row.id}",
         section="imports",
     )
@@ -644,11 +650,11 @@ def discard_import(import_id: str, request: Request, user: CurrentUser = Depends
 def _not_discarded(request: Request, user: CurrentUser, import_id: str) -> Response:
     return message_page(
         request,
-        title="没有放弃：这是已保存的草稿",
+        title=t("imp.web.70"),
         message=DRAFT_NOT_DISCARDED,
         status_code=409,
         user=user,
-        links=[(f"{BASE}/{import_id}", "回到这份草稿")],
+        links=[(f"{BASE}/{import_id}", t("imp.web.71"))],
     )
 
 
@@ -662,7 +668,7 @@ def _not_done(request: Request, user: CurrentUser, title: str, message: str, lin
 @router.post("/imports/{import_id}/save", dependencies=[Depends(checked_form)])
 def save_import(import_id: str, request: Request, user: CurrentUser = Depends(current_user)):
     rt = runtime(request)
-    back = [(f"{BASE}/{import_id}", "回到这次导入")]
+    back = [(f"{BASE}/{import_id}", t("imp.web.53"))]
 
     try:
         saved = save_draft(rt.database, user.id, import_id, rt.now)
@@ -672,15 +678,15 @@ def save_import(import_id: str, request: Request, user: CurrentUser = Depends(cu
         logger.error("saving an import as a draft failed (%s)", type(error.__cause__).__name__)
 
         return _not_done(
-            request, user, "没有保存",
-            "写入数据库时出错，这次没有保存：它仍是临时导入，到期时间不变，内容都还在。可以稍后再试一次。",
+            request, user, t("imp.web.72"),
+            t("imp.web.73"),
             back, status_code=500,
         )
 
     if saved == Saved.BUSY:
         return _not_done(
-            request, user, "现在还不能保存",
-            "这次导入正在读取，或者正在整理成条目。等它结束后再保存；已有的内容和到期时间都没有变化。",
+            request, user, t("imp.web.74"),
+            t("imp.web.75"),
             back,
         )
 
@@ -688,14 +694,13 @@ def save_import(import_id: str, request: Request, user: CurrentUser = Depends(cu
 
 
 def _delete_points(row) -> list[str]:
-    name = f"“{row.filename}”" if row.filename else "粘贴的文字"
+    name = t("imp.web.76", p0=row.filename) if row.filename else t("imp.web.2")
 
     return [
-        f"这份草稿（{name}）会移到回收站：原文件、读到的文字、整理出的条目，以及你的修改和选择都先保留，"
-        "但在回收站里不能查看、整理、修改或加入。",
-        f"删除后 {RESTORE_WINDOW.days} 天内可以在回收站恢复，恢复后和删除前一样；到期后会清除，不能再恢复。",
-        "已经加入经历库或基本资料的内容不受影响，不会被撤销。",
-        "回收站里的草稿在恢复期内仍占一个导入名额。",
+        t("imp.web.77", p0=name),
+        t("imp.web.78", p0=RESTORE_WINDOW.days),
+        t("imp.web.79"),
+        t("imp.web.80"),
     ]
 
 
@@ -717,10 +722,10 @@ def delete_page(import_id: str, request: Request, user: CurrentUser = Depends(cu
     return confirm_page(
         request,
         user,
-        title="删除这份草稿？",
+        title=t("imp.web.81"),
         points=_delete_points(row),
         action=f"{BASE}/{row.id}/delete",
-        button="移到回收站",
+        button=t("imp.web.82"),
         cancel=f"{BASE}/{row.id}",
         hidden={"expected_revision": str(row.revision)},
         section="imports",
@@ -735,7 +740,7 @@ def delete_import(
     form: dict[str, str] = Depends(checked_form),
 ):
     rt = runtime(request)
-    back = [(f"{BASE}/{import_id}", "回到这份草稿")]
+    back = [(f"{BASE}/{import_id}", t("imp.web.71"))]
 
     try:
         delete_draft(rt.database, user.id, import_id, _expected_revision(form), rt.now, runs=rt.runs)
@@ -743,16 +748,16 @@ def delete_import(
         return gone_page(request, user)
     except ImportChanged:
         return _not_done(
-            request, user, "没有删除",
-            "这份草稿在你打开确认页之后有了变化（可能是在另一个标签页），这次没有删除。请回到草稿重新查看后再决定。",
+            request, user, t("imp.web.83"),
+            t("imp.web.84"),
             back,
         )
     except StorageError as error:
         logger.error("deleting an import draft failed (%s)", type(error.__cause__).__name__)
 
         return _not_done(
-            request, user, "没有删除",
-            "写入数据库时出错，草稿没有移到回收站，仍然可以继续核对。可以稍后再试一次。",
+            request, user, t("imp.web.83"),
+            t("imp.web.85"),
             back, status_code=500,
         )
 
@@ -770,7 +775,7 @@ def restore_import(
     form: dict[str, str] = Depends(checked_form),
 ):
     rt = runtime(request)
-    back = [(TRASH, "回到回收站")]
+    back = [(TRASH, t("imp.web.86"))]
 
     try:
         restore_draft(rt.database, user.id, import_id, _expected_revision(form), rt.now)
@@ -778,22 +783,22 @@ def restore_import(
         return gone_page(request, user)
     except RestoreClosed:
         return _not_done(
-            request, user, "不能恢复",
-            "这份草稿已经超过恢复期限，或者已经永久删除，不能再恢复；清理会自动完成。已经加入的内容不受影响。",
+            request, user, t("imp.web.87"),
+            t("imp.web.88"),
             back,
         )
     except ImportChanged:
         return _not_done(
-            request, user, "没有恢复",
-            "回收站页面不是最新的（这份草稿可能刚在另一个标签页恢复或删除过），这次没有恢复。请刷新回收站后再看。",
+            request, user, t("imp.web.89"),
+            t("imp.web.90"),
             back,
         )
     except StorageError as error:
         logger.error("restoring an import draft failed (%s)", type(error.__cause__).__name__)
 
         return _not_done(
-            request, user, "没有恢复",
-            "写入数据库时出错，草稿仍在回收站里，恢复期限不变。可以稍后再试一次。",
+            request, user, t("imp.web.89"),
+            t("imp.web.91"),
             back, status_code=500,
         )
 
@@ -801,24 +806,24 @@ def restore_import(
 
 
 def _purge_confirm(request, user, row, error=None, status_code=200):
-    name = f"“{row.filename}”" if row.filename else "粘贴的文字"
+    name = t("imp.web.76", p0=row.filename) if row.filename else t("imp.web.2")
 
     return confirm_page(
         request,
         user,
-        title="永久删除这份导入草稿？",
+        title=t("imp.web.92"),
         points=[
-            "永久删除后无法恢复。",
-            f"会删除这份草稿（{name}）的原文件、读到的文字、整理出的条目，以及你的修改和选择。",
-            "已经加入经历库或基本资料的内容不受影响。",
-            "清理会立即开始；如果文件暂时没有删掉，内容也已经不能访问或恢复，系统会自动重试。",
-            "已经下载到本机的导出文件不受影响。",
+            t("imp.web.93"),
+            t("imp.web.94", p0=name),
+            t("imp.web.95"),
+            t("imp.web.96"),
+            t("imp.web.97"),
         ],
         action=f"{BASE}/{row.id}/purge",
-        button="永久删除",
+        button=t("imp.web.98"),
         cancel=TRASH,
         hidden={"expected_revision": str(row.revision)},
-        acknowledge="我了解永久删除后无法恢复",
+        acknowledge=t("imp.web.99"),
         error=error,
         status_code=status_code,
         section="trash",
@@ -847,7 +852,7 @@ def purge_import(
 ):
     rt = runtime(request)
     expected = _expected_revision(form)
-    back = [(TRASH, "回到回收站")]
+    back = [(TRASH, t("imp.web.86"))]
 
     if form.get("acknowledge") != "yes":
         try:
@@ -856,7 +861,7 @@ def purge_import(
         except NotFound:
             return gone_page(request, user)
 
-        return _purge_confirm(request, user, row, error="请先勾选“我了解永久删除后无法恢复”。", status_code=422)
+        return _purge_confirm(request, user, row, error=t("imp.web.100"), status_code=422)
 
     try:
         ended = purge_draft(rt.database, rt.files, user.id, import_id, expected, rt.now)
@@ -864,8 +869,8 @@ def purge_import(
         return gone_page(request, user)
     except ImportChanged:
         return _not_done(
-            request, user, "没有永久删除",
-            "回收站页面不是最新的（这份草稿可能刚在另一个标签页恢复过），这次没有删除。请刷新回收站后再决定。",
+            request, user, t("imp.web.101"),
+            t("imp.web.102"),
             back,
         )
     except StorageError as error:
@@ -874,8 +879,8 @@ def purge_import(
         logger.error("purging an import draft failed (%s)", type(error.__cause__).__name__)
 
         return _not_done(
-            request, user, "没有永久删除",
-            "写入数据库时出错，草稿仍在回收站里，恢复期限不变。可以稍后再试一次。",
+            request, user, t("imp.web.101"),
+            t("imp.web.91"),
             back, status_code=500,
         )
 

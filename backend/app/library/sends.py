@@ -12,6 +12,7 @@ The pages say each kind and the total, and never count a maybe as sent.
 """
 from dataclasses import dataclass, fields, replace
 from enum import StrEnum
+from app.i18n import t
 
 
 class Call(StrEnum):
@@ -62,21 +63,20 @@ class Sends:
 def sends_text(sends: Sends) -> str:
     """What the pages say after 已交给服务的请求：each kind and the total, what is only maybe apart."""
     text = (
-        f"计数 {_times(sends.count_sent, sends.count_maybe)}、"
-        f"生成 {_times(sends.generation_sent, sends.generation_maybe)}，合计 {sends.total} 次"
+        t("imp.sends.1", p0=_times(sends.count_sent, sends.count_maybe), p1=_times(sends.generation_sent, sends.generation_maybe), p2=sends.total)
     )
 
     if sends.maybe:
-        text += f"，其中 {sends.maybe} 次只是可能已发出"
+        text += t("imp.sends.2", p0=sends.maybe)
 
     return text
 
 
 def _times(sent: int, maybe: int) -> str:
     if not maybe:
-        return f"{sent} 次"
+        return t("imp.sends.3", p0=sent)
 
     if not sent:
-        return f"{maybe} 次（可能已发出）"
+        return t("imp.sends.4", p0=maybe)
 
-    return f"{sent + maybe} 次（其中 {maybe} 次可能已发出）"
+    return t("imp.sends.5", p0=sent + maybe, p1=maybe)

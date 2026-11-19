@@ -1,148 +1,177 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
-{% block title %}核对整理出的条目{% endblock %}
+{% import "_icons.html" as i %}
+{% block title %}{{ t("imp.import_review.1") }}{% endblock %}
 {# A real run of this process going on: job_analysis.js shows its progress and reloads when it ends. #}
 {% block main_attrs %}{% if handed is not none %} data-task-running data-task-status="/imports/{{ row.id }}/structure/status"{% endif %}{% endblock %}
 {% block content %}
-{# One candidate: what it says now, where each value was found, what to be careful about,
-   what it may duplicate, and its actions; once adopted, where it went and which fields. #}
+{#- One candidate (owner redesign, plan 3.4, image 11): on the left, the resume's own words it was found in (原文依据),
+    as read and never rewritten; on the right, the item to check as it reads now (待核对条目), with the user's changes
+    marked; below, how to add it: a new experience, or added to one the user has (its fields then chosen one by one);
+    or left out. Adding it keeps it to be checked: nothing is confirmed by adding. Once added, where it went. -#}
 {% macro candidate_card(view) %}
-<article class="candidate{% if view.state in ('excluded', 'adopted') %} is-excluded{% endif %}" id="c-{{ view.id }}" aria-labelledby="t-{{ view.id }}">
-  <header class="candidate-head">
-    <h3 id="t-{{ view.id }}">{{ view.title }}</h3>
-    {% if view.state in ("excluded", "adopted") %}
-    <span class="badge">{{ CANDIDATE_STATE_LABELS[view.state] }}</span>
-    {% elif view.comparison %}
-    <span class="badge{% if view.comparison.label != 'new' %} diff{% endif %}">{{ (PROFILE_COMPARISON_LABELS if view.kind == PROFILE else COMPARISON_LABELS)[view.comparison.label] }}</span>
-    {% endif %}
-    {% if view.edited %}
-    <span class="badge">你改过</span>
-    {% endif %}
-  </header>
-  {% if view.state == "excluded" %}
-  <p class="muted small">已标为不加入。恢复后可以继续核对和修改。</p>
-  {% elif view.state == "adopted" %}
-  {% set adoption = view.adoption %}
-  {% if adoption %}
-  <p class="adopted-line">{{ ADOPTION_LABELS[adoption.action] }}：{% if adoption.title is none %}对应的{{ "基本资料" if adoption.category == PROFILE else "经历" }}已经删除（在回收站或已永久删除），这里不再提供链接。{% elif adoption.category == PROFILE %}<a href="/basic-profile">基本资料</a>{% else %}<a href="/experiences/{{ adoption.item_id }}">{{ adoption.title }}</a>{% endif %}</p>
-  <p class="muted small">写入的栏目：{{ adoption.fields|join("、") }}。其余栏目没有改动；写入的内容来自这次导入，没有经过核实。</p>
-  {% endif %}
-  {% else %}
-  {% for caution in view.cautions %}
-  <p class="caution">{{ caution }}</p>
-  {% endfor %}
-  <dl class="fields candidate-fields">
-    {% for f in view.fields %}
-    <dt>{{ f.label }}</dt>
-    <dd>
-      {% if f.value %}
-      <p class="text">{{ f.value }}</p>
+<article class="candidate-panel{% if view.state in ('excluded', 'adopted') %} is-excluded{% endif %}" id="c-{{ view.id }}" aria-labelledby="t-{{ view.id }}">
+  <div class="candidate-cols">
+    <section class="candidate-source" aria-labelledby="s-{{ view.id }}">
+      <h3 class="section-title" id="s-{{ view.id }}">{{ t("imp.source_basis") }}</h3>
+      {% set shown = namespace(any=False) %}
+      {% for f in view.fields %}
+      {% set said = f.found if f.edited else f.value %}
+      {% if said or f.edited %}
+      {% set shown.any = True %}
+      <div class="source-quote">
+        <p class="source-label">{{ f.label }}</p>
+        {% if f.edited %}
+        <p class="source-line small">{{ t("imp.import_review.11") }}{% if f.found %}<span class="text">{{ f.found }}</span>{% else %}{{ t("imp.import_review.12") }}{% endif %}</p>
+        {% else %}
+        <p class="text">{{ said }}</p>
+        {% endif %}
+        {% if f.places %}<p class="source-line muted small">{{ t("imp.auto_structured_content") if f.edited else t("imp.this_field") }}{{ t("imp.import_review.13") }}{{ t("common.sentence_gap") }}{{ f.places }}</p>{% endif %}
+      </div>
+      {% endif %}
+      {% endfor %}
+      {% if not shown.any %}<p class="empty">{{ t("imp.no_source_words") }}</p>{% endif %}
+    </section>
+    <section class="candidate-check" aria-labelledby="t-{{ view.id }}">
+      <header class="candidate-head">
+        <h3 id="t-{{ view.id }}">{{ view.title }}</h3>
+        <span class="badge">{{ CANDIDATE_STATE_LABELS[view.state] }}</span>
+        {% if view.comparison and view.state == "pending" %}
+        <span class="badge{% if view.comparison.label != 'new' %} diff{% endif %}">{{ (PROFILE_COMPARISON_LABELS if view.kind == PROFILE else COMPARISON_LABELS)[view.comparison.label] }}</span>
+        {% endif %}
+        {% if view.edited %}<span class="badge">{{ t("imp.import_review.2") }}</span>{% endif %}
+      </header>
+      {% if view.state == "excluded" %}
+      <p class="muted small">{{ t("imp.import_review.3") }}</p>
+      {% elif view.state == "adopted" %}
+      {% set adoption = view.adoption %}
+      {% if adoption %}
+      <p class="adopted-line">{{ t("imp.import_review.4", p0=(ADOPTION_LABELS[adoption.action])) }}{% if adoption.title is none %}{{ t("imp.import_review.5") }}{{ t("nav.basic_profile") if adoption.category == PROFILE else t("ws.kind_experience") }}{{ t("imp.import_review.6") }}{% elif adoption.category == PROFILE %}<a href="/basic-profile">{{ t("imp.import_review.7") }}</a>{% else %}<a href="/experiences/{{ adoption.item_id }}">{{ adoption.title }}</a>{% endif %}</p>
+      <p class="muted small">{{ t("imp.import_review.8") }}{{ list_join(adoption.fields) }}{{ t("imp.import_review.9") }}</p>
+      {% endif %}
       {% else %}
-      <p class="empty">（你清空了这一栏）</p>
-      {% endif %}
-      {% if f.edited %}
-      <p class="source-line small"><span class="badge">你改过</span> 自动整理的内容：{% if f.found %}<span class="text">{{ f.found }}</span>{% else %}原文里没有找到这一栏{% endif %}</p>
-      {% endif %}
-      {% if f.places %}
-      <p class="source-line muted small">{{ "自动整理的内容" if f.edited else "这一栏" }}逐字摘自原文{{ f.places }}</p>
-      {% endif %}
-      {% for caution in f.cautions %}
+      {% for caution in view.cautions %}
       <p class="caution">{{ caution }}</p>
       {% endfor %}
-    </dd>
-    {% endfor %}
-  </dl>
-  {% if view.kind == "skills" %}
-  <p class="muted small">技能只是你的自述：可以保存到基本资料的“自述技能”里，不会成为一段经历，也不会被当作做过某件事的证据。</p>
-  {% elif view.kind == "intention" %}
-  <p class="muted small">这是简历里当时写的求职意向，不会改动你现在的求职偏好。如果仍然适用，可以到<a href="/job-preferences" target="_blank" rel="noopener">求职偏好</a>里自己修改。</p>
-  {% endif %}
-  {% if view.comparison and view.comparison.matches %}
-  <div class="matches">
-    {% if view.kind == PROFILE %}
-    <p>和现有的<a href="/basic-profile" target="_blank" rel="noopener">基本资料</a>对照：</p>
-    {% else %}
-    <p>名称相同或相近的已有经历（只按名称比对：可能是同一段，也可能是另一段，例如同一所学校的不同学位）：</p>
-    {% endif %}
-    <ul>
-      {% for match in view.comparison.matches %}
-      <li>
-        {% if view.kind != PROFILE %}<a href="/experiences/{{ match.item_id }}" target="_blank" rel="noopener">{{ match.title }}</a>{% endif %}
-        <ul class="match-fields">
-          {% for name, state, existing in match.fields %}
-          <li>{{ CANDIDATE_FIELD_LABELS[view.kind][name] }}：{{ FIELD_STATE_LABELS[state] }}{% if state in ("differs", "contained") %}，已有的是“<span class="text">{{ existing }}</span>”{% endif %}</li>
+      <dl class="fields candidate-fields">
+        {% for f in view.fields %}
+        <div class="candidate-field">
+          <dt>{{ f.label }}{% if f.edited %} <span class="badge">{{ t("imp.import_review.2") }}</span>{% endif %}</dt>
+          <dd>
+            {% if f.value %}<p class="text">{{ f.value }}</p>{% else %}<p class="empty">{{ t("imp.import_review.10") }}</p>{% endif %}
+            {% for caution in f.cautions %}<p class="caution">{{ caution }}</p>{% endfor %}
+          </dd>
+        </div>
+        {% endfor %}
+      </dl>
+      {% if view.kind == "skills" %}
+      <p class="muted small">{{ t("imp.import_review.14") }}</p>
+      {% elif view.kind == "intention" %}
+      <p class="muted small">{{ t("imp.import_review.15") }}<a href="/job-preferences" target="_blank" rel="noopener">{{ t("imp.import_review.16") }}</a>{{ t("imp.import_review.17") }}</p>
+      {% endif %}
+      {% if view.comparison and view.comparison.matches %}
+      <details class="fold matches">
+        {{ m.fold_summary(t("imp.import_review.18") ~ t("imp.import_review.7") ~ t("imp.import_review.19") if view.kind == PROFILE else t("imp.import_review.20")) }}
+        <ul>
+          {% for match in view.comparison.matches %}
+          <li>
+            {% if view.kind != PROFILE %}<a href="/experiences/{{ match.item_id }}" target="_blank" rel="noopener">{{ match.title }}</a>{% endif %}
+            <ul class="match-fields">
+              {% for name, state, existing in match.fields %}
+              <li>{{ t("imp.import_review.21", p0=(CANDIDATE_FIELD_LABELS[view.kind][name]), p1=(FIELD_STATE_LABELS[state])) }}{% if state in ("differs", "contained") %}{{ t("imp.import_review.22") }}<span class="text">{{ existing }}</span>{{ t("imp.import_review.23") }}{% endif %}</li>
+              {% endfor %}
+            </ul>
+          </li>
           {% endfor %}
         </ul>
-      </li>
-      {% endfor %}
-    </ul>
+      </details>
+      {% endif %}
+      {% if view.state == "pending" %}
+      <p><a class="button secondary small" href="/imports/{{ row.id }}/candidates/{{ view.id }}/edit">{{ i.icon("pencil") }}{{ t("imp.import_review.24") }}</a></p>
+      {% endif %}
+      {% endif %}
+    </section>
   </div>
-  {% endif %}
-  {% endif %}
-  <div class="row-actions">
+  <div class="candidate-actions">
     {% if view.state == "pending" %}
-    {% if view.kind != "intention" %}
-    <a class="button" href="/imports/{{ row.id }}/candidates/{{ view.id }}/adopt">{{ "保存为自述技能…" if view.kind == "skills" else "加入…" }}</a>
-    {% endif %}
-    <a class="button" href="/imports/{{ row.id }}/candidates/{{ view.id }}/edit">修改</a>
-    <form method="post" action="/imports/{{ row.id }}/candidates/{{ view.id }}/exclude" class="inline">
-      {{ m.csrf() }}
-      <input type="hidden" name="expected_revision" value="{{ view.revision }}">
-      <button type="submit">不加入</button>
-    </form>
+    <h4 class="adopt-title">{{ t("imp.add_to_mine") }}</h4>
+    <div class="adopt-ways">
+      {% if view.kind in EXPERIENCE_CATEGORIES %}
+      <form method="post" action="/imports/{{ row.id }}/candidates/{{ view.id }}/adopt/new" class="adopt-way-form">
+        {{ m.csrf() }}
+        <input type="hidden" name="expected_revision" value="{{ view.revision }}">
+        <button type="submit" class="primary">{{ t("imp.adopt_new", kind=KIND_LABELS[view.kind]) }}</button>
+      </form>
+      {% if targets.get(view.kind) %}
+      <form method="get" action="/imports/{{ row.id }}/candidates/{{ view.id }}/adopt/fields" class="adopt-way-form adopt-into">
+        <label class="visually-hidden" for="into-{{ view.id }}">{{ t("imp.adopt_into_label") }}</label>
+        <select id="into-{{ view.id }}" name="target" required>
+          <option value="">{{ t("imp.choose_existing") }}</option>
+          {% for item in targets[view.kind] %}<option value="{{ item.id }}">{{ display_title(item.content, item.category) }}</option>{% endfor %}
+        </select>
+        <button type="submit" class="secondary">{{ t("imp.adopt_into") }}</button>
+      </form>
+      {% endif %}
+      {% elif view.kind != "intention" %}
+      <a class="button primary" href="/imports/{{ row.id }}/candidates/{{ view.id }}/adopt">{{ t("imp.save_as_skills_ellipsis") if view.kind == "skills" else t("imp.add_ellipsis") }}</a>
+      {% endif %}
+      <form method="post" action="/imports/{{ row.id }}/candidates/{{ view.id }}/exclude" class="adopt-way-form">
+        {{ m.csrf() }}
+        <input type="hidden" name="expected_revision" value="{{ view.revision }}">
+        <button type="submit" class="secondary">{{ t("imp.import_review.25") }}</button>
+      </form>
+    </div>
+    <p class="hint">{{ t("imp.adopt_stays_draft") }}</p>
     {% elif view.state == "excluded" %}
     <form method="post" action="/imports/{{ row.id }}/candidates/{{ view.id }}/restore" class="inline">
       {{ m.csrf() }}
       <input type="hidden" name="expected_revision" value="{{ view.revision }}">
-      <button type="submit">恢复为待核对</button>
+      <button type="submit" class="secondary">{{ t("imp.import_review.26") }}</button>
     </form>
     {% endif %}
   </div>
 </article>
 {% endmacro %}
-<p class="crumbs"><a href="/imports">导入简历</a> › <a href="/imports/{{ row.id }}">{{ name }}</a></p>
-<header class="pane-head" data-reveal>
-  <h1>核对整理出的条目</h1>
-  <p class="import-meta">{{ name }} · {% if draft %}已保存的待核对草稿（{{ draft.saved_at|localtime }} 保存，不会到期）{% else %}保留到 {{ row.expires_at|localtime }}（{{ format_remaining(row.expires_at, now) }}）{% endif %}</p>
+<p class="back-line"><a class="library-back" href="/imports/{{ row.id }}">{{ i.icon("arrow-left") }}{{ t("imp.back_to_import") }}</a></p>
+<header class="page-head">
+  <div class="page-head-main">
+    <h1>{{ t("imp.import_review.1") }}</h1>
+    <p class="import-file"><span class="file-chip">{{ i.icon("file-text") }}{{ name }}</span></p>
+  </div>
+  <div class="page-actions">
+    {% call m.more_menu() %}
+    <a class="menu-link" href="/imports/{{ row.id }}/candidates.json" download>{{ t("imp.import_review.55") }}</a>
+    <a class="menu-link" href="/imports/{{ row.id }}/finish">{{ t("imp.import_review.56") }}</a>
+    {% endcall %}
+  </div>
+  <p class="state-line"><span>{% if live_structured %}{{ t("imp.import_review.30", p0=(structured_by)) }}{% else %}{{ t("imp.import_review.31", p0=(structured_by)) }}{% endif %}</span><span>{% if draft %}{{ t("imp.import_review.28", p0=(draft.saved_at|localtime)) }}{% else %}{{ t("imp.import_review.29", p0=(row.expires_at|localtime), p1=(format_remaining(row.expires_at, now))) }}{% endif %}</span></p>
 </header>
-<div class="review-terms">
-  {% if live_structured %}
-  <p>这些条目由{{ structured_by }}整理，基本资料由本机规则整理。发给外部服务的是你确认过的、遮盖后的文字；整理可能拆错、漏掉或放错类别。自动整理的每一栏都逐字摘自原文并标出出处，对不上原文的已经丢弃，但这不代表内容已经核实。</p>
-  {% else %}
-  <p>这些条目由{{ structured_by }}整理：只按标题、日期和列表符号这类简单规则拆分，可能拆错、漏掉或放错类别，什么都没有发送出去。自动整理的每一栏都逐字摘自原文并标出出处，但这不代表内容已经核实。</p>
-  {% endif %}
-  {% if draft %}
-  <p>条目、你的修改和“不加入”的选择，都跟这份草稿一起保留，直到你删除草稿；删除后 {{ RESTORE_DAYS }} 天内可以在回收站恢复。保存草稿不代表内容已经核实：只有你逐条选择“加入…”并确认的内容，才会写进你的经历或基本资料；已经加入的不会因为删除草稿而撤销。求职偏好不会被改动。</p>
-  {% else %}
-  <p>条目、你的修改和“不加入”的选择，都只跟这次导入一起暂存到 {{ row.expires_at|shorttime }}：打开、修改都不会延长，到期或放弃导入时一起清除；需要更久时，可以在<a href="/imports/{{ row.id }}">导入页</a>保存为待核对草稿。只有你逐条选择“加入…”并确认的内容，才会写进你的经历或基本资料；已经加入的不会因为放弃或到期而撤销。求职偏好不会被改动。</p>
-  {% endif %}
-</div>
 {% if row.state == "partial" %}
-<p class="warning">这份简历有页面没有读出来，整理结果可能缺内容。</p>
+<p class="warning">{{ t("imp.import_review.36") }}</p>
 {% endif %}
 {% if live_refusal %}
-<p class="warning" role="status">发给外部服务的整理现在不可用：{{ live_refusal }}</p>
+<p class="warning" role="status">{{ t("imp.import_review.37", p0=(live_refusal)) }}</p>
 {% endif %}
 {% if running and not can_ask_again and live_structured %}
 <div class="notice" role="status">
   {% if handed is not none %}
-  <p data-task-step>正在由外部服务整理。已交给服务的请求：{{ sends_text(handed) }}。</p>
-  <p class="hint">完成后这一页会自动更新；没有更新时可以<a href="/imports/{{ row.id }}/review">刷新状态</a>。</p>
+  <p data-task-step>{{ t("imp.import_review.38", p0=(sends_text(handed))) }}</p>
+  <p class="hint">{{ t("imp.import_review.39") }}<a href="/imports/{{ row.id }}/review">{{ t("imp.import_review.40") }}</a>{{ t("imp.import_review.41") }}</p>
   {% else %}
-  <p>正在由外部服务整理，但这次整理不是在当前运行的应用里开始的（应用可能重启过），进度无法确认。</p>
+  <p>{{ t("imp.import_review.42") }}</p>
   {% endif %}
   <form method="post" action="/imports/{{ row.id }}/structure/cancel" data-task-cancel>
     {{ m.csrf() }}
     <input type="hidden" name="attempt" value="{{ structuring.attempt }}">
-    <button type="submit">取消整理</button>
+    <button type="submit">{{ t("imp.import_review.43") }}</button>
   </form>
-  <p class="hint">取消会停止还没有发出的请求；已经交给外部服务的请求无法撤回，它的回答会被丢弃。</p>
+  <p class="hint">{{ t("imp.import_review.44") }}</p>
 </div>
 {% elif running and not can_ask_again %}
-<p class="notice" role="status">正在整理。稍后<a href="/imports/{{ row.id }}/review">刷新</a>查看结果。</p>
+<p class="notice" role="status">{{ t("imp.import_review.45") }}<a href="/imports/{{ row.id }}/review">{{ t("imp.import_review.46") }}</a>{{ t("imp.import_review.47") }}</p>
 {% elif failure or (running and can_ask_again) %}
 <div class="error" role="alert">
-  <p>{{ failure or "上次整理没有完成（可能是应用重启了）。" }}</p>
+  <p>{{ failure or t("imp.last_structuring_unfinished") }}</p>
   {% if problems %}
   <ul>
     {% for line in problems %}
@@ -153,58 +182,67 @@
 </div>
 {% if live_offered %}
 <div class="form-actions">
-  <a class="button primary" href="/imports/{{ row.id }}/structure/confirm">重新发给外部服务整理…</a>
+  <a class="button primary" href="/imports/{{ row.id }}/structure/confirm">{{ t("imp.import_review.48") }}</a>
   <form method="post" action="/imports/{{ row.id }}/structure" class="inline">
     {{ m.csrf() }}
-    <button type="submit">用本机规则整理（不发送）</button>
+    <button type="submit">{{ t("imp.import_review.49") }}</button>
   </form>
 </div>
 {% else %}
 <form method="post" action="/imports/{{ row.id }}/structure">
   {{ m.csrf() }}
-  <div class="form-actions"><button type="submit" class="primary">重新整理</button></div>
+  <div class="form-actions"><button type="submit" class="primary">{{ t("imp.import_review.50") }}</button></div>
 </form>
 {% endif %}
 {% elif problems %}
 <div class="warning" role="status">
-  <p>另有 {{ problems|length }} 条整理结果没有通过原文核对，已经丢弃，没有显示在下面：</p>
+  <p>{{ t("imp.import_review.51", p0=(problems|length)) }}</p>
   <ul>
     {% for line in problems %}
     <li>{{ line }}</li>
     {% endfor %}
   </ul>
-  <p>需要的话，可以对照原文，以后自己补到经历库里。</p>
+  <p>{{ t("imp.import_review.52") }}</p>
 </div>
 {% endif %}
 {% if counts.total %}
-<p class="review-progress">共 {{ counts.total }} 条：待核对 {{ counts.pending }} 条，已加入 {{ counts.adopted }} 条，不加入 {{ counts.excluded }} 条；其中你改过 {{ counts.edited }} 条。</p>
-<p class="import-actions">
-  <a href="/imports/{{ row.id }}" target="_blank" rel="noopener">在新标签页对照原文</a>
-  <a href="/imports/{{ row.id }}/candidates.json" download>下载这些条目和核对进度（JSON）</a>
-  <a href="/imports/{{ row.id }}/finish">核对完了？结束这次导入…</a>
-</p>
-{% for kind, label, views in groups %}
-<section class="review-group" aria-labelledby="g-{{ kind }}">
-  <h2 id="g-{{ kind }}">{{ label }}</h2>
-  {% for view in views %}
-  {{ candidate_card(view) }}
+<p class="review-progress">{{ t("imp.import_review.53", p0=(counts.total), p1=(counts.pending), p2=(counts.adopted), p3=(counts.excluded), p4=(counts.edited)) }}</p>
+{#- The kinds as tabs (image 11), each with how many it holds: every kind is on the page (and shows without
+    JavaScript, one after another); tabs.js shows the one chosen (?kind=, else the first) in place. -#}
+{#- Skills and job intention are one tab of their own (技能与求职意向): references, never experiences. -#}
+{% set refs = namespace(views=[]) %}
+{% for _, _, views in references %}{% set refs.views = refs.views + views %}{% endfor %}
+{% set all_groups = groups + ([("references", t("imp.import_review.57"), refs.views)] if refs.views else []) %}
+{% set asked = request.query_params.get("kind", "") %}
+{% set kinds = all_groups|map(attribute=0)|list %}
+{% set kind = asked if asked in kinds else kinds[0] %}
+{% set reference_kinds = ["references"] %}
+<div data-tab-area data-tab-param="kind">
+  <nav class="chip-row history-tabs" aria-label="{{ t('imp.kinds_label') }}">
+    {% for group_kind, label, views in all_groups %}
+    <a class="chip" href="/imports/{{ row.id }}/review?kind={{ group_kind }}" data-tab-link="{{ group_kind }}"{% if group_kind == kind %} aria-current="page"{% endif %}>{{ label }}<span class="chip-count">{{ views|length }}</span></a>
+    {% endfor %}
+  </nav>
+  {% for group_kind, label, views in all_groups %}
+  <section class="review-group" id="g-{{ group_kind }}" aria-labelledby="gh-{{ group_kind }}" data-tab-panel="{{ group_kind }}">
+    <h2 id="gh-{{ group_kind }}" class="section-title">{{ label }}</h2>
+    {% if group_kind in reference_kinds %}<p class="muted small">{{ t("imp.import_review.58") }}</p>{% endif %}
+    {% for view in views %}
+    {{ candidate_card(view) }}
+    {% endfor %}
+  </section>
   {% endfor %}
-</section>
-{% endfor %}
-{% if references %}
-<section class="review-group" aria-labelledby="g-references">
-  <h2 id="g-references">技能与求职意向</h2>
-  <p class="muted small">这两类都不是经历。技能只能作为你的自述保存到基本资料里；当时的求职意向只供参考，不会改动你的求职偏好。</p>
-  {% for kind, label, views in references %}
-  {% for view in views %}
-  {{ candidate_card(view) }}
-  {% endfor %}
-  {% endfor %}
-</section>
-{% endif %}
+</div>
+{% elif not running and not failure %}
+<div class="empty-panel">
+  <p class="empty-icon">{{ i.icon("file-text") }}</p>
+  <p class="empty-sentence">{{ t("imp.no_candidates") }}</p>
+  <a class="button secondary" href="/imports/{{ row.id }}">{{ t("imp.back_to_import") }}</a>
+</div>
 {% endif %}
 {% endblock %}
 {% block scripts %}
+<script src="/static/tabs.js"></script>
 {% if handed is not none %}
 <script src="/static/job_analysis.js"></script>
 {% endif %}

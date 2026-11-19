@@ -58,12 +58,13 @@ def runs(app) -> int:
 
 def test_the_option_is_unticked_and_held_only_where_offered(app, browser_a, library, inline):
     page = browser_a.get(BASE).text
-    assert 'name="track_recommendations" value="yes">' in page and "默认不勾" in page
+    # Unticked as the page comes (the words "默认不勾" are gone with the setup page's long notes, plan 5.1).
+    assert 'name="track_recommendations" value="yes">' in page
 
     # Ticked with no experience chosen: no full result can come, so it is not offered, and the review says so.
     bare = search_of(review(browser_a, track_recommendations="yes"))
     assert stored(app, browser_a, bare).confirmation.track_recommendations is False
-    assert presentation.NOT_OFFERED in text_of(browser_a.get(bare).text)
+    assert str(presentation.NOT_OFFERED) in text_of(browser_a.get(bare).text)
 
     unticked = search_of(review(browser_a, sources=[library], use_preferences=True))
     ticked = search_of(review(browser_a, sources=[library], use_preferences=True, track_recommendations="yes"))
@@ -91,8 +92,9 @@ def test_a_ticked_search_holds_its_recommendations_and_shows_them_apart(app, bro
     assert "已加入我的岗位" not in found
 
     listing = text_of(browser_a.get("/job-records").text)
-    assert "当前推荐（临时留存跟踪）" in listing and "还没有加入我的岗位的岗位" in listing
-    assert f"（其中当前推荐 {len(recommended)} 个）" in listing
+    # Apart from 我的岗位 (plan 5.3): its own section and its own term, never counted among the saved jobs.
+    assert "当前推荐（临时留存跟踪）" in listing and "还没有保存的岗位。" in listing
+    assert f"（其中当前推荐 {len(recommended)} 个）" in listing and "更新跟踪中的岗位" in listing
 
     record = text_of(browser_a.get(f"/job-records/postings/{held_now[0].posting_record_id}").text)
     assert "当前推荐（临时留存跟踪）" in record and "自动删除" in record and "还没加入我的岗位" in record
@@ -157,7 +159,7 @@ def test_from_its_time_old_links_and_forms_change_nothing_and_a_text_goes(app, b
 
     # The text a 申请前核对 read is shown no more, and goes at once.
     gone = browser_a.get(text_page)
-    assert gone.status_code == 410 and LAPSED_TITLE in text_of(gone.text) and len(texts) == 0
+    assert gone.status_code == 410 and str(LAPSED_TITLE) in text_of(gone.text) and len(texts) == 0
     assert browser_a.get(f"/job-records/postings/{record_id}").status_code == 410
 
     for path, fields in (
@@ -228,7 +230,7 @@ def test_a_text_is_not_published_once_its_time_comes_after_the_check_is_written(
 
     # Written while it was current, with its time; never published, and said to have lapsed.
     assert written == [(True, until)]
-    assert response.status_code == 410 and LAPSED_TITLE in text_of(response.text)
+    assert response.status_code == 410 and str(LAPSED_TITLE) in text_of(response.text)
     assert len(texts) == 0
 
 
@@ -254,7 +256,7 @@ def test_a_text_asked_for_as_its_time_comes_is_dropped_never_shown(app, browser_
     monkeypatch.setattr(texts, "get", its_time_comes_then_read)
     response = browser_a.get(location)
 
-    assert response.status_code == 410 and LAPSED_TITLE in text_of(response.text) and len(texts) == 0
+    assert response.status_code == 410 and str(LAPSED_TITLE) in text_of(response.text) and len(texts) == 0
 
 
 def test_added_to_mine_a_new_apply_check_shows_its_text_past_the_old_time(app, browser_a, library, inline, board, clock):
@@ -274,7 +276,7 @@ def test_added_to_mine_a_new_apply_check_shows_its_text_past_the_old_time(app, b
 
     # 我的岗位 now: the text read before goes by the time it had, said as such and never as 已到期; nothing else of the
     # record goes, and the text the new check read is shown.
-    assert LAPSED_TITLE not in gone and "核对时定的到期时间" in gone and browser_a.get(before).status_code == 404
+    assert str(LAPSED_TITLE) not in gone and "核对时定的到期时间" in gone and browser_a.get(before).status_code == 404
     assert browser_a.get(after.headers["location"]).status_code == 200
     assert current(app, record_id) is not None and len(app.state.discovery.apply_checks) == 1
 

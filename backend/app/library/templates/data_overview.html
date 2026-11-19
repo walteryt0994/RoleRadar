@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% import "_icons.html" as i %}
+{% set area = "data" %}
+{% set section = "overview" %}
+{% block title %}{{ t("nav.data") }}{% endblock %}
+{#- 数据概览 (owner redesign, plan 8.2, image 16): what the user has here, counted, each row leading to its place; the
+    bin and the export as their own two entries. It changes nothing, and there is no "empty everything". -#}
+{% block layout %}
+<main id="main" class="data-page" tabindex="-1">
+  {% if notice %}
+  <p class="notice" role="status">{{ notice }}</p>
+  {% endif %}
+  <header class="page-head">
+    <h1>{{ t("nav.data") }}</h1>
+  </header>
+  <div class="data-columns">
+    <section class="home-panel" aria-labelledby="data-counts">
+      <h2 id="data-counts">{{ t("datax.counts") }}</h2>
+      <ul class="home-rows">
+        <li class="home-row"><span class="home-row-main"><a class="home-row-title" href="/experiences">{{ t("nav.experiences") }}</a></span><span class="data-count">{{ t("data.overview.count", n=counts.experiences) }}</span></li>
+        <li class="home-row"><span class="home-row-main"><a class="home-row-title" href="/directions/records">{{ t("nav.exploration_history") }}</a></span><span class="data-count">{{ t("data.overview.explorations", explorations=counts.explorations, decisions=counts.decisions) }}</span></li>
+        <li class="home-row"><span class="home-row-main"><a class="home-row-title" href="/job-records">{{ t("nav.my_jobs") }}</a></span><span class="data-count">{{ t("data.overview.count", n=counts.postings) }}</span></li>
+        <li class="home-row"><span class="home-row-main"><a class="home-row-title" href="/job-records/history">{{ t("nav.job_history") }}</a></span><span class="data-count">{{ t("data.overview.history", analyses=counts.analyses, searches=counts.searches) }}</span></li>
+      </ul>
+    </section>
+    <section class="home-panel" aria-labelledby="data-actions">
+      <h2 id="data-actions">{{ t("datax.manage") }}</h2>
+      <ul class="home-rows">
+        <li class="home-row"><span class="home-row-main"><a class="home-row-title" href="/data/trash">{{ t("nav.trash") }}</a><span class="home-row-meta">{{ t("data.overview.trash_hint") }}</span></span><span class="data-count">{{ t("data.overview.count", n=counts.binned) }}</span></li>
+        <li class="home-row"><span class="home-row-main"><a class="home-row-title" href="/data/export">{{ t("nav.export") }}</a><span class="home-row-meta">{{ t("data.overview.export_hint") }}</span></span></li>
+      </ul>
+    </section>
+  </div>
+</main>
+{% endblock %}

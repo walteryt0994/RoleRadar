@@ -23,13 +23,11 @@ from app.analysis_contracts import SIMULATION_PROVIDER
 from app.directions.explore import (
     FIELD_GROUPS,
     PREFERENCE_GROUPS,
-    STANCE_LABELS,
     ExplorationStatus,
     Problem,
     conflict_label,
 )
 from app.directions.contracts import ExplorationResult, Relation, name_key
-from app.experience_analysis import PREFERENCE_TOPICS
 from app.library.direction_export import (
     BASIS_LABELS,
     BASIS_STATE_LABELS,
@@ -37,16 +35,17 @@ from app.library.direction_export import (
     RELATION_LABELS,
 )
 from app.library.models import DecisionState
-from app.library.presentation import field_label
+from app.library.presentation import field_label, preference_parts
 from app.library.references import BasisState
+from app.i18n import MessageMap, lazy, t
 
-STEP = "探索方向"
+STEP = lazy("dir.pres.1")
 # The processing notice of NOTICE_VERSION "direction-1": the local simulation only.
 NOTICE = (
-    ("接收方", "本机模拟服务：RoleRadar 内置的固定规则，不是 AI。在这台电脑上运行，不联网，不保存请求。"),
-    ("用途", "只用于这一次方向探索：给出 3 到 5 个可以对比的方向，以及它们和你的经历、偏好的关系。"),
-    ("步骤", "确认后发出一个请求，随时可以取消。"),
-    ("结果", "只临时保留 30 分钟，服务重启后也会清除；不会自动保存，要留下请在结果页保存。"),
+    (lazy("dir.pres.2"), lazy("dir.pres.3")),
+    (lazy("dir.pres.4"), lazy("dir.pres.5")),
+    (lazy("dir.pres.6"), lazy("dir.pres.7")),
+    (lazy("dir.pres.8"), lazy("dir.pres.9")),
 )
 # The processing notice of a real service (U3, the direction pages on the real service; Codex §28.2.1). Its first
 # line, who receives the request, is the confirmed recipient's (notice_rows): the rest is the same for any model of
@@ -54,127 +53,127 @@ NOTICE = (
 LIVE_NOTICE_VERSION = "direction-live-2"
 LIVE_NOTICE_COVERS = {"openai": "https://api.openai.com/v1"}
 LIVE_NOTICE = (
-    ("用途", "确认后，下面勾选的经历栏目和求职偏好栏目会发给这个外部 AI 服务，只用于生成这一次方向探索：一次探索只发一个请求，不重试。"),
+    (lazy("dir.pres.4"), lazy("dir.pres.10")),
     (
-        "留存",
-        "按 OpenAI 的 API 数据政策，API 数据默认不用于训练模型。请求设为不保存回答，但这不等于不留存："
-        "滥用监控日志默认最多保留 30 天，法律要求或为防止伤害时可能更长；服务商还可能缓存由提示内容算出的加密中间数据，最长 24 小时。"
-        "这些数据不是原文，但这不代表匿名化或不能恢复，仍然是留存。",
+        lazy("dir.pres.11"),
+        lazy("dir.pres.12"),
     ),
     (
-        "费用",
-        "每次发送前按固定的保守额度预留费用，返回后按服务商报告的用量核算。这是应用内的预算检查，不是服务商账单的硬上限："
-        "进行中的请求可能超出预留。",
+        lazy("dir.pres.13"),
+        lazy("dir.pres.14"),
     ),
-    ("取消", "已经发出的请求无法撤回：取消只能停止还没发出的请求；已经发出的，回答不会采用，费用照常核算。"),
+    (lazy("dir.pres.15"), lazy("dir.pres.16")),
     (
-        "结果",
-        "只是一般性介绍，不是推荐；本机核对只会把说法降级，不会升级。只临时保留 30 分钟，服务重启后也会清除；"
-        "不会自动保存，要不要保存由你决定。",
+        lazy("dir.pres.8"),
+        lazy("dir.pres.17"),
     ),
 )
 PROVIDER_NAMES = {"openai": "OpenAI"}
-DECISIONS = tuple((state.value, DECISION_STATE_LABELS[state.value]) for state in DecisionState)
+# Said when a page is rendered, in its language: looked up at import, they would stay in the default language.
+DECISIONS = tuple((state.value, lazy(DECISION_STATE_LABELS.key_of(state.value))) for state in DecisionState)
 RELATIONS = (Relation.FITS, Relation.MAY_CONFLICT, Relation.UNKNOWN)
 GROUP_NAMES = tuple(group for group, _ in PREFERENCE_GROUPS)
+# The three groups as the pages name them, in the interface language; GROUP_NAMES stay the stable names the plan and
+# the material use.
+GROUP_LABELS = MessageMap({"行业兴趣与意愿": "dir.group.interest", "理想工作内容和方式": "dir.group.work", "现实条件": "dir.group.conditions"})
 
-REJECTED = {
-    Problem.SELECTION_INVALID: "所选的经历已经不能按核对时的版本使用，所以没有发送。请重新核对。",
-    Problem.SOURCES_CHANGED: "核对之后，所选的资料有了变化，所以没有发送。请重新核对。",
-    Problem.PREFERENCES_CHANGED: "核对之后，求职偏好有了变化，所以没有发送。请重新核对。",
-    Problem.PREFERENCE_VERSION_UNAVAILABLE: "核对时所用的求职偏好版本已经不能再用，所以没有发送。请重新核对。",
-    Problem.OUTBOUND_BLOCKED: "发送前的检查发现了疑似敏感的内容，所以没有发送。请重新核对。",
-    Problem.OVER_LIMIT: "这次要发送的内容超过了上限，所以没有发送。",
-    Problem.TOO_MANY_SOURCES: "这次选的经历超过了上限，所以没有发送。",
-    Problem.APPROVAL_MISSING: "这次确认和核对的内容对不上，所以没有发送。请重新核对。",
-    Problem.APPROVAL_MISMATCH: "这次确认和核对的内容对不上，所以没有发送。请重新核对。",
-    Problem.SIMULATION_ONLY: "方向探索现在只能交给本机模拟服务，所以没有发送。",
-    Problem.RECIPIENT_UNVERIFIED: "无法确认接收服务，所以没有发送。",
-    Problem.RECIPIENT_MISMATCH: "接收服务和核对时说明的不一致，所以没有发送。",
-    Problem.LIVE_ONLY: "这次探索只能交给核对时写明的真实服务，所以没有发送。",
+
+def group_text(group: str) -> str:
+    return GROUP_LABELS.get(group, group)
+
+REJECTED = MessageMap({
+    Problem.SELECTION_INVALID: "dir.pres.18",
+    Problem.SOURCES_CHANGED: "dir.pres.19",
+    Problem.PREFERENCES_CHANGED: "dir.pres.20",
+    Problem.PREFERENCE_VERSION_UNAVAILABLE: "dir.pres.21",
+    Problem.OUTBOUND_BLOCKED: "dir.pres.22",
+    Problem.OVER_LIMIT: "dir.pres.23",
+    Problem.TOO_MANY_SOURCES: "dir.pres.24",
+    Problem.APPROVAL_MISSING: "dir.pres.25",
+    Problem.APPROVAL_MISMATCH: "dir.pres.25",
+    Problem.SIMULATION_ONLY: "dir.pres.26",
+    Problem.RECIPIENT_UNVERIFIED: "dir.pres.27",
+    Problem.RECIPIENT_MISMATCH: "dir.pres.28",
+    Problem.LIVE_ONLY: "dir.pres.29",
     # The real service's gate (app.directions.runner.GATE_PREFIX and the gate's reason): nothing of the request went out.
-    "gate_stopped": "真实服务已停用（库目录里有停用文件），所以没有发送。",
-    "gate_paused": "这批批准已暂停（有费用待核实或超出预留），所以没有发送；继续需要新的批准。",
-    "gate_busy": "真实服务正在处理另一个任务（例如岗位分析），所以没有发送。请等它结束后重新核对。",
-    "gate_purpose": "这批批准不包括方向探索，所以没有发送。",
-    "gate_requests": "这批批准的请求次数已经用完，所以没有发送；继续需要新的批准。",
-    "gate_cost": "这次请求的预留费用会超出这批批准剩下的应用内预算，所以没有发送；继续需要新的批准。",
-    "gate_closed": "服务正在停止，所以没有发送。",
-    "gate_ended": "这次探索已经结束，所以没有发送。",
-    "gate_time": "发送前的准备用完了这次请求的时限，所以没有发送。",
-    "gate_input": "这次请求的输入超过了批准允许的上限，所以没有发送。",
-    "gate_payload": "这次请求的内容超过了预算策略允许的大小，所以没有发送。",
-    "gate_count": "发送前的计数没有完成，所以没有发送探索请求。",
-    "gate_batch": "D6 这一批不能再发送（已经停止、过了运行日、出现停止文件、模型批准暂停或占用记录对不上），所以没有发送。",
-}
-REJECTED_OTHERWISE = "这次请求不完整，所以没有发送。请重新核对。"
-FAILED = {
-    "timeout": "服务没有在限定时间内回答。",
-    "connection": "连不上服务。",
-    "rate_limit": "服务暂时拒绝了请求。",
-    "provider_response": "服务返回了错误。",
-    "refusal": "服务拒绝回答这次请求。",
-    "empty_response": "服务没有给出内容。",
-    "invalid_json": "回答的格式不对，整份回答没有采用。",
-    "schema": "回答的格式不对，整份回答没有采用。",
-    "citation": "回答引用了这次没有发送的内容，整份回答没有采用。",
-    "recipient_mismatch": "回答声称来自另一个服务或模型，没有采用。",
-    "internal_error": "RoleRadar 自己出了错，这次探索没有完成。",
-    "provider_unavailable": "真实服务现在用不了（没能建立，或者不是批准里写明的接收方），所以没有发送。",
-    "provider_config": "服务的设置拦下了这次请求，没有发出。",
-    "ledger_failed": "真实服务的费用记录没能写入或读出，所以没有采用这次的回答，结果不显示。已经交给服务的请求照常计数，见页面下方。",
-}
+    "gate_stopped": "dir.pres.30",
+    "gate_paused": "dir.pres.31",
+    "gate_busy": "dir.pres.32",
+    "gate_purpose": "dir.pres.33",
+    "gate_requests": "dir.pres.34",
+    "gate_cost": "dir.pres.35",
+    "gate_closed": "dir.pres.36",
+    "gate_ended": "dir.pres.37",
+    "gate_time": "dir.pres.38",
+    "gate_input": "dir.pres.39",
+    "gate_payload": "dir.pres.40",
+    "gate_count": "dir.pres.41",
+    "gate_batch": "dir.pres.42",
+})
+REJECTED_OTHERWISE = lazy("dir.pres.43")
+FAILED = MessageMap({
+    "timeout": "dir.pres.44",
+    "connection": "dir.pres.45",
+    "rate_limit": "dir.pres.46",
+    "provider_response": "dir.pres.47",
+    "refusal": "dir.pres.48",
+    "empty_response": "dir.pres.49",
+    "invalid_json": "dir.pres.50",
+    "schema": "dir.pres.50",
+    "citation": "dir.pres.51",
+    "recipient_mismatch": "dir.pres.52",
+    "internal_error": "dir.pres.53",
+    "provider_unavailable": "dir.pres.54",
+    "provider_config": "dir.pres.55",
+    "ledger_failed": "dir.pres.56",
+})
 # Why a confirmation does not start (app.directions.web.DirectionsRuntime.refusal): the gate's word, or "ledger".
-REFUSALS = {
-    "stopped": "真实服务已停用（库目录里有停用文件），现在不能开始探索；这次没有开始，什么都没有发送。",
-    "paused": "这批批准已暂停，不能再发送；继续需要新的批准。这次没有开始，什么都没有发送。",
-    "requests": "这批批准的请求次数已经用完，不能再发送；继续需要新的批准。这次没有开始，什么都没有发送。",
-    "ledger": "现在读不出真实服务的费用记录，所以没有开始，什么都没有发送。请稍后再试。",
-    "batch": "D6 这一批已经不能再发送（已经停止、过了运行日、出现停止文件或模型批准暂停），所以没有开始，什么都没有发送。",
-}
+REFUSALS = MessageMap({
+    "stopped": "dir.pres.57",
+    "paused": "dir.pres.58",
+    "requests": "dir.pres.59",
+    "ledger": "dir.pres.60",
+    "batch": "dir.pres.61",
+})
 # Why an approval is paused (app.live_gate), in the words of the analysis pages, and what kind of trouble it is.
-PAUSE_REASONS = {
-    "interrupted": "上次运行中断，有请求按预留占用记为费用待核实",
-    "unknown_usage": "有一次请求的费用无法确认，按保守占用记为费用待核实",
-    "over_reservation": "有一次请求按用量核算的费用超过了它的预留",
-    "above_count": "有一次请求的实际输入超过了发送前的计数",
-    "count_maybe": "有一次计数请求可能已发出，费用无法确认，按计数单价记账",
-}
-PAUSE_KINDS = {
-    "interrupted": "费用待核实",
-    "unknown_usage": "费用待核实",
-    "count_maybe": "费用待核实",
-    "over_reservation": "超出预留",
-    "above_count": "超出计数",
-}
-STALE = "探索期间，所用的资料有了修改：下面是当时的结果，不是当前有效的结果，不能保存，也不能据此做决定。"
-CHANGED_SINCE = "这次结果用到的资料之后改过：下面是当时的结果，不能保存，也不能据此做决定。"
-WITHDRAWN = "这次结果用到的资料已经删除，所以结果不再显示；恢复资料也不会让它重新出现。"
-UNAVAILABLE = "探索期间，所用的资料被删除或不能再使用，所以这次结果不显示。"
-SAVED_GONE = "这次探索保存以后已经永久删除：这次结果不能再保存，也不能据此做决定。要重新保存，请重新核对后再探索一次。"
-CANCELLED_BY = {
-    "user": "你取消了这次探索。",
-    "logout": "退出登录时取消了这次探索。",
-    "timeout": "这次探索超过了运行时限，已停止。",
-    "shutdown": "服务停止时取消了这次探索。",
-}
-NOTICES = {
-    "already": "这次确认已经开始过，没有重复执行。",
-    "scope_updated": "已按你的选择更新核对内容，请再看一遍后确认。",
-    "scope_changed": "你改动了发送范围，所以还没有开始。下面已按新的范围更新，请再看一遍后确认。",
-    "service_changed": "接收方或处理说明已经变化，所以没有开始。下面已按当前的服务重新生成核对内容，请再看一遍后确认。",
-    "saved": "已保存这次探索，可以在探索记录里查看。",
-    "decided": "已记下你的决定。",
-    "undone": "已撤销这条决定，它在回收站里，7 天内可以恢复。",
-    "own": "已把这条决定改为你自己的选择；原来的依据留作历史。",
-    "deleted": "已把这次探索移到回收站，7 天内可以恢复。",
-    "restored": "已从回收站恢复。",
-    "purged": "已永久删除，不能再恢复；数据会在清理时删掉。",
-}
-
-
-# The two preferences of one field each: their topic says it all.
-SINGLE_STANCES = ("less", "must")
+PAUSE_REASONS = MessageMap({
+    "interrupted": "dir.pres.62",
+    "unknown_usage": "dir.pres.63",
+    "over_reservation": "dir.pres.64",
+    "above_count": "dir.pres.65",
+    "count_maybe": "dir.pres.66",
+})
+PAUSE_KINDS = MessageMap({
+    "interrupted": "dir.pres.67",
+    "unknown_usage": "dir.pres.67",
+    "count_maybe": "dir.pres.67",
+    "over_reservation": "dir.pres.68",
+    "above_count": "dir.pres.69",
+})
+STALE = lazy("dir.pres.70")
+CHANGED_SINCE = lazy("dir.pres.71")
+WITHDRAWN = lazy("dir.pres.72")
+UNAVAILABLE = lazy("dir.pres.73")
+SAVED_GONE = lazy("dir.pres.74")
+CANCELLED_BY = MessageMap({
+    "user": "dir.pres.75",
+    "logout": "dir.pres.76",
+    "timeout": "dir.pres.77",
+    "shutdown": "dir.pres.78",
+})
+NOTICES = MessageMap({
+    "already": "dir.pres.79",
+    "scope_updated": "dir.pres.80",
+    "scope_changed": "dir.pres.81",
+    "service_changed": "dir.pres.82",
+    "saved": "dir.pres.83",
+    "decided": "dir.pres.84",
+    "undone": "dir.pres.85",
+    "own": "dir.pres.86",
+    "deleted": "dir.pres.87",
+    "restored": "dir.pres.88",
+    "purged": "dir.pres.89",
+})
 
 
 # --- which service, and what it costs ---------------------------------------------------------------------------------
@@ -185,42 +184,42 @@ def is_live(recipient) -> bool:
 
 
 def service_name(recipient) -> str:
-    return f"{PROVIDER_NAMES.get(recipient.provider, recipient.provider)} 的 {recipient.model}"
+    return t("dir.pres.90", p0=PROVIDER_NAMES.get(recipient.provider, recipient.provider), p1=recipient.model)
 
 
 def input_mode(recipient) -> str:
     """What the entry page says of the service a new exploration would go to: the app's, as it was started."""
     if not is_live(recipient):
-        return "使用本机模拟服务：由固定规则生成结果，不是 AI。"
+        return t("dir.pres.91")
 
-    return f"使用真实的外部 AI 服务：{service_name(recipient)}。下一步先列出要发送的内容，你确认后才发送。"
+    return t("dir.pres.92", p0=service_name(recipient))
 
 
 def task_mode(recipient) -> str:
     """What a task's running page says of its service: the recipient the task was confirmed for."""
     if not is_live(recipient):
-        return "本机模拟服务：由固定规则生成结果，不是 AI。"
+        return t("dir.pres.93")
 
-    return f"真实的外部 AI 服务：请求发给 {service_name(recipient)}。"
+    return t("dir.pres.94", p0=service_name(recipient))
 
 
 def result_mode(recipient, outcome) -> str:
     """Whose result a finished task shows: a rule result is never passed off as a real service's, nor the reverse."""
     if not is_live(recipient):
-        return "本机模拟服务：由固定规则生成结果，不是 AI。"
+        return t("dir.pres.93")
 
     if outcome is not None and outcome.result is not None:
-        return f"真实服务的结果：由外部 AI 模型（{service_name(recipient)}）生成，引文已在本机逐条核对。"
+        return t("dir.pres.95", p0=service_name(recipient))
 
-    return f"真实服务（{service_name(recipient)}）：这次没有可以显示的结果。"
+    return t("dir.pres.96", p0=service_name(recipient))
 
 
 def sends_note(recipient) -> str:
     """What follows the count of a task's requests: never offline or free for a real service."""
     if not is_live(recipient):
-        return "（本机模拟，没有联网，不产生费用）"
+        return t("dir.pres.97")
 
-    return "（真实服务：费用按服务商报告的用量在应用内核算，见这批批准的费用状态；不是服务商账单）"
+    return t("dir.pres.98")
 
 
 def notice_rows(request) -> tuple:
@@ -230,15 +229,15 @@ def notice_rows(request) -> tuple:
 
     recipient = request.recipient
 
-    return (("接收方", f"外部 AI 服务：{service_name(recipient)}，请求地址 {recipient.endpoint}。"),) + LIVE_NOTICE
+    return ((t("dir.pres.2"), t("dir.pres.99", p0=service_name(recipient), p1=recipient.endpoint)),) + LIVE_NOTICE
 
 
 def pause_text(reason: str) -> str:
     """An approval paused by its ledger, said as the approval's state, never as one exploration's cost."""
     kind = PAUSE_KINDS.get(reason)
-    head = f"当前批准{kind}，后续调用已暂停" if kind else "当前批准已暂停，后续调用不会再发送"
+    head = t("dir.pres.100", p0=kind) if kind else t("dir.pres.101")
 
-    return f"{head}：{PAUSE_REASONS.get(reason, reason)}。继续需要新的批准。"
+    return t("dir.pres.102", p0=head, p1=PAUSE_REASONS.get(reason, reason))
 
 
 def usd(micro_usd: int) -> str:
@@ -246,24 +245,26 @@ def usd(micro_usd: int) -> str:
 
 
 def condition_label(field: str) -> str:
-    """Which of the user's preferences a field is: its topic and stance, or its topic alone for a single one."""
-    topic, stance, _, _ = PREFERENCE_TOPICS[field]
+    """Which of the user's preferences a field is, in the page's language: its topic and stance, or its name alone
+    for a single one. (The prompt names them in its own words, explore.STANCE_LABELS and the analysis topics, unchanged.)"""
+    topic, stance = preference_parts(field)
 
-    return topic if stance in SINGLE_STANCES else f"{topic}：{STANCE_LABELS[stance]}"
+    return t("dir.pres.103", p0=topic, p1=stance) if stance else topic
 
 
 def unfilled_text(fields) -> str:
-    """The preferences fields not filled in, by topic: 工作方式（理想、也可以接受）, or the topic of a single one."""
+    """The preferences fields not filled in, by topic, in the page's language: 工作方式（理想、也可以接受）, or the name
+    of a single one."""
     topics: dict[str, list[str]] = {}
 
     for field in fields:
-        topic, stance, _, _ = PREFERENCE_TOPICS[field]
+        topic, stance = preference_parts(field)
         stances = topics.setdefault(topic, [])
 
-        if stance not in SINGLE_STANCES:
-            stances.append(STANCE_LABELS[stance])
+        if stance:
+            stances.append(stance)
 
-    return "、".join(f"{topic}（{'、'.join(stances)}）" if stances else topic for topic, stances in topics.items())
+    return t("dir.pres.104").join(t("dir.pres.105", p0=topic, p1=t("common.list_separator").join(stances)) if stances else topic for topic, stances in topics.items())
 
 
 def outcome_message(outcome, withdrawn: bool) -> str | None:
@@ -323,10 +324,20 @@ def cards(result: ExplorationResult, decisions: dict, places: dict) -> list[dict
             if links:
                 relations.append((RELATION_LABELS[relation.value], links))
 
+        # The experiences a direction quotes, each once, in the order quoted (the card's 相关经历).
+        related = []
+
+        for quote in direction.evidence:
+            found = places.get((quote.item_id, quote.version_id))
+
+            if found is not None and found[0] not in related:
+                related.append(found[0])
+
         shown.append(
             {
                 "anchor": f"direction-{index + 1}",
                 "name": direction.name,
+                "related": related,
                 "main_work": direction.main_work,
                 "evidence": [{"text": quote.text, "place": _place(places, quote)} for quote in direction.evidence],
                 "relations": relations,
@@ -347,7 +358,7 @@ def _place(places: dict, quote) -> str:
     found = places.get((quote.item_id, quote.version_id))
 
     if found is None:
-        return "已永久删除的经历"
+        return t("dir.pres.106")
 
     title, category = found
 
@@ -355,17 +366,17 @@ def _place(places: dict, quote) -> str:
 
 
 def decision_text(decision) -> str:
-    return DECISION_STATE_LABELS[decision.state] if decision is not None else "未决定"
+    return DECISION_STATE_LABELS[decision.state] if decision is not None else t("dir.pres.107")
 
 
 def held_text(basis) -> str:
     """Why a kept direction may not be searched for now, and what would let it be (U3-C3b)."""
     if basis in (BasisState.VERSION_IN_BIN, BasisState.RECORD_IN_BIN, BasisState.EXPLORATION_IN_BIN):
-        then = "恢复它依据的内容，或者在上面把它“重新定为我的选择”之后，才能用于找岗。"
+        then = t("dir.pres.108")
     else:
-        then = "在上面把它“重新定为我的选择”之后，才能用于找岗。"
+        then = t("dir.pres.109")
 
-    return f"{BASIS_STATE_LABELS[basis]}。{then}"
+    return t("dir.pres.110", p0=BASIS_STATE_LABELS[basis], p1=then)
 
 
 def basis_text(decision, state) -> str:
@@ -373,4 +384,4 @@ def basis_text(decision, state) -> str:
     if state is None or decision.basis == "personal":
         return BASIS_LABELS[decision.basis]
 
-    return f"{BASIS_LABELS[decision.basis]}；{BASIS_STATE_LABELS[state]}"
+    return t("dir.pres.111", p0=BASIS_LABELS[decision.basis], p1=BASIS_STATE_LABELS[state])

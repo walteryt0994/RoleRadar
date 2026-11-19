@@ -19,6 +19,7 @@ import pytest
 from sqlalchemy import event, select
 from sqlalchemy.exc import OperationalError
 
+from app.library.content import EXPERIENCE_CATEGORIES
 from app.library.candidates import (
     CANDIDATE_FIELDS,
     BAD_SEGMENT,
@@ -131,7 +132,7 @@ def owner_id(app, label: str = "合成用户 A") -> str:
 def paste(browser, text: str = RESUME) -> str:
     """Import pasted text through the import page's form; return the import's id."""
     form = browser.form("/imports", "/imports")
-    fields = {name: value for name, value in form.fields.items() if name not in ("file", "text", "consent")}
+    fields = {name: value for name, value in form.fields.items() if name not in ("file", "text", "consent", "mode")}
     response = browser.client.post(
         "/imports",
         data={**fields, "text": text, "consent": "yes"},
@@ -144,7 +145,7 @@ def paste(browser, text: str = RESUME) -> str:
 
 def upload(browser, filename: str, data: bytes, media_type: str) -> str:
     form = browser.form("/imports", "/imports")
-    fields = {name: value for name, value in form.fields.items() if name not in ("file", "text", "consent")}
+    fields = {name: value for name, value in form.fields.items() if name not in ("file", "text", "consent", "mode")}
     response = browser.client.post("/imports", data={**fields, "consent": "yes"}, files={"file": (filename, data, media_type)})
     assert response.status_code == 303, response.text
 
@@ -556,9 +557,13 @@ def test_candidates_are_shown_with_their_sources_and_nothing_reaches_the_library
     assert "原文写的是团队工作" in page and "原文这里是否定的说法" in page and "原文写的是计划或打算" in page
     assert "技能与求职意向" in page and "不会改动你现在的求职偏好" in page and "不会被当作做过某件事的证据" in page
     assert "共 8 条：待核对 8 条" in page
-    # No adopting: the only posts are leaving out, and logging out.
-    posts = {form.action for form in forms_in(page) if form.method == "post"}
-    assert posts == {"/logout"} | {f"/imports/{import_id}/candidates/{row.id}/exclude" for row in rows(app, import_id)}
+    # Nothing is adopted by showing them: the only posts are leaving each out, adding an experience as a new one beside
+    # it (owner redesign, plan 3.4, image 11: an explicit choice, kept to be checked), and logging out.
+    # (The shell's own language switch is on every page since the UI bilingual batch.)
+    posts = {form.action for form in forms_in(page) if form.method == "post"} - {"/language"}
+    assert posts == {"/logout"} | {f"/imports/{import_id}/candidates/{row.id}/exclude" for row in rows(app, import_id)} | {
+        f"/imports/{import_id}/candidates/{row.id}/adopt/new" for row in rows(app, import_id) if row.kind in EXPERIENCE_CATEGORIES
+    }
     assert "加入经历库</button>" not in page
     assert library_rows(app) == before
 

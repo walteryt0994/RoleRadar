@@ -186,7 +186,8 @@ def test_a_record_needs_no_attachment_and_uploading_never_touches_its_text(app, 
     assert after == before
     assert versions_after == versions
     assert actions[-1] == "attachment_added"
-    assert "添加一个附件" in browser_a.get(f"/experiences/{item_id}/history").text
+    # The events are the history page's second tab (owner redesign, plan 3.1).
+    assert "添加一个附件" in browser_a.get(f"/experiences/{item_id}/history?tab=events").text
 
 
 # --- what the upload refuses ---------------------------------------------------

@@ -1,64 +1,95 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
+{% import "_icons.html" as i %}
 {% set area = "directions" %}
-{% block title %}探索记录{% endblock %}
+{% block title %}{{ t("dir.direction_records.1") }}{% endblock %}
 {% block layout %}
 <main id="main" class="job-page job-reading" tabindex="-1">
   {% if notice %}
   <p class="notice" role="status">{{ notice }}</p>
   {% endif %}
-  <header class="job-head">
-    <h1>探索记录</h1>
+  {#- 探索记录 (owner redesign, plan 4.3): 保存的探索 and 方向决定 as two tabs, saved explorations first. A saved
+      exploration is one compact row that opens its own page with the directions as they were saved (never recomputed
+      from the library now); a state is said only when what it rests on changed. Each tab has its own empty state: an
+      icon, one sentence and one main action. -#}
+  <header class="page-head">
+    <h1>{{ t("dir.direction_records.1") }}</h1>
+    {# The long notes on the bin and the export are gone (plan 4.3); the ways there stay, in the More menu. #}
+    <div class="page-actions">
+      {% call m.more_menu() %}
+      <a class="menu-link" href="/export/all.zip" download>{{ t("nav.export") }}</a>
+      <a class="menu-link" href="/data/trash">{{ t("nav.trash") }}</a>
+      {% endcall %}
+    </div>
   </header>
   {% if error %}
   <p class="error" role="alert">{{ error }}</p>
   {% endif %}
+  <nav class="chip-row history-tabs" aria-label="{{ t('dir.direction_records.1') }}">
+    <a class="chip" href="/directions/records"{% if records_tab == "saved" %} aria-current="page"{% endif %}>{{ t("dirx.tab_saved") }}</a>
+    <a class="chip" href="/directions/records?tab=decisions"{% if records_tab == "decisions" %} aria-current="page"{% endif %}>{{ t("dirx.tab_decisions") }}</a>
+  </nav>
 
-  <section class="review-section" aria-labelledby="decisions-title" data-reveal>
-    <h2 id="decisions-title">方向决定</h2>
-    {% if has_decisions %}
-    {% for label, entries in groups %}
-    {% if entries %}
-    <p class="result-group">{{ label }}<span>{{ entries|length }} 个</span></p>
-    <ul class="lead-list">
-      {% for decision, state, changeable in entries %}
-      <li class="lead decision-row">
-        <p class="pick-title">{{ decision.name }}</p>
-        <p class="pick-meta"><span>{{ basis_text(decision, state) }}</span><span>{{ decision.updated_at|shorttime }}</span></p>
-        <div class="row-actions">
-          {% if changeable %}
-          <form method="post" action="/directions/decisions/{{ decision.id }}/state" class="inline">
-            {{ m.csrf() }}
-            <input type="hidden" name="expected_revision" value="{{ decision.revision }}">
-            {% for value, choice in DECISIONS %}
-            {% if value != decision.state %}
-            <button type="submit" name="state" value="{{ value }}" class="secondary">改为{{ choice }}</button>
-            {% endif %}
-            {% endfor %}
-          </form>
-          {% else %}
-          <a href="/directions/decisions/{{ decision.id }}/own">重新定为我的选择…</a>
-          {% endif %}
-          <form method="post" action="/directions/decisions/{{ decision.id }}/undo" class="inline">
-            {{ m.csrf() }}
-            <input type="hidden" name="expected_revision" value="{{ decision.revision }}">
-            <button type="submit" class="link-button">撤销</button>
-          </form>
-        </div>
-      </li>
+  {% macro empty_state(sentence) %}
+  <div class="empty-panel">
+    <p class="empty-icon">{{ i.icon("compass") }}</p>
+    <p class="empty-sentence">{{ sentence }}</p>
+    {% if unsaved_results|length == 1 %}
+    <a class="button primary" href="/directions/tasks/{{ unsaved_results[0].id }}">{{ t("dirx.view_result") }}</a>
+    {% elif unsaved_results %}
+    <p>{{ t("dirx.unsaved_results", n=unsaved_results|length) }}</p>
+    <ul class="plain-list empty-choices">
+      {% for task in unsaved_results %}
+      <li><a href="/directions/tasks/{{ task.id }}">{{ t("dirx.result_from", n=loop.index) }}</a></li>
       {% endfor %}
     </ul>
-    {% endif %}
-    {% endfor %}
     {% else %}
-    <p class="empty-state">还没有方向决定。在探索结果里点“保留”“暂缓”或“排除”，就会记在这里。</p>
+    <a class="button primary" href="/directions">{{ t("dirx.start") }}</a>
     {% endif %}
-  </section>
+  </div>
+  {% endmacro %}
 
+  {% if records_tab == "decisions" %}
+  {% if has_decisions %}
+  {% for label, entries in groups %}
+  {% if entries %}
+  <p class="result-group">{{ label }}<span>{{ t("dir.direction_records.3", p0=(entries|length)) }}</span></p>
+  <ul class="record-rows">
+    {% for decision, state, changeable in entries %}
+    <li class="record-row decision-row">
+      <div class="record-row-main">
+        <p class="pick-title">{{ decision.name }}</p>
+        <p class="pick-meta"><span>{{ basis_text(decision, state) }}</span><span>{{ decision.updated_at|shorttime }}</span></p>
+      </div>
+      <div class="row-actions">
+        {% if changeable %}
+        <form method="post" action="/directions/decisions/{{ decision.id }}/state" class="inline">
+          {{ m.csrf() }}
+          <input type="hidden" name="expected_revision" value="{{ decision.revision }}">
+          {% for value, choice in DECISIONS %}
+          {% if value != decision.state %}
+          <button type="submit" name="state" value="{{ value }}" class="secondary">{{ t("dir.direction_records.4", p0=(choice)) }}</button>
+          {% endif %}
+          {% endfor %}
+        </form>
+        {% else %}
+        <a href="/directions/decisions/{{ decision.id }}/own">{{ t("dir.direction_records.5") }}</a>
+        {% endif %}
+        <form method="post" action="/directions/decisions/{{ decision.id }}/undo" class="inline">
+          {{ m.csrf() }}
+          <input type="hidden" name="expected_revision" value="{{ decision.revision }}">
+          <button type="submit" class="link-button">{{ t("dir.direction_records.6") }}</button>
+        </form>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% endfor %}
   {% if handoff or held %}
   {# U3-C3b: only the decisions' ids and revisions go to the search page; it reads each again. Nothing starts here. #}
-  <section class="review-section" aria-labelledby="handoff-title" data-reveal>
-    <h2 id="handoff-title">用保留的方向找岗位</h2>
+  <section class="handoff" aria-labelledby="handoff-title">
+    <h2 id="handoff-title" class="section-title">{{ t("dir.direction_records.8") }}</h2>
     {% if handoff %}
     <form method="get" action="/discover">
       <ul class="value-list">
@@ -67,40 +98,40 @@
         {% endfor %}
       </ul>
       <div class="form-actions">
-        <button type="submit" class="secondary">用这些方向找岗位</button>
+        <button type="submit" class="primary">{{ t("dir.direction_records.9") }}</button>
       </div>
-      <p class="hint">只把选中的方向带到找岗页，不会开始查找，也不会修改求职偏好；在找岗页核对并确认后才会开始。暂缓和排除的方向不会带过去。</p>
     </form>
     {% else %}
-    <p class="empty-state">现在没有可以用于找岗的保留方向。</p>
+    <p class="empty-state">{{ t("dir.direction_records.11") }}</p>
     {% endif %}
     {% if held %}
-    <p class="hint">这些保留的方向现在不能用于找岗：</p>
     <ul class="points">
       {% for name, why in held %}
-      <li>“{{ name }}”：{{ why }}</li>
+      <li>{{ t("dir.direction_records.13", p0=(name), p1=(why)) }}</li>
       {% endfor %}
     </ul>
     {% endif %}
   </section>
   {% endif %}
-
-  <section class="review-section" aria-labelledby="saved-title" data-reveal>
-    <h2 id="saved-title">保存的探索</h2>
-    {% if explorations %}
-    <ul class="lead-list">
-      {% for exploration, names, state in explorations %}
-      <li class="lead">
-        <p class="pick-title"><a href="/directions/explorations/{{ exploration.id }}">{{ names|join("、") }}</a></p>
-        <p class="pick-meta"><span>保存于 {{ exploration.saved_at|shorttime }}</span><span>{{ SOURCE_STATE_LABELS[state] }}</span></p>
-      </li>
-      {% endfor %}
-    </ul>
-    {% else %}
-    <p class="empty-state">还没有保存的探索。探索结果只有点了“保存这次探索”才会留下。</p>
-    {% endif %}
-  </section>
-
-  <p class="hint">删除的探索和决定在<a href="/experiences?tab=trash">回收站</a>里，7 天内可以恢复。<a href="/export/all.zip" download>导出全部资料</a>时会包含方向探索和决定。</p>
+  {% else %}
+  {{ empty_state(t("dirx.empty_decisions")) }}
+  {% endif %}
+  {% else %}
+  {% if explorations %}
+  <ul class="record-rows">
+    {% for exploration, names, state in explorations %}
+    <li class="record-row">
+      <a class="record-row-link" href="/directions/explorations/{{ exploration.id }}">
+        <span class="pick-title">{{ list_join(names) }}</span>
+        <span class="pick-meta"><span>{{ t("dir.direction_records.15", p0=(exploration.saved_at|shorttime)) }}</span>{% if state != SourceState.CURRENT %}<span class="badge">{{ SOURCE_STATE_LABELS[state] }}</span>{% endif %}</span>
+        <span class="chevron">{{ i.icon("chevron-right") }}</span>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  {{ empty_state(t("dirx.empty_saved")) }}
+  {% endif %}
+  {% endif %}
 </main>
 {% endblock %}

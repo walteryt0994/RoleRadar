@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from app.library.content import (
+    BODY,
     CATEGORY_FIELDS,
     CATEGORY_LABELS,
     EXPERIENCE_CATEGORIES,
@@ -49,6 +50,7 @@ from app.library.content import (
 from app.library.errors import ContentError
 from app.library.imports import locator, segment_text
 from app.outbound_review import MASK_START
+from app.i18n import MessageMap, is_english, lazy, t
 
 CONTRACT_VERSION = "1"
 # A resume holds a few dozen entries at most; the bound keeps a page and its rows small.
@@ -64,16 +66,22 @@ CANDIDATE_KINDS = (PROFILE, *EXPERIENCE_CATEGORIES, *REFERENCE_KINDS)
 # The profile fields a structurer may fill, fixed as U2-B2a agreed them: the profile has grown a
 # field of its own since (自述技能), which only the skills kind feeds, by the user's choice.
 PROFILE_CANDIDATE_FIELDS = ("name", "phone", "email", "city", "links")
+# The experience fields a structurer may fill, fixed as they were before experiences gained their one free-text field
+# (经历内容, UI bilingual batch, plan 5.2): the structuring contract (and the real service's schema, app.live_structuring)
+# is unchanged; a candidate adopted keeps the split fields, and the user's own edit later writes them as one text.
 CANDIDATE_FIELDS = {
     PROFILE: tuple(entry for entry in CATEGORY_FIELDS[PROFILE] if entry.name in PROFILE_CANDIDATE_FIELDS),
-    **{kind: CATEGORY_FIELDS[kind] for kind in EXPERIENCE_CATEGORIES},
+    **{kind: tuple(entry for entry in CATEGORY_FIELDS[kind] if entry.name != BODY) for kind in EXPERIENCE_CATEGORIES},
+    # These labels and hints are part of the real structuring service's instructions (app.live_structuring), so they
+    # stay as written; pages name these kinds through KIND_LABELS and the interface messages.
     SKILLS: (Field("text", "技能（自述）", "简历里列出的技能，只是你的自述", True, 5000),),
     INTENTION: (Field("text", "当时的求职意向", "简历里当时写的求职意向，不代表现在的偏好", True, 2000),),
 }
 KIND_LABELS = {
-    **{kind: CATEGORY_LABELS[kind] for kind in (PROFILE, *EXPERIENCE_CATEGORIES)},
-    SKILLS: "技能（自述）",
-    INTENTION: "当时的求职意向",
+    # Said in the page's language; the stored kinds stay codes.
+    **{kind: lazy(f"category.{kind}") for kind in (PROFILE, *EXPERIENCE_CATEGORIES)},
+    SKILLS: lazy("imp.cand.1"),
+    INTENTION: lazy("imp.cand.3"),
 }
 
 # Why one candidate of an answer was dropped.
@@ -88,18 +96,18 @@ CUT_CONTEXT = "cut_context"
 # Only for an outside service's answer (U2-C3): it quoted a placeholder, or gave a basic profile.
 MASKED = "masked"
 LOCAL_ONLY = "local_only"
-PROBLEM_TEXTS = {
-    FORMAT: "格式不符合约定",
-    UNKNOWN_KIND: "类别不是可以整理的类别",
-    UNKNOWN_FIELD: "有一栏不属于这个类别",
-    BAD_SEGMENT: "指向的原文位置不存在，或那里没有读到文字",
-    NOT_IN_SOURCE: "引用的文字在原文里找不到",
-    NOT_ONE_LINE: "只能写一行的栏目里有多行",
-    TOO_LONG: "超过了这一栏的字数上限",
-    CUT_CONTEXT: "引用截掉了同一句里的否定、团队、计划或不确定时间的说法",
-    MASKED: "引用了发送前已经隐去的内容",
-    LOCAL_ONLY: "基本资料只由本机规则整理，外部服务给出的这一条不采用",
-}
+PROBLEM_TEXTS = MessageMap({
+    FORMAT: "imp.cand.5",
+    UNKNOWN_KIND: "imp.cand.6",
+    UNKNOWN_FIELD: "imp.cand.7",
+    BAD_SEGMENT: "imp.cand.8",
+    NOT_IN_SOURCE: "imp.cand.9",
+    NOT_ONE_LINE: "imp.cand.10",
+    TOO_LONG: "imp.cand.11",
+    CUT_CONTEXT: "imp.cand.12",
+    MASKED: "imp.cand.13",
+    LOCAL_ONLY: "imp.cand.14",
+})
 
 # Why an answer gave nothing to keep. SERVICE_FAILED is said by review.py.
 INVALID_ANSWER = "invalid_answer"
@@ -108,11 +116,11 @@ NOTHING_FOUND = "nothing_found"
 NONE_VALID = "none_valid"
 SERVICE_FAILED = "service_failed"
 FAILURE_TEXTS = {
-    INVALID_ANSWER: "整理结果不是约定的格式，什么都没有保存。",
-    TOO_MANY: f"整理结果超过了 {MAX_CANDIDATES} 条的上限，什么都没有保存。可以只粘贴简历里需要的部分，重新导入后再整理。",
-    NOTHING_FOUND: "没有整理出任何条目。模拟规则只认识带“教育经历”“项目经历”“实习经历”等标题的简历。",
-    NONE_VALID: "整理出的条目都没有通过原文核对，什么都没有保存。",
-    SERVICE_FAILED: "整理时出了错，什么都没有保存。",
+    INVALID_ANSWER: lazy("imp.cand.15"),
+    TOO_MANY: lazy("imp.cand.16", p0=MAX_CANDIDATES),
+    NOTHING_FOUND: lazy("imp.cand.17"),
+    NONE_VALID: lazy("imp.cand.18"),
+    SERVICE_FAILED: lazy("imp.cand.19"),
 }
 
 # Cautions: what the text around a value calls for care about.
@@ -124,14 +132,14 @@ UNCERTAIN_DATE = "uncertain_date"
 UNSPLIT = "unsplit"
 KIND_UNCLEAR = "kind_unclear"
 STRUCTURER_NOTES = (UNSPLIT, KIND_UNCLEAR)
-CAUTION_TEXTS = {
-    NEGATED: "原文这里是否定的说法（例如“没有”“未”），不能当成做过的事。",
-    TEAM: "原文写的是团队工作，或者参与、协助，你个人负责的部分请核对。",
-    PLAN: "原文写的是计划或打算，不是已经做完的事。",
-    UNCERTAIN_DATE: "原文的时间不确定（例如“预计”“左右”），请核对。",
-    UNSPLIT: "有一行没能拆成几栏，整行放在了同一栏里，请核对。",
-    KIND_UNCLEAR: "不确定属于哪一类，先放在“其他”里。",
-}
+CAUTION_TEXTS = MessageMap({
+    NEGATED: "imp.cand.20",
+    TEAM: "imp.cand.21",
+    PLAN: "imp.cand.22",
+    UNCERTAIN_DATE: "imp.cand.23",
+    UNSPLIT: "imp.cand.24",
+    KIND_UNCLEAR: "imp.cand.25",
+})
 
 _MONTHS = r"jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec"
 MARKERS = (
@@ -542,10 +550,10 @@ def parse_edits(form, kind: str) -> dict[str, str]:
     values = {entry.name: _clean(form.get(entry.name, ""), entry, errors) for entry in CANDIDATE_FIELDS[kind]}
 
     if errors:
-        raise ContentError("有内容没能保存，请按提示修改后再保存。", errors)
+        raise ContentError(t("imp.cand.26"), errors)
 
     if not any(values.values()):
-        raise ContentError("请至少保留一栏内容。不需要这一条的话，可以回到核对页选择“不加入”。")
+        raise ContentError(t("imp.cand.27"))
 
     return values
 
@@ -573,7 +581,7 @@ def where(segments: list[dict], piece: dict) -> str:
     number = piece["segment"]
 
     if not 1 <= number <= len(segments):
-        return "原文中"
+        return t("loc.in_text")
 
     segment = segments[number - 1]
     place = locator(segment)
@@ -582,15 +590,23 @@ def where(segments: list[dict], piece: dict) -> str:
     if segment["kind"] == "paragraph" or not lines:
         return place
 
-    # "表格 1 第 2 行", but "第 2 页第 3 行" and "粘贴的文字第 3 行".
-    gap = " " if place[-1].isdigit() else ""
+    # "表格 1 第 2 行", but "第 2 页第 3 行" and "粘贴的文字第 3 行"; in English "Table 1, line 2".
+    gap = " " if place[-1].isdigit() and not is_english() else ""
 
     if len(lines) == 1:
-        return f"{place}{gap}第 {lines[0]} 行"
+        return t("loc.line", place=place, gap=gap, n=lines[0])
 
     *before, last = lines
 
-    return f"{place}{gap}第 {'、'.join(map(str, before))} 或 {last} 行，同样的文字出现在 {len(lines)} 行，{UNSURE}"
+    return t(
+        "loc.lines_unsure",
+        place=place,
+        gap=gap,
+        before=t("common.list_separator").join(map(str, before)),
+        last=last,
+        count=len(lines),
+        unsure=t("loc.unsure"),
+    )
 
 
 def _lines(text: str, quote: str) -> list[int]:

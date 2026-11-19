@@ -21,12 +21,13 @@ from fastapi.testclient import TestClient
 from app.analysis_contracts import SIMULATION_PROVIDER
 from app.discovery import synthetic
 from app.discovery.agent import Finished, ScriptedDecider, TraceStep, make_action
-from app.discovery.contracts import EndReason, Tool
+from app.discovery.contracts import Dimension, EndReason, Tool, Unlisted
 from app.discovery.sources import Register
 from app.discovery.synthetic import CAREERS
 from app.discovery.tasks import MAX_STEPS, DiscoveryTaskStore, Stage
 from app.discovery.web import NOTICE_VERSION
 from app.job_analysis.simulation import RECIPIENT, SIMULATION_MODEL
+from app.library.sends import Sends
 from app.library.web import PACKAGE_DIR
 from app.live_gate import LiveSetup
 from app.web_main import create_app
@@ -81,7 +82,20 @@ def library(browser_a):
 
 
 def checked(page: str, name: str) -> list[str]:
+    # A <template>'s content is never part of the form (owner redesign: the setup page's chip template).
+    page = re.sub(r"<template.*?</template>", "", page, flags=re.S)
+
     return [html.unescape(value) for value in re.findall(rf'name="{name}" value="([^"]*)" checked', page)]
+
+
+def result_rows(page: str) -> list[tuple[str, str]]:
+    """The results list (owner redesign, plan 5.3): each row's title and its one line (an analysis group, or 尚未分析
+    for a candidate)."""
+    return re.findall(r'<span class="md-item-title">([^<]+)</span>.*?<span class="md-item-line">([^<]+)</span>', page, re.S)
+
+
+def analysed_rows(page: str) -> list[tuple[str, str]]:
+    return [(title, line) for title, line in result_rows(page) if line != "尚未分析"]
 
 
 def offered(page: str) -> dict[str, str]:
@@ -93,8 +107,10 @@ def entered(browser, *, sources=(), use_preferences=False, **changes) -> dict:
     page = browser.get(BASE).text
     data = {"csrf_token": browser.csrf_token(), **CHOSEN}
 
+    # The setup page names each dimension's chosen values {dimension}_pick (owner redesign, plan 5.1); the older
+    # review route these tests post to reads them by the dimension's own name.
     for name in ("city", "job_type", "direction"):
-        data[name] = checked(page, name)
+        data[name] = checked(page, f"{name}_pick")
 
     values = offered(page)
     data["source"] = [values[item] for item in sources]
@@ -192,48 +208,73 @@ class Hold:
 # --- where it is, and what it offers ------------------------------------------------------------
 
 
-def test_finding_postings_sits_beside_job_analysis_and_only_for_a_clear_goal(browser_a):
-    def subnav(page):
-        return re.findall(r'<a href="([^"]+)"( aria-current="page")?>([^<]+)</a>', page[page.index('<nav class="subnav"'):])[:2]
+def tabs(page):
+    """The second-level navigation of a page's area (UI bilingual batch, plan 2): href, current mark, words."""
+    nav = page[page.index('<nav class="tabs"'): page.index("</nav>", page.index('<nav class="tabs"'))]
 
+    return re.findall(r'<a href="([^"]+)"( aria-current="page")?>([^<]+)</a>', nav)
+
+
+def primary(page):
+    """The first-level places of the side bar: href, current mark, words."""
+    nav = page[page.index('<nav class="primary-nav"'): page.index("</nav>", page.index('<nav class="primary-nav"'))]
+
+    return re.findall(r'<a class="nav-item" href="([^"]+)"( aria-current="(?:true|page)")?>.*?<span>([^<]+)</span></a>', nav)
+
+
+def test_finding_postings_sits_beside_job_analysis_and_only_for_a_clear_goal(browser_a):
     discover = browser_a.get(BASE).text
     analysis = browser_a.get("/job-analysis").text
 
-    assert subnav(discover) == [("/job-analysis", "", "岗位分析"), ("/discover", ' aria-current="page"', "找岗位")]
-    assert subnav(analysis) == [("/job-analysis", ' aria-current="page"', "岗位分析"), ("/discover", "", "找岗位")]
-    assert '<a href="/job-analysis" aria-current="true">岗位机会</a>' in discover
-    # An unsure direction has an entry since U3-C3b, to 方向探索's own pages; later modules have none. 方向探索 is a
-    # part of the app of its own since U3-C3a, named in the top navigation only (the entry says 探索方向).
+    # UI bilingual batch (plan 2): 岗位机会 is 发现岗位, 我的岗位 and 查找与分析记录; finding postings and analysing one
+    # are both ways of 发现岗位.
+    expected = [("/discover", ' aria-current="page"', "发现岗位"), ("/job-records", "", "我的岗位"), ("/job-records/history", "", "查找与分析记录")]
+    assert tabs(discover) == expected and tabs(analysis) == expected
+    assert ("/discover", ' aria-current="true"', "岗位机会") in primary(discover)
+    # An unsure direction has an entry since U3-C3b, to 方向探索's own pages; later modules have none.
     assert '<a href="/directions">方向还不确定？先去探索方向</a>' in discover
     assert not any(words in discover for words in ("我的简历", "投递跟踪"))
-    assert discover.count("方向探索") == 1 and '<a href="/directions">方向探索</a>' in discover
-    assert PREVIEW in discover
+    assert str(PREVIEW) in discover
+
+
+def start_data(browser, **changes) -> dict:
+    """The new setup page's form as a browser sends it (owner redesign, plan 5.1): every chip ticked by default under
+    its repeated name, the one-time key, and changes."""
+    page = browser.get(BASE).text
+    data = dict(form_for(page, f"{BASE}/start").fields)
+
+    for name in ("city_pick", "job_type_pick", "direction_pick"):
+        data[name] = checked(page, name)
+
+    data.update({"targets": "数据分析实习生"})
+    data.update(changes)
+
+    return {name: value for name, value in data.items() if value is not None}
 
 
 def test_the_scope_starts_from_the_preferences_and_leaves_the_rest_to_the_user(app, browser_a, library):
     page = browser_a.get(BASE).text
 
-    # Ideal and acceptable values are ticked; what the user cannot accept is listed, never offered.
-    assert checked(page, "city") == ["北京", "上海"] and checked(page, "job_type") == ["实习"]
-    assert '北京<span class="value-note">理想</span>' in page
+    # Ideal and acceptable values are ticked; what the user cannot accept is listed, never offered (not even among
+    # the cities to choose from).
+    assert checked(page, "city_pick") == ["北京", "上海"] and checked(page, "job_type_pick") == ["实习"]
     assert "不能接受：深圳。不会检索，也不能选。" in page and 'value="深圳"' not in page
-    # Whether other values count is the user's to say: nothing is chosen for them.
-    assert 'type="radio"' in page and not re.search(r'type="radio"[^>]* checked', page)
+    # No "any other value" choice is made for the user, and none is offered (owner redesign, plan 5.1).
+    assert "_others" not in page and 'type="radio"' not in page
 
-    undecided = review(browser_a, city_others=None, job_type_others=None, direction_others=None)
+    # Nothing chosen for a dimension: asked for next to it, nothing kept, what was entered kept.
+    undecided = browser_a.post(f"{BASE}/start", start_data(browser_a, city_pick=[]))
     text = text_of(undecided.text)
 
     assert undecided.status_code == 422 and len(app.state.discovery.store) == 0
-    assert "城市：所列以外的是否也查还没有选择（本次不限，或只看所列的）" in text
-    assert "求职类型：所列以外的是否也查还没有选择" in text and "岗位方向：所列以外的是否也查还没有选择" in text
-    # What was entered is kept, for the user to go on from.
-    assert checked(undecided.text, "city") == ["北京", "上海"] and 'value="数据分析实习生"' in undecided.text
+    assert "城市：请至少选一项。" in text and 'value="数据分析实习生"' in undecided.text
 
-    # Case 2: only Beijing because the user said so, not because the system guessed.
-    only_beijing = search_of(review(browser_a, city=["北京"], city_others="excluded"))
-    lines = text_of(browser_a.get(only_beijing).text)
+    # Case 2: only Beijing because the user said so, not because the system guessed: the rest is left out.
+    only_beijing = browser_a.post(f"{BASE}/start", start_data(browser_a, city_pick=["北京"], direction_pick=["数据分析"]))
+    scope = stored(app, browser_a, search_of(only_beijing)).confirmation.scope
 
-    assert "城市 北京（理想）；只看所列的；不能接受：深圳（不会检索）" in lines
+    assert scope.city.values == ("北京",) and scope.city.others.value == "excluded"
+    assert scope.city.ideal == ("北京",) and scope.city.excluded == ("深圳",)
 
 
 def test_a_value_the_user_cannot_accept_cannot_be_put_in_the_scope(app, browser_a, library):
@@ -259,7 +300,8 @@ def test_the_text_boxes_take_the_shared_input_style(browser_a, library):
 
     # Every input of the page says what it is, so none falls back to the bare browser style unnoticed.
     assert all(re.search(r'\btype="[a-z]+"', tag) for tag in inputs), [tag for tag in inputs if "type=" not in tag]
-    assert set(text_boxes) == {"targets", "city_added", "job_type_added", "direction_added"}
+    # The job titles, and the fields that add a direction or a city as a chip (owner redesign, plan 5.1).
+    assert set(text_boxes) == {"targets", "city_pick", "direction_pick"}
     rule = shared[shared.index("input[type=text], textarea {"):]
     rule = rule[: rule.index("}")]
 
@@ -281,7 +323,7 @@ def test_a_search_runs_on_synthetic_postings_with_simulated_decisions_and_says_s
     assert task.confirmation.notice_version == NOTICE_VERSION
     # The preferences the scope is made of are held against postings, never sent with an analysis.
     assert {preference.field for preference in task.confirmation.preferences} == {"work_content_no", "must_haves"}
-    assert PREVIEW in reviewed
+    assert str(PREVIEW) in reviewed
     assert "合成招聘官网（官方原始发布的合成样例）、合成搜索线索（待核验线索的合成样例）" in text
     assert "本机模拟决策：RoleRadar 内置的固定规则，不是 AI。" in text
     assert "检索 4 次、读取 10 个、核对 10 个、分析 3 个（完整分析结果最多 3 条）；最多 8 步" in text
@@ -292,16 +334,16 @@ def test_a_search_runs_on_synthetic_postings_with_simulated_decisions_and_says_s
     found = browser_a.get(url).text
     text = text_of(found)
 
-    assert "找岗位结果" in found and PREVIEW in found
-    # Results by the rules' categories: the conflict comes last, under its own words.
-    results = section(found, "完整分析结果")
-    headings = re.findall(r'<h3 class="result-group">([^<]+)</h3>', results)
-    titles = re.findall(r"<h4>([^<]+)</h4>", results)
+    assert "发现的岗位" in found and str(PREVIEW) in found
+    # Owner redesign (plan 5.3): one list of what was found, each row a posting with one true line, its analysis group
+    # by the rules' categories (the conflict last, under its own words) or 尚未分析; its details open beside it.
+    rows = [(html.unescape(title), line) for title, line in analysed_rows(found)]
+    groups = [line for index, (_, line) in enumerate(rows) if index == 0 or rows[index - 1][1] != line]
 
     # The must-have the posting does not speak to is to be confirmed: a gap, not enough to rest on.
-    assert headings == ["有基础但有差距或待确认", "有明确冲突，需谨慎考虑"]
+    assert groups == ["有基础但有差距或待确认", "有明确冲突，需谨慎考虑"]
     # The three checked open, analysed with one decision, each on its own (U3-Q1).
-    assert titles == [
+    assert [title for title, _ in rows] == [
         "数据分析实习生（合成岗位，不是真实招聘）",
         "数据分析实习生（合成岗位，不是真实招聘）",
         "商业数据分析实习生（合成岗位，不是真实招聘）",
@@ -310,23 +352,32 @@ def test_a_search_runs_on_synthetic_postings_with_simulated_decisions_and_says_s
     # Each with where it came from, its three times and a check that is no real one.
     assert "原始链接 https://careers.synthetic.invalid/postings/c-bj-analyst（合成示例地址，不能访问）" in text
     assert "截止 2026-11-30（synthetic-careers/c-bj-analyst）；2026-12-10（synthetic-careers/c-bj-analyst-repost）" in text
-    assert "（合成来源在本机回答，不是真实核验）" in text
-    # Case 3 on the page: Shenzhen only is out; a stated choice is judged by Beijing; no stated choice is pending.
-    assert "超出条件（只在不能接受或不在范围里的城市、类型或方向）：2 个" in text
+    assert "核对时仍公开发布 · " in text and "（合成来源在本机回答，不是真实核验）" in text
+    # Case 3 on the page: a stated choice is judged by Beijing; no stated choice is pending.
     assert "可选工作地点，按北京判断；深圳（不能接受）" in text
     assert "工作地点待确认：写了北京、深圳，没有说明可以选择；深圳（不能接受）" in text
-    # Case 5: a preference that was not filled in is said so, neither met nor in conflict.
-    assert "没有判断的偏好 工作方式：未填写，无法判断" in text
-    # What was searched, and the steps taken.
-    assert "合成招聘官网 · 检索词“数据分析” · 城市 北京 · 求职类型 实习 · 岗位方向 不限 · 返回 10 个" in text
-    assert "结束原因 够了" in text and "第 1 步 · 检索岗位 · 完成" in text and "第 6 步 · 分析 · 完成" in text
-    assert "第 7 步 · 结束查找 · 完成" in text and "第 8 步" not in text
-    assert "本机模拟服务处理的请求：6 次（模拟，没有联网，不产生费用）" in text and "可能已发出" not in found
+    assert "结束原因 够了" in text and "可能已发出" not in found
+    # What the search keeps and the page no longer shows (plan 5.3: no 没有列出的岗位, 这次查了什么, steps or request
+    # counts, and no debugging fold in their place): Shenzhen only is out, counted; case 5, a preference not filled in
+    # is neither met nor in conflict; what was searched; the seven steps; the six simulated requests.
+    task = stored(app, browser_a, url)
+    outcome = task.finished.outcome
+
+    assert len(dict(outcome.unlisted)[Unlisted.OUT_OF_SCOPE]) == 2 and "工作方式：未填写，无法判断" in outcome.unjudged
+    assert [(record.source_id, record.keywords, dict(record.filters), record.found) for record in outcome.searches] == [
+        (CAREERS, "数据分析", {Dimension.CITY: "北京", Dimension.JOB_TYPE: "实习", Dimension.DIRECTION: None}, 10)
+    ]
+    assert [step.tool for step in task.finished.trace.steps][0] is Tool.SEARCH and len(task.finished.trace.steps) == 7
+    assert task.finished.trace.steps[-1].tool is Tool.FINISH and (task.sends.generation_sent, task.sends.generation_maybe) == (6, 0)
+
+    for gone in ("没有列出的岗位", "这次查了什么", "超出条件", "没有判断的偏好", "返回 10 个", "第 1 步", "本机模拟服务处理的请求"):
+        assert gone not in text, gone
 
     for page in (browser_a.get(BASE).text, reviewed, found):
         # Nothing is called a recommendation, nothing synthetic is linked, nothing applies anywhere. The one place the
-        # word is used is the option, unticked here, to hold this search's recommendations for tracking (U3-D4b-2).
-        assert "推荐" not in page.replace("临时留存并跟踪这次的推荐", "").replace("最多 3 条推荐", "")
+        # word is used is the option, unticked here, to hold this search's recommendations for tracking (U3-D4b-2; the
+        # setup page says it shorter since the owner redesign).
+        assert "推荐" not in page.replace("临时留存并跟踪这次的推荐", "").replace("最多 3 条推荐", "").replace("临时留存并跟踪推荐", "")
         assert not re.search(r'href="[^"]*\.invalid', page)
         assert not re.search(r"<button[^>]*>[^<]*(申请|投递)", page)
 
@@ -337,8 +388,10 @@ def test_ideal_cities_come_first_and_acceptable_ones_still_show(app, browser_a, 
     scripted(searches, search("上海"), search("北京"), finish(EndReason.SCOPE_DONE))
     url = search_of(review(browser_a, sources=[library]))
     confirm(browser_a, url)
-    leads = section(browser_a.get(url).text, "初筛候选")
-    titles = re.findall(r'<span>(合成[^<]+)</span><span>(北京|上海)', leads)
+    page = browser_a.get(url).text
+    # Nothing analysed: every row is a candidate, 尚未分析, its company then its place (owner redesign, plan 5.3).
+    assert result_rows(page) and all(line == "尚未分析" for _, line in result_rows(page))
+    titles = re.findall(r'<span class="md-item-meta">(合成[^<]+)<span class="sep" aria-hidden="true"></span>(北京|上海)', page)
 
     # Shanghai was searched first, and still comes after every Beijing posting.
     cities = [city for _, city in titles]
@@ -358,6 +411,7 @@ def test_running_out_of_steps_says_so_and_names_what_was_not_searched(app, brows
     page = browser_a.get(url).text
     text = text_of(page)
 
+    # A limit reached is a partial search, said short with what it left (owner redesign, plan 5.3).
     assert "结束原因 到了上限" in text
     assert "没查的组合 上海 · 实习 · 数据分析；上海 · 实习 · 所列以外的岗位方向" in text
     assert "没有合适结果" not in page
@@ -405,12 +459,13 @@ def test_a_start_date_the_user_cannot_make_is_shown_as_a_conflict_never_as_a_rec
     url = search_of(review(browser_a, sources=[library], use_preferences=True))
     confirm(browser_a, url)
     page = browser_a.get(url).text
-    results = section(page, "完整分析结果")
+    detail = page[page.index('<article class="result-detail" id="result-1"'): page.index("</article>", page.index('id="result-1"'))]
 
     assert "最早 2026 年 7 月入职" in provider.prompts[1]
-    assert '<h3 class="result-group">有明确冲突，需谨慎考虑</h3>' in results
-    assert "依据较充分" not in results and "推荐" not in page
-    assert "到岗时间：需在 2026 年 3 月前到岗" in results
+    # The one posting, in the list under the conflict's own words (owner redesign, plan 5.3), never a better group.
+    assert analysed_rows(page) == [("数据分析实习生（合成岗位，不是真实招聘）", "有明确冲突，需谨慎考虑")]
+    assert "依据较充分" not in page and "推荐" not in page
+    assert "到岗时间：需在 2026 年 3 月前到岗" in detail
 
 
 def test_no_experience_chosen_means_no_analysis_and_no_preference(app, browser_a, library, inline):
@@ -424,7 +479,9 @@ def test_no_experience_chosen_means_no_analysis_and_no_preference(app, browser_a
     text = text_of(browser_a.get(url).text)
 
     assert "未进行个性化分析：没有选择经历，只按检索范围查找、读取和核对岗位" in text
-    assert "这次没有完整分析的岗位。" in text and "本机模拟服务处理的请求：0 次" in text
+    assert "这次没有完整分析的岗位。" in text and analysed_rows(browser_a.get(url).text) == []
+    # Nothing was asked of the simulation; the count is the search's, no longer on the page (plan 5.3).
+    assert stored(app, browser_a, url).handed == Sends() and "本机模拟服务处理的请求" not in text
 
 
 # --- the running page, its progress, cancelling and its time --------------------------------------
@@ -443,7 +500,7 @@ def test_the_running_page_shows_each_step_as_it_is_taken_and_cancelling_adds_non
     status = browser_a.get(f"{url}/status")
     body = status.json()
 
-    assert "正在查找" in running and PREVIEW in running and "data-task-running" in running
+    assert "正在查找" in running and str(PREVIEW) in running and "data-task-running" in running
     assert "第 1 步 · 检索岗位 · 完成" in running and "取消查找" in running
     # Only what the page needs: no token, session, fingerprint or material.
     assert set(body) == {"stage", "status", "steps"} and body["stage"] == "running"
@@ -581,7 +638,8 @@ def test_a_real_service_the_app_has_is_never_reached_from_a_search(make_config, 
         assert response.status_code == 303 and task.stage is Stage.DONE and task.finished.outcome.results
         assert task.confirmation.recipient == RECIPIENT and task.confirmation.sources == synthetic.GRANTS
         assert built == [] and gate.status().requests_used == 0
-        assert "本机模拟服务处理的请求" in text_of(browser.get(url).text)
+        # The simulation handled its requests, and the page still says what it is (the count is no longer shown, plan 5.3).
+        assert task.sends.generation_sent > 0 and str(PREVIEW) in browser.get(url).text
 
 
 def test_tracing_variables_keep_a_search_from_starting(app, browser_a, library, inline, searches):
@@ -657,7 +715,7 @@ def test_a_search_is_its_users_and_sessions_and_every_post_carries_the_sessions_
     other_session = Browser.signed_in(app, "合成用户 A")
 
     for stranger in (browser_b, other_session):
-        assert stranger.get(url).status_code == 404 and "找不到这次查找" in stranger.get(url).text
+        assert stranger.get(url).status_code == 404 and "临时结果已失效" in stranger.get(url).text
         assert stranger.get(f"{url}/status").json() == {"stage": "gone"}
         assert stranger.post(f"{url}/cancel", {"csrf_token": stranger.csrf_token()}).status_code == 404
         assert confirm_gone(stranger, url).status_code == 404
@@ -677,9 +735,9 @@ def test_a_search_is_its_users_and_sessions_and_every_post_carries_the_sessions_
     assert task.cancel.is_set() and task_id(url) not in app.state.discovery.store._tasks
 
 
-def test_postings_not_verifiable_are_said_as_postings_once_each_with_how_often_they_came_back(app, browser_a, library, inline, searches):
-    """U3-D5: one posting given back by both searches is one posting, said with how many times it came back; its id is
-    never shown."""
+def test_postings_not_verifiable_are_counted_once_each_with_how_often_they_came_back_and_never_named(app, browser_a, library, inline, searches):
+    """U3-D5: one posting given back by both searches is one posting, counted with how many times it came back; its id
+    is never shown. Since the owner redesign (plan 5.3) the count is the search's, no longer listed on the page."""
     first = synthetic.POSTINGS[0]
     odd = replace(first, posting=replace(first.posting, ref=ref("hr@example.invalid"), identity=None), listed=True)
     searches.sources = replace(
@@ -698,5 +756,7 @@ def test_postings_not_verifiable_are_said_as_postings_once_each_with_how_often_t
     page = browser_a.get(url).text
     text = text_of(page)
 
-    assert "编号无法核验，没有采用：1 个（同一个编号会在几次检索里重复出现，各次检索共返回 2 次）" in text
+    outcome = stored(app, browser_a, url).finished.outcome
+
+    assert (outcome.unverifiable_distinct, outcome.unverifiable) == (1, 2) and "编号无法核验" not in text
     assert "hr@example.invalid" not in page

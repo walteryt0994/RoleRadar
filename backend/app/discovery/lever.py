@@ -99,6 +99,7 @@ from app.discovery.sources import (
     SourceError,
     SourceTimeout,
 )
+from app.i18n import t
 
 DOCS = "https://github.com/lever/postings-api"
 DOCS_CHECKED_ON = "2026-11-11"
@@ -246,7 +247,7 @@ class NoNetwork:
     """The transport of a board unless another is passed in: it sends nothing, ever."""
 
     def get(self, url: str, timeout: float) -> Reply:
-        raise NetworkClosed("没有联网的传输层：网络默认关闭，没有发出请求")
+        raise NetworkClosed(t("disc.lever.1"))
 
 
 NO_NETWORK = NoNetwork()
@@ -331,7 +332,7 @@ class HostGuard:
                 raise HostStopped(self.stopped)
 
             if self.sent >= self.budget:
-                raise HostStopped(f"请求次数已用完（{self.budget} 次），没有发出")
+                raise HostStopped(t("disc.lever.2", p0=self.budget))
 
             now = self.monotonic()
             wait = 0.0 if self._last is None else max(0.0, self._last + self.interval - now)
@@ -339,7 +340,7 @@ class HostGuard:
             deadline = deadline if self.window_ends is None else min(deadline, self.window_ends)
 
             if deadline - now - wait < self.min_request:
-                raise TimeUsedUp("这次调用剩下的时间不够再发一个请求，没有发出")
+                raise TimeUsedUp(t("disc.lever.3"))
 
             if wait:
                 self._sleep(wait)
@@ -348,7 +349,7 @@ class HostGuard:
                 self._window_left(now)
 
                 if deadline - now < self.min_request:
-                    raise TimeUsedUp("等待间隔以后时间不够了，没有发出")
+                    raise TimeUsedUp(t("disc.lever.4"))
 
             self.sent += 1
 
@@ -361,7 +362,7 @@ class HostGuard:
                 self.log.append((url, "refused"))
                 self._window_left(self.monotonic())
 
-                raise TransportHeldBack(f"传输层没有发出这个请求：{refused}") from None
+                raise TransportHeldBack(t("disc.lever.5", p0=refused)) from None
             except TransportError as error:
                 self._last = self.monotonic()
                 kind = (
@@ -375,18 +376,18 @@ class HostGuard:
                 self._failed()
 
                 if isinstance(error, TransportTimeout):
-                    raise SourceTimeout("来源没有在时限内回答") from None
+                    raise SourceTimeout(t("disc.lever.6")) from None
 
                 if isinstance(error, TransportTooLarge):
-                    raise BadReply("返回超过大小上限，没有读完") from None
+                    raise BadReply(t("disc.lever.7")) from None
 
-                raise SourceError("请求没有成功，没有收到回答") from None
+                raise SourceError(t("disc.lever.8")) from None
 
             self._last = self.monotonic()
             self.log.append((url, str(reply.status)))
 
             if reply.status in STOP_STATUSES:
-                self.stopped = f"来源回应 {reply.status}（要求登录、付费或限流），之后不再向它发请求"
+                self.stopped = t("disc.lever.9", p0=reply.status)
                 raise HostStopped(self.stopped)
 
             # A page or a posting, or a plain 404: an answer. Anything else (a redirect, a server error) failed.
@@ -400,7 +401,7 @@ class HostGuard:
     def _window_left(self, at: float) -> None:
         """Stop for good once the batch's window cannot hold another request starting at this time."""
         if self.window_ends is not None and self.window_ends - at < self.min_request:
-            self.stopped = "这一批的网络时间窗口到了，之后不再发请求"
+            self.stopped = t("disc.lever.10")
 
             raise HostStopped(self.stopped)
 
@@ -408,7 +409,7 @@ class HostGuard:
         self.failures += 1
 
         if self.failures_in_a_row is not None and self.failures >= self.failures_in_a_row:
-            self.stopped = f"连续 {self.failures} 个请求失败，之后不再发请求"
+            self.stopped = t("disc.lever.11", p0=self.failures)
 
 
 class LeverSource:
@@ -440,13 +441,13 @@ class LeverSource:
 
         for page in range(MAX_PAGES):
             url = f"https://{API_HOST}/v0/postings/{self.board.site}?mode=json&skip={page * PAGE_SIZE}&limit={PAGE_SIZE}"
-            items = _json(self._get(url, deadline, "职位列表：来源回应 404，站点名可能不对，或这个职位站已经不存在"))
+            items = _json(self._get(url, deadline, t("disc.lever.12")))
 
             if not isinstance(items, list):
-                raise BadReply("返回的不是职位列表")
+                raise BadReply(t("disc.lever.13"))
 
             if len(items) > PAGE_SIZE:
-                raise BadReply("一页返回的岗位比要的多：分页不可靠")
+                raise BadReply(t("disc.lever.14"))
 
             for item in items:
                 facts = self._facts(item)
@@ -457,7 +458,7 @@ class LeverSource:
                 if known is not None:
                     # Given again as it was: one posting. Given again otherwise: the list changed while it was read.
                     if known != content:
-                        raise BadReply("同一个岗位编号前后内容不同：列表在读取期间有变化")
+                        raise BadReply(t("disc.lever.15"))
 
                     continue
 
@@ -469,7 +470,7 @@ class LeverSource:
         else:
             # Every record of every page was checked above, or this was never reached.
             raise ListingIncomplete(
-                f"读满 {MAX_PAGES} 页（每页 {PAGE_SIZE} 个）还没到底：只读了前 {len(listed)} 个，列表没有读完",
+                t("disc.lever.16", p0=MAX_PAGES, p1=PAGE_SIZE, p2=len(listed)),
                 LeverListing(tuple(listed), complete=False),
             )
 
@@ -488,27 +489,27 @@ class LeverSource:
 
     def _one(self, ref: PostingRef, timeout: float) -> dict:
         if ref.source_id != self.source_id:
-            raise IdentityMismatch("这个岗位不属于这个职位站，没有发出请求")
+            raise IdentityMismatch(t("disc.lever.17"))
 
         if not POSTING_ID.fullmatch(ref.posting_id):
-            raise BadReply("岗位编号格式不对，没有发出请求")
+            raise BadReply(t("disc.lever.18"))
 
         deadline = self.guard.monotonic() + timeout
         url = f"https://{API_HOST}/v0/postings/{self.board.site}/{ref.posting_id}"
-        item = _json(self._get(url, deadline, "这个岗位：来源回应 404。可能已不再发布，也可能编号不对，不据此判断已关闭"))
+        item = _json(self._get(url, deadline, t("disc.lever.19")))
 
         if not isinstance(item, dict):
-            raise BadReply("返回的不是一个岗位")
+            raise BadReply(t("disc.lever.20"))
 
         if item.get("id") != ref.posting_id:
-            raise IdentityMismatch("返回的岗位编号和要读的不一样")
+            raise IdentityMismatch(t("disc.lever.21"))
 
         return item
 
     def _get(self, url: str, deadline: float, missing: str) -> Reply:
         """A 200 reply to one GET of url, or SourceError; missing says what a 404 there does and does not mean."""
         if isinstance(self._transport, NoNetwork):
-            raise NetworkClosed("没有联网的传输层：网络默认关闭，没有发出请求")
+            raise NetworkClosed(t("disc.lever.1"))
 
         reply = self.guard.get(self._transport, url, deadline)
 
@@ -516,28 +517,28 @@ class LeverSource:
             raise NotFound(missing)
 
         if reply.status != 200:
-            raise BadReply(f"来源回应 {reply.status}，不是正常结果（重定向不跟随）")
+            raise BadReply(t("disc.lever.22", p0=reply.status))
 
         return reply
 
     def _facts(self, item) -> "_Facts":
         """A documented posting as RoleRadar's facts, after its id and links are checked against this board."""
         if not isinstance(item, dict):
-            raise BadReply("有一项不是岗位")
+            raise BadReply(t("disc.lever.23"))
 
         posting_id, title = item.get("id"), item.get("text")
 
         if not isinstance(posting_id, str) or not POSTING_ID.fullmatch(posting_id):
-            raise BadReply("岗位编号缺失或格式不对")
+            raise BadReply(t("disc.lever.24"))
 
         if not isinstance(title, str) or not title.strip():
-            raise BadReply("岗位没有职位名")
+            raise BadReply(t("disc.lever.25"))
 
         url = f"{HOSTED}/{self.board.site}/{posting_id}"
         hosted = item.get("hostedUrl")
 
         if not isinstance(hosted, str) or hosted.rstrip("/") != url:
-            raise IdentityMismatch("托管页地址和这个职位站、岗位编号对不上")
+            raise IdentityMismatch(t("disc.lever.26"))
 
         categories = _object(item, "categories")
         location, commitment = _text_field(categories, "location"), _text_field(categories, "commitment")
@@ -545,13 +546,13 @@ class LeverSource:
         places = categories.get("allLocations")
 
         if places is not None and not (isinstance(places, list) and all(isinstance(place, str) for place in places)):
-            raise BadReply("allLocations 不是地点列表")
+            raise BadReply(t("disc.lever.27"))
 
         workplace, country = _text_field(item, "workplaceType"), _text_field(item, "country")
         apply = item.get("applyUrl")
 
         if apply is not None and not isinstance(apply, str):
-            raise BadReply("applyUrl 不是地址")
+            raise BadReply(t("disc.lever.28"))
 
         # The primary location is among allLocations too (Lever's docs): the list when given, else the one.
         named = [" ".join(place.split()) for place in (places or ([location] if location else [])) if place.strip()]
@@ -617,15 +618,15 @@ def register(boards: Iterable[LeverBoard], *, transport: Transport | None = None
 
 def _json(reply: Reply):
     if len(reply.body) > MAX_BYTES:
-        raise BadReply("返回太大，没有读取")
+        raise BadReply(t("disc.lever.29"))
 
     if "json" not in reply.content_type.casefold():
-        raise BadReply("返回的不是 JSON（可能是错误页或网页）")
+        raise BadReply(t("disc.lever.30"))
 
     try:
         return json.loads(reply.body.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
-        raise BadReply("返回的 JSON 读不出来") from None
+        raise BadReply(t("disc.lever.31")) from None
 
 
 def _object(item: dict, name: str) -> dict:
@@ -635,7 +636,7 @@ def _object(item: dict, name: str) -> dict:
         return {}
 
     if not isinstance(value, dict):
-        raise BadReply(f"{name} 不是对象")
+        raise BadReply(t("disc.lever.32", p0=name))
 
     return value
 
@@ -647,7 +648,7 @@ def _text_field(item: dict, name: str) -> str | None:
         return None
 
     if not isinstance(value, str):
-        raise BadReply(f"{name} 不是文字")
+        raise BadReply(t("disc.lever.33", p0=name))
 
     return " ".join(value.split()) or None
 
@@ -777,16 +778,16 @@ def _posting_text(item, posting, places, commitment, team, department, workplace
     lists = item.get("lists")
 
     if lists is not None and not isinstance(lists, list):
-        raise BadReply("lists 不是列表")
+        raise BadReply(t("disc.lever.34"))
 
     for part in lists or ():
         if not isinstance(part, dict):
-            raise BadReply("lists 里有一项格式不对")
+            raise BadReply(t("disc.lever.35"))
 
         heading, markup = part.get("text") or "", part.get("content") or ""
 
         if not isinstance(heading, str) or not isinstance(markup, str):
-            raise BadReply("lists 里有一项格式不对")
+            raise BadReply(t("disc.lever.35"))
 
         heading, content = " ".join(heading.split()), _html_text(markup)
 
@@ -821,7 +822,7 @@ def _plain_field(item: dict, name: str) -> str:
         return ""
 
     if not isinstance(value, str):
-        raise BadReply(f"{name} 不是文字")
+        raise BadReply(t("disc.lever.33", p0=name))
 
     return _lines(value)
 
@@ -833,7 +834,7 @@ def _html_field(item: dict, name: str) -> str:
         return ""
 
     if not isinstance(value, str):
-        raise BadReply(f"{name} 不是文字")
+        raise BadReply(t("disc.lever.33", p0=name))
 
     return value
 

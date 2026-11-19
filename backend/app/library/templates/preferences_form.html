@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% import "_icons.html" as i %}
+{% set section = "preferences" %}
+{% set heading = t("prefs.edit_title") if item_id else t("prefs.fill_title") %}
+{% block title %}{{ heading }}{% endblock %}
+{#- The job preferences in three steps (owner redesign, plan 3.3, image B and images 07–08): 求职目标, 工作偏好,
+    求职要求. Each target or preference is a row with its own stance and its own remove button; the rows of one stance
+    are folded back into its stored text on saving (app.library.preference_rows). Moving between the steps keeps what
+    is typed in this form and saves nothing; 保存偏好 sends all three steps at once. Without JavaScript the three steps
+    follow one another on one page and each dimension offers one empty row to add an item. -#}
+{#- The step that opens: the one asked for, or after a failed save the step of its first error (worked out by the
+    server, app.library.web._preference_error_step), whose field preferences.js then focuses. -#}
+{% set opening = step %}
+{% macro stance_select(name, stance, label, error_of=none) %}
+<select name="{{ name }}" aria-label="{{ label }}" class="stance-select"{% if error_of %} aria-describedby="e-dim-{{ error_of }}"{% endif %}>
+  {% for value in ("ideal", "ok", "no") %}
+  <option value="{{ value }}"{% if value == stance %} selected{% endif %}>{{ t("pref.stance." ~ value) }}</option>
+  {% endfor %}
+</select>
+{% endmacro %}
+{% macro row(key, index, stance, text, new=False, n=none, error=False) %}
+{% set dim = t("prefs.dim." ~ key) %}
+{% set name = key ~ "_r" ~ index %}
+{% set n = n if n is not none else index + 1 %}
+{% set described %}{% if error %} aria-invalid="true" aria-describedby="e-dim-{{ key }}"{% endif %}{% endset %}
+<li class="pref-row{% if new %} pref-row-new{% endif %}" data-pref-row>
+  {% if key == "job_types" and (new or text in JOB_TYPES) %}
+  <select name="{{ name }}" aria-label="{{ t('prefs.row_label', dim=dim, n=n) }}" class="pref-value-input"{{ described }}>
+    {% if new %}<option value="">{{ t("prefs.choose_type") }}</option>{% endif %}
+    {% for value in JOB_TYPES %}
+    <option value="{{ value }}"{% if value == text %} selected{% endif %}>{{ type_label(value) }}</option>
+    {% endfor %}
+  </select>
+  {% elif "\n" in text %}
+  <textarea name="{{ name }}" rows="{{ text.count('\n') + 1 }}" maxlength="1000" aria-label="{{ t('prefs.row_label', dim=dim, n=n) }}" class="pref-value-input"{{ described }}>{{ text }}</textarea>
+  {% else %}
+  <input type="text" name="{{ name }}" value="{{ text }}" maxlength="1000" aria-label="{{ t('prefs.row_label', dim=dim, n=n) }}" class="pref-value-input"{% if new %} placeholder="{{ t('prefs.add.' ~ key) }}"{% endif %}{% if key == "cities" %} list="city-options"{% endif %}{{ described }}>
+  {% endif %}
+  {{ stance_select(name ~ "_stance", stance, t("prefs.stance_label", dim=dim, n=n), key if error else none) }}
+  <button type="button" class="icon-button" data-pref-remove hidden aria-label="{{ t('prefs.remove_row', dim=dim, n=n) }}">{{ i.icon("x") }}</button>
+</li>
+{% endmacro %}
+{% macro dimension(key) %}
+{% set error = field_errors.get(key ~ "_ideal") or field_errors.get(key ~ "_ok") or field_errors.get(key ~ "_no") %}
+<section class="pref-dim{% if error %} has-error{% endif %}" data-pref-dim="{{ key }}" aria-labelledby="dim-{{ key }}">
+  <h3 id="dim-{{ key }}">{{ t("prefs.dim." ~ key) }}</h3>
+  {% if key == "cities" %}
+  {# Choosing cities: the country or region only narrows the choices; switching it keeps the cities chosen. Shown by
+     preferences.js; without it, the empty row below still suggests every city. Nothing here is posted. #}
+  <div class="city-picker" data-city-picker hidden>
+    <select aria-label="{{ t('prefs.country') }}" data-city-country>
+      {% for code, name_key, _ in CITY_CHOICES %}
+      <option value="{{ code }}">{{ t(name_key) }}</option>
+      {% endfor %}
+    </select>
+    <span class="city-search">
+      {{ i.icon("search") }}
+      <input type="search" aria-label="{{ t('prefs.search_city') }}" placeholder="{{ t('prefs.search_city') }}" list="city-options" data-city-search>
+    </span>
+    <button type="button" class="secondary" data-city-add>{{ i.icon("plus") }}{{ t("prefs.add.cities") }}</button>
+  </div>
+  <datalist id="city-options" data-city-options>
+    {% for code, _, cities in CITY_CHOICES %}
+    {% for city in cities %}
+    <option value="{{ city }}" data-country="{{ code }}"></option>
+    {% endfor %}
+    {% endfor %}
+  </datalist>
+  {% endif %}
+  <ul class="pref-rows" data-pref-rows data-next-index="{{ rows[key]|length + 1 }}" data-most="{{ MAX_PREFERENCE_ROWS }}">
+    {% for stance, text in rows[key] %}
+    {{ row(key, loop.index0, stance if stance in ("ideal", "ok", "no") else "ideal", text, error=error) }}
+    {% endfor %}
+    {% if rows[key]|length < MAX_PREFERENCE_ROWS %}
+    {{ row(key, rows[key]|length, "ideal", "", new=True) }}
+    {% endif %}
+  </ul>
+  <template data-pref-template>{{ row(key, "__N__", "ideal", "", new=True, n="__M__") }}</template>
+  {% if key != "cities" %}
+  <button type="button" class="secondary add-row" data-pref-add hidden>{{ i.icon("plus") }}{{ t("prefs.add." ~ key) }}</button>
+  {% endif %}
+  {% if error %}
+  <p class="field-error" id="e-dim-{{ key }}">{{ error }}</p>
+  {% endif %}
+</section>
+{% endmacro %}
+{% block content %}
+<header class="page-head">
+  <h1>{{ heading }}</h1>
+</header>
+{% if error %}
+<p class="error" role="alert">{{ error }}</p>
+{% endif %}
+<form method="post" action="{{ action }}" class="editor pref-editor" data-leave-guard data-pref-editor data-step="{{ opening }}"{% if error_step %} data-error-step="{{ error_step }}"{% endif %}{% if unsaved_input %} data-initially-dirty{% endif %}>
+  <input type="hidden" name="csrf_token" value="{{ user.csrf_token }}">
+  {% if expected_revision is not none %}
+  <input type="hidden" name="expected_revision" value="{{ expected_revision }}">
+  {% endif %}
+  <input type="hidden" name="next" value="{{ next_path }}">
+  <input type="hidden" name="after_save" value="">
+  <input type="hidden" name="pref_rows" value="1">
+  <nav class="stepper" aria-label="{{ t('prefs.steps_label') }}">
+    <ol>
+      {% for name, _ in PREFERENCE_STEPS %}
+      <li><a href="#pref-step-{{ loop.index }}" data-step-link="{{ loop.index }}"{% if loop.index|string == opening %} aria-current="step"{% endif %}><span class="step-number" aria-hidden="true">{{ loop.index }}</span><span class="step-check" aria-hidden="true">{{ i.icon("circle-check") }}</span>{{ t("prefs.step." ~ name) }}</a></li>
+      {% endfor %}
+    </ol>
+  </nav>
+  <fieldset class="pref-step" id="pref-step-1" data-step-panel="1">
+    <legend class="step-title">{{ t("prefs.step.goals") }}</legend>
+    {% for key in ("directions", "job_types", "cities") %}{{ dimension(key) }}{% endfor %}
+  </fieldset>
+  <fieldset class="pref-step" id="pref-step-2" data-step-panel="2">
+    <legend class="step-title">{{ t("prefs.step.work") }}</legend>
+    {% for key in ("work_content", "work_style") %}{{ dimension(key) }}{% endfor %}
+    {% set less_error = field_errors.get("less_content") %}
+    <section class="pref-dim{% if less_error %} has-error{% endif %}">
+      <h3><label for="f-less_content">{{ label_of(PREFERENCES, "less_content") }}</label></h3>
+      <textarea id="f-less_content" name="less_content" rows="3" maxlength="2000"{% if less_error %} aria-invalid="true" aria-describedby="e-less_content"{% endif %}>{{ less_content }}</textarea>
+      {% if less_error %}<span class="field-error" id="e-less_content">{{ less_error }}</span>{% endif %}
+    </section>
+  </fieldset>
+  <fieldset class="pref-step" id="pref-step-3" data-step-panel="3">
+    <legend class="step-title">{{ t("prefs.step.requirements") }}</legend>
+    <input type="hidden" name="must_original" value="{{ must.original }}">
+    {% set must_error = field_errors.get("must_haves") %}
+    <div class="req-row{% if must_error %} has-error{% endif %}">
+      <span class="req-label" id="l-start">{{ t("prefs.earliest_start") }}</span>
+      <span class="month-selects" role="group" aria-labelledby="l-start"{% if must_error %} aria-describedby="e-must"{% endif %}>
+        {{ i.icon("calendar") }}
+        <select name="must_start_year" aria-label="{{ t('prefs.earliest_start') }}{{ t('common.colon') }}{{ t('months.year') }}" data-must-part{% if must_error %} aria-invalid="true" aria-describedby="e-must"{% endif %}>
+          <option value="">{{ t("months.choose_year") }}</option>
+          {% for year in YEARS %}
+          <option value="{{ year }}"{% if must.year == year|string %} selected{% endif %}>{{ t("months.year_option", year=year) }}</option>
+          {% endfor %}
+        </select>
+        <select name="must_start_month" aria-label="{{ t('prefs.earliest_start') }}{{ t('common.colon') }}{{ t('months.month') }}" data-must-part{% if must_error %} aria-invalid="true" aria-describedby="e-must"{% endif %}>
+          <option value="">{{ t("months.choose_month") }}</option>
+          {% for month in MONTHS %}
+          <option value="{{ month }}"{% if must.month == month|string %} selected{% endif %}>{{ t("months.m%d"|format(month)) }}</option>
+          {% endfor %}
+        </select>
+      </span>
+      {#- Right under the year and month it is about (owner redesign revision R2), never below 其他要求. -#}
+      {% if must_error %}<p class="field-error req-error" id="e-must">{{ must_error }}</p>{% endif %}
+      <button type="button" class="link-button" data-must-clear hidden>{{ t("prefs.clear") }}</button>
+    </div>
+    <div class="req-row">
+      <label class="req-label" for="must-other">{{ t("prefs.other_requirements") }}</label>
+      <textarea id="must-other" name="must_other" rows="4" maxlength="2000" placeholder="{{ t('prefs.other_placeholder') }}">{{ must.other }}</textarea>
+    </div>
+  </fieldset>
+  <div class="form-actions step-actions">
+    <button type="button" class="secondary" data-step-prev hidden>{{ t("prefs.prev") }}</button>
+    <button type="button" class="primary" data-step-next hidden>{{ t("prefs.next") }}</button>
+    <button type="submit" data-save-button>{{ t("prefs.save") }}</button>
+    <a class="cancel-link" href="{{ DOCUMENT_PAGES[kind] }}">{{ t("common.cancel") }}</a>
+    <p class="dirty-status" id="dirty-status" aria-live="polite"></p>
+  </div>
+</form>
+{{ m.leave_dialog(t("prefs.save")) }}
+{% endblock %}
+{# preferences.js sets the rows up before the leave guard notes what the form holds. #}
+{% block scripts %}<script src="/static/preferences.js"></script><script src="/static/leave_guard.js"></script>{% endblock %}

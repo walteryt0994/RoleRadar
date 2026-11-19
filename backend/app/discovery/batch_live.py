@@ -81,6 +81,7 @@ from app.discovery.lever import (
 from app.discovery.sources import HeldBack, Permission, Register, SourceAnomaly, SourceEntry, SourceError, SourceTimeout
 from app.job_analysis.service import LIVE_NOTICE
 from app.live_gate import ApprovalTerms, Purpose, reservation
+from app.i18n import lazy, list_join, t
 
 KEY = "lever-palantir-batch"
 # How the app is started for a launch of the batch: unset, nothing of this module is used.
@@ -1329,59 +1330,90 @@ class Batch:
 
     # --- operations ---------------------------------------------------------------------------------------------
 
-    def _allowance(self, kind: OperationKind) -> tuple[tuple[str, str] | None, int, int]:
-        """What one operation of kind would reserve of the batch's allowances, and why they cannot cover it, if they
-        cannot: its single-operation cap of source requests (and robots, once a launch) against the read approval; for
-        an operation of the model, its most requests and its worst reservations against the model approval. Reads
-        only: begin() asks it under the lock before it takes anything, and availability() for a review page, so a
-        review says what a confirmation would find (D6-1 R3, L3)."""
+    def _shortfalls(self, kind: OperationKind) -> tuple[list[tuple[str, str]], int, int]:
+        """What one operation of kind would reserve of the batch's allowances, and every way they cannot cover it
+        (UI bilingual batch, plan 4.3; before it, only the first): its single-operation cap of source requests (and
+        robots, once a launch) against the read approval; for an operation of the model, its most requests and its
+        worst reservations against the model approval, each said on its own. Reads only: begin() asks it under the lock
+        before it takes anything, and availability() for a review page, so a review says what a confirmation would find
+        (D6-1 R3, L3). A model status that cannot be read is said as such, never guessed as nothing left or enough."""
         requests = OPERATION_REQUESTS[kind]
         robots = 1 if requests and not self.robots_read else 0
+        short = []
 
         if requests and (self.source is None or self.sent + requests + robots > self.source.max_requests):
             left = 0 if self.source is None else max(self.source.max_requests - self.sent, 0)
-
-            return ("requests", f"读取批准剩下 {left} 次请求，不够这项操作最多要用的 {requests + robots} 次"), requests, robots
+            short.append(("requests", t("job.batch.requests_short", left=left, need=requests + robots)))
 
         if kind in MODEL_OPERATIONS:
-            status = self.model_status() if self.model_status is not None else None
-            need, worst = self.model_need(kind)
+            try:
+                status = self.model_status() if self.model_status is not None else None
+            except Exception:
+                status = None
+                short.append(("model", t("job.batch.model_unreadable")))
+            else:
+                need, worst = self.model_need(kind)
 
-            if status is None:
-                return ("model", "模型服务还没有准备好"), requests, robots
+                if status is None:
+                    short.append(("model", t("job.batch.model_unready")))
+                else:
+                    if status.requests_left < need:
+                        short.append(("model", t("job.batch.model_requests_short", left=status.requests_left, need=need)))
 
-            if status.requests_left < need or status.micro_usd_left < worst:
-                return (
-                    (
-                        "model",
-                        f"模型批准还剩 {status.requests_left} 次、${status.micro_usd_left / 1_000_000:.2f}，"
-                        f"不够这项操作最多要用的 {need} 次、${worst / 1_000_000:.2f}",
-                    ),
-                    requests,
-                    robots,
-                )
+                    if status.micro_usd_left < worst:
+                        short.append(
+                            (
+                                # Still the model approval's: the code callers know stays as it was.
+                                "model",
+                                t(
+                                    "job.batch.budget_short",
+                                    left=f"{status.micro_usd_left / 1_000_000:.2f}",
+                                    need=f"{worst / 1_000_000:.2f}",
+                                ),
+                            )
+                        )
 
-        return None, requests, robots
+        return short, requests, robots
 
-    def availability(self, kind: OperationKind, owner_id: str) -> tuple[str, str] | None:
-        """Whether one of the user's operations of kind could begin now, said without writing, claiming, taking or
-        sending anything (D6-1 R3, L3): the run directory's lock, the launch it is for, the batch's user and the
-        allowances its caps would reserve (_allowance). A review page shows it in place of its start button. Whether a
-        stop was found is refusal()'s to say (problem), and another operation going on and the records are begin()'s:
-        begin() asks all of it again, under the lock, when the user confirms, and only then takes anything."""
+    def _allowance(self, kind: OperationKind) -> tuple[tuple[str, str] | None, int, int]:
+        """The shortfalls of one operation of kind (_shortfalls) said together: the first one's code, every text."""
+        short, requests, robots = self._shortfalls(kind)
+
+        if not short:
+            return None, requests, robots
+
+        return (short[0][0], list_join((text for _, text in short), "clauses")), requests, robots
+
+    def availability_all(self, kind: OperationKind, owner_id: str) -> list[tuple[str, str]]:
+        """Every reason one of the user's operations of kind could not begin now that can be read here, without
+        writing, claiming, taking or sending anything (plan 4.3): the run directory's lock, the launch it is for and
+        the batch's user (each of them alone decides it), then every shortfall of the allowances (_shortfalls)."""
         kind = OperationKind(kind)
 
         with self.lock:
             if self._lock_handle is None:
-                return "closed", "这批的运行目录锁已经释放，不再开始新的操作"
+                return [("closed", t("job.batch.closed"))]
 
             if (kind is OperationKind.DIRECTION) != (self.launch is Launch.DIRECTION):
-                return "purpose", "这次启动的批准不是给这种操作用的"
+                return [("purpose", t("job.batch.purpose"))]
 
             if self.owner_id is not None and owner_id != self.owner_id:
-                return "owner", "这批批准属于另一个用户，你的操作不能用它"
+                return [("owner", t("job.batch.owner"))]
 
-            return self._allowance(kind)[0]
+            return self._shortfalls(kind)[0]
+
+    def availability(self, kind: OperationKind, owner_id: str) -> tuple[str, str] | None:
+        """Whether one of the user's operations of kind could begin now, said without writing, claiming, taking or
+        sending anything (D6-1 R3, L3): every reason availability_all() reads, together (the first one's code). A
+        review page shows them in place of its start button. Whether a stop was found is refusal()'s to say (problem),
+        and another operation going on and the records are begin()'s: begin() asks all of it again, under the lock,
+        when the user confirms, and only then takes anything."""
+        found = self.availability_all(kind, owner_id)
+
+        if not found:
+            return None
+
+        return found[0][0], list_join((text for _, text in found), "clauses")
 
     def begin(self, kind: OperationKind, owner_id: str, op_id: str, cancel=None) -> Operation:
         """Start one of the user's operations, or say why it may not (BatchRefused): nothing is sent, and nothing taken."""
@@ -1389,10 +1421,10 @@ class Batch:
 
         with self.lock:
             if self._lock_handle is None:
-                raise BatchRefused("closed", "这批的运行目录锁已经释放，不再开始新的操作")
+                raise BatchRefused("closed", t("job.batch.closed"))
 
             if (kind is OperationKind.DIRECTION) != (self.launch is Launch.DIRECTION):
-                raise BatchRefused("purpose", "这次启动的批准不是给这种操作用的")
+                raise BatchRefused("purpose", t("job.batch.purpose"))
 
             problem = self.problem()
 
@@ -1400,10 +1432,10 @@ class Batch:
                 raise BatchRefused(*problem)
 
             if self.owner_id is not None and owner_id != self.owner_id:
-                raise BatchRefused("owner", "这批批准属于另一个用户，你的操作不能用它")
+                raise BatchRefused("owner", t("job.batch.owner"))
 
             if self.current is not None:
-                raise BatchRefused("busy", "这批里另一项操作还在进行，等它结束再开始；什么都没有发送")
+                raise BatchRefused("busy", t("job.batch.busy"))
 
             held = self._records_hold()
 
@@ -1422,7 +1454,7 @@ class Batch:
             short, requests, robots = self._allowance(kind)
 
             if short is not None:
-                raise BatchRefused(short[0], f"{short[1]}；没有开始")
+                raise BatchRefused(short[0], t("job.batch.not_started", why=short[1]))
 
             operation = Operation(op_id, kind, owner_id, cancel, requests, OPERATION_SECONDS[kind], self.monotonic(), robots=robots)
             bound = self.owner_id
@@ -1683,27 +1715,27 @@ class BatchGuard:
 
             if problem is not None:
                 # Held back for the batch (a stop written down, LIVE_STOP, the day, a pause): nothing went out.
-                raise TransportHeldBack(f"没有发出这个请求：{problem[1]}")
+                raise TransportHeldBack(t("disc.live.not_sent", why=problem[1]))
 
             if operation.sent >= operation.budget:
-                raise OperationSpent(f"这项操作的请求次数用完了（{operation.budget} 次），没有发出")
+                raise OperationSpent(t("disc.live.operation_spent", most=operation.budget))
 
             if batch.sent >= batch.source.max_requests:
-                raise HostStopped(f"读取批准的请求次数用完了（{batch.source.max_requests} 次），没有发出")
+                raise HostStopped(t("disc.live.requests_used", most=batch.source.max_requests))
 
             now = batch.monotonic()
             wait = 0.0 if batch.last_send is None else max(0.0, batch.last_send + INTERVAL - now)
             deadline = min(deadline, operation.began + operation.seconds)
 
             if deadline - now - wait < MIN_REQUEST_SECONDS:
-                raise TimeUsedUp("这项操作剩下的时间不够再发一个请求，没有发出")
+                raise TimeUsedUp(t("disc.live.time_left"))
 
             if wait:
                 batch.sleep(wait)
                 now = batch.monotonic()
 
                 if deadline - now < MIN_REQUEST_SECONDS:
-                    raise TimeUsedUp("等待间隔以后时间不够了，没有发出")
+                    raise TimeUsedUp(t("disc.lever.4"))
 
             batch.sent += 1
             operation.sent += 1
@@ -1718,7 +1750,7 @@ class BatchGuard:
 
                 self.log.append((url, "refused"))
 
-                raise TransportHeldBack(f"没有发出这个请求：{kept}") from None
+                raise TransportHeldBack(t("disc.live.not_sent", why=kept)) from None
             except TransportError as error:
                 batch.last_send = batch.monotonic()
                 self.log.append((url, "error"))
@@ -1728,7 +1760,7 @@ class BatchGuard:
                     raise SourceTimeout("来源没有在时限内回答") from None
 
                 if isinstance(error, TransportTooLarge):
-                    raise BadReply("返回超过大小上限，没有读完") from None
+                    raise BadReply(t("disc.lever.7")) from None
 
                 raise SourceError("请求没有成功，没有收到回答") from None
 
@@ -1738,7 +1770,7 @@ class BatchGuard:
             if reply.status in STOP_STATUSES:
                 batch.stop("refused", f"来源回应 {reply.status}（要求登录、付费或限流）")
 
-                raise HostStopped(f"来源回应 {reply.status}（要求登录、付费或限流），之后不再向它发请求")
+                raise HostStopped(t("disc.lever.9", p0=reply.status))
 
             if reply.status in (200, 404):
                 batch.failures = 0

@@ -24,6 +24,7 @@ overdue running task is cancelled within SWEEP_SECONDS of its limit even
 while its request is still out.
 """
 import secrets
+from datetime import datetime, timezone
 import threading
 import time
 from dataclasses import dataclass, field, replace
@@ -94,6 +95,13 @@ class Task:
     cancelled_by: str | None = None
     touched: float = 0.0
     started: float | None = None
+    # Where its posting came from, as the server verified it at the review (UI bilingual batch, plan 5.3): what a saved
+    # analysis is linked by; None for a task made before, or by a caller that verified nothing.
+    origin: object | None = None
+    # The analysis kept from this task, once kept: a page of it never keeps another, even after that one is gone.
+    saved_id: str | None = None
+    # When its analysis came back, by the wall clock (shown with a saved analysis).
+    finished_at: datetime | None = None
 
     @property
     def handed(self) -> Sends:
@@ -109,7 +117,7 @@ class TaskStore:
         self._lock = threading.Lock()
         self._tasks: dict[str, Task] = {}
 
-    def create(self, owner_id: str, session: str, inputs, plan, request, fingerprint: str) -> Task:
+    def create(self, owner_id: str, session: str, inputs, plan, request, fingerprint: str, origin=None) -> Task:
         with self._lock:
             self._sweep()
             mine = [task for task in self._tasks.values() if task.session == session]
@@ -128,6 +136,7 @@ class TaskStore:
                 request=request,
                 fingerprint=fingerprint,
                 touched=self._clock(),
+                origin=origin,
             )
             self._tasks[task.id] = task
 
@@ -236,6 +245,15 @@ class TaskStore:
             if self._in_time(task):
                 task.stage, task.step, task.result = Stage.DONE, None, result
                 task.touched = self._clock()
+                task.finished_at = datetime.now(timezone.utc)
+
+    def note_saved(self, task_id: str, owner_id: str, session: str, saved_id: str) -> None:
+        """Remember the analysis kept from this task (plan 5.3); set once, never cleared."""
+        with self._lock:
+            task = self._mine(task_id, owner_id, session)
+
+            if task is not None and task.saved_id is None:
+                task.saved_id = saved_id
 
     def cancel(self, task_id: str, owner_id: str, session: str) -> Task | None:
         with self._lock:
@@ -270,6 +288,19 @@ class TaskStore:
                 self._cancel(task, "shutdown")
 
             self._tasks.clear()
+
+    def listed(self, owner_id: str, session: str) -> list:
+        """This session's own tasks, newest change first, as copies with the seconds each still has before it goes
+        (None while it runs): what the workspace lists under 继续处理 (UI bilingual batch, plan 5.1). Reads only."""
+        with self._lock:
+            self._sweep()
+            now = self._clock()
+            mine = [task for task in self._tasks.values() if task.owner_id == owner_id and task.session == session]
+
+            return [
+                (replace(task), None if task.stage is Stage.RUNNING else max(0.0, TASK_TTL_SECONDS - (now - task.touched)))
+                for task in sorted(mine, key=lambda task: task.touched, reverse=True)
+            ]
 
     def sweep(self) -> None:
         with self._lock:

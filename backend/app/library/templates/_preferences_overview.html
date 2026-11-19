@@ -1,0 +1,54 @@
+{#- The job preferences read at a glance (owner redesign, plan 3.3, the overview image): 求职目标 on the left, 工作偏好
+    on the right, 求职要求 across the bottom. Each stance text is one value with its stance beside it, its words as
+    stored; a job type the editor offers reads in the page's language. Nothing filled in reads "尚未想好" (not decided),
+    never "anything goes". -#}
+{% import "_icons.html" as i %}
+{% macro values_of(key, rows) %}
+{% if rows[key] %}
+<ul class="pref-values">
+  {% for stance, text in rows[key] %}
+  <li class="pref-value"><span class="stance-tag stance-{{ stance }}">{{ t("pref.stance." ~ stance) }}</span><span class="value-text">{{ type_label(text) if key == "job_types" else text }}</span></li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="empty">{{ NOT_DECIDED }}</p>
+{% endif %}
+{% endmacro %}
+
+{% macro overview(content) %}
+{% set rows = preference_rows(content) %}
+<div class="pref-overview">
+  <section class="pref-col" aria-labelledby="pref-goals">
+    <h2 id="pref-goals">{{ t("prefs.step.goals") }}</h2>
+    <dl class="pref-lines">
+      {% for key in ("directions", "job_types", "cities") %}
+      <div><dt>{{ t("prefs.dim." ~ key) }}</dt><dd>{{ values_of(key, rows) }}</dd></div>
+      {% endfor %}
+    </dl>
+  </section>
+  <section class="pref-col" aria-labelledby="pref-work">
+    <h2 id="pref-work">{{ t("prefs.step.work") }}</h2>
+    <dl class="pref-lines">
+      {% for key in ("work_content", "work_style") %}
+      <div><dt>{{ t("prefs.dim." ~ key) }}</dt><dd>{{ values_of(key, rows) }}</dd></div>
+      {% endfor %}
+      <div><dt>{{ t("prefs.less_content") }}</dt><dd>{% if content.get("less_content") %}<p class="value-plain">{{ content["less_content"] }}</p>{% else %}<p class="empty">{{ NOT_DECIDED }}</p>{% endif %}</dd></div>
+    </dl>
+  </section>
+  <section class="pref-req" aria-labelledby="pref-req">
+    <h2 id="pref-req">{{ t("prefs.step.requirements") }}</h2>
+    {% set must = content.get("must_haves", "") %}
+    {% if must %}
+    {% set start, rest = requirement_start(must) %}
+    {% if start %}
+    <p class="req-start">{{ i.icon("calendar") }}<span>{{ must.partition("\n")[0] }}</span></p>
+    {% if rest.strip() %}<p class="value-plain">{{ rest.strip() }}</p>{% endif %}
+    {% else %}
+    <p class="value-plain">{{ must }}</p>
+    {% endif %}
+    {% else %}
+    <p class="empty">{{ NOT_DECIDED }}</p>
+    {% endif %}
+  </section>
+</div>
+{% endmacro %}

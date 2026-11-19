@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
-{% set heading = ("编辑" if item_id else "填写") ~ CATEGORY_LABELS[kind] %}
+{% set heading = t("doc.edit_heading" if item_id else "doc.fill_heading", what=CATEGORY_LABELS[kind]) %}
 {% block title %}{{ heading }}{% endblock %}
 {% block content %}
 <header class="pane-head">
   <h1>{{ heading }}</h1>
   {% if kind == PREFERENCES %}
-  <p class="lede">只写想好的部分，其余以后再补。</p>
+  <p class="lede">{{ t("doc.preferences_form_lede") }}</p>
   {% endif %}
 </header>
 {% if error %}
@@ -20,9 +20,10 @@
   <input type="hidden" name="next" value="{{ next_path }}">
   <input type="hidden" name="after_save" value="">
   {% if kind == PROFILE %}
-  <div class="group">
+  {# Compact (owner redesign, image 06): the short facts side by side, the longer ones full width. #}
+  <div class="group profile-grid">
     {% for field in CATEGORY_FIELDS[kind] %}
-    {{ m.form_field(field, values[field.name], field_errors.get(field.name)) }}
+    {{ m.form_field(field, values[field.name], field_errors.get(field.name), category=kind) }}
     {% endfor %}
   </div>
   {% else %}
@@ -30,29 +31,29 @@
   {% set ideal, acceptable, refused = fields %}
   {% set more = values[acceptable.name] or values[refused.name] or field_errors.get(acceptable.name) or field_errors.get(refused.name) %}
   <fieldset class="group preference-group">
-    <legend>{{ label }}</legend>
-    {{ m.form_field(ideal, values[ideal.name], field_errors.get(ideal.name), rows=2) }}
+    <legend>{{ t("pref.group." ~ key) }}</legend>
+    {{ m.form_field(ideal, values[ideal.name], field_errors.get(ideal.name), rows=2, category=kind) }}
     {# Folded while empty: most answers need only the ideal. #}
     <details class="fold"{% if more %} open{% endif %}>
-      {{ m.fold_summary("可以接受与不能接受") }}
-      {{ m.form_field(acceptable, values[acceptable.name], field_errors.get(acceptable.name), rows=2) }}
-      {{ m.form_field(refused, values[refused.name], field_errors.get(refused.name), rows=2) }}
+      {{ m.fold_summary(t("doc.ok_and_no")) }}
+      {{ m.form_field(acceptable, values[acceptable.name], field_errors.get(acceptable.name), rows=2, category=kind) }}
+      {{ m.form_field(refused, values[refused.name], field_errors.get(refused.name), rows=2, category=kind) }}
     </details>
   </fieldset>
   {% endfor %}
   <div class="group">
     {% for field in PREFERENCE_SINGLES %}
-    {{ m.form_field(field, values[field.name], field_errors.get(field.name), rows=3) }}
+    {{ m.form_field(field, values[field.name], field_errors.get(field.name), rows=3, category=kind) }}
     {% endfor %}
   </div>
   {% endif %}
-  <p class="muted small">直接关闭或刷新页面时，浏览器的提醒不一定出现，离开前请先保存。</p>
+  <p class="muted small">{{ t("doc.browser_close_warning") }}</p>
   <div class="form-actions sticky">
-    <button type="submit" data-save-button>保存</button>
-    <a href="{{ DOCUMENT_PAGES[kind] }}">取消</a>
+    <a class="cancel-link" href="{{ DOCUMENT_PAGES[kind] }}">{{ t("common.cancel") }}</a>
     <p class="dirty-status" id="dirty-status" aria-live="polite"></p>
+    <button type="submit" data-save-button>{{ t("doc.save") }}</button>
   </div>
 </form>
-{{ m.leave_dialog("保存") }}
+{{ m.leave_dialog(t("doc.save")) }}
 {% endblock %}
 {% block scripts %}<script src="/static/leave_guard.js"></script>{% endblock %}

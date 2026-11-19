@@ -78,11 +78,13 @@ from app.library.resume_rules import SIMULATION_NAME
 from app.library.sends import Call, Delivery, Sends, sends_text
 from app.library.service import current_document, list_experiences, new_id, record_event
 from app.library.structuring_runs import Stop
+from app.i18n import MessageMap, lazy, t
+from app.library.presentation import label_of
 
 logger = logging.getLogger("roleradar.library")
 
 STRUCTURABLE = (ImportState.READ, ImportState.PARTIAL)
-STRUCTURER_LABELS = {SIMULATION_NAME: "本机模拟整理规则（不是 AI）"}
+STRUCTURER_LABELS = MessageMap({SIMULATION_NAME: "imp.rv.1"})
 # A real service's structurer is named live:<provider>/<model>/<prompt version> (app.live_structuring, U2-C3).
 LIVE_PREFIX = "live:"
 # What came of a real run that gave no candidates. Its outcome ends in what the run handed on
@@ -95,41 +97,41 @@ INTERNAL_ERROR = "internal_error"
 # A run of a process that is gone, cancelled after a restart: whether it was sent is not known here.
 INTERRUPTED = "interrupted"
 LIVE_FAILURE_TEXTS = {
-    "cancelled": "这次整理已取消。",
-    "logged_out": "退出登录时，这次整理停止了。",
-    "expired": "这次导入已经到期，整理停止了。",
-    "run_timeout": f"这次整理超过了 {int(STALE_STRUCTURING_AFTER.total_seconds() // 60)} 分钟的运行时限，停止了。",
-    "ended": "这次导入已经结束或有了变化，整理停止了。",
-    "replaced": "另一次整理已经开始，这次停止了。",
-    "shutdown": "应用停止时，这次整理中断了。",
-    "gate_stopped": "真实服务已停用。",
-    "gate_paused": "这批批准已暂停，继续需要新的批准。",
-    "gate_busy": "另一个真实任务正在进行，请等它结束后再整理。",
-    "gate_purpose": "这批批准不包括简历整理。",
-    "gate_requests": "这批批准的请求次数已经用完。",
-    "gate_cost": "这次请求的保守预留会超出这批批准剩下的应用内预算。",
-    "gate_closed": "服务正在停止。",
-    "gate_ended": "这次整理已经结束。",
-    "gate_count": "发送前的计数没有完成，或者结果不能用、用完了这次请求的时限，所以没有发出生成请求。",
-    "gate_time": "本机的准备和发送前检查用完了这次请求的时限，所以没有发出生成请求。",
-    "gate_input": "计数显示这次请求的输入超过了这批批准的单次输入上限，所以没有发出生成请求。",
-    "gate_payload": "这次请求的完整内容超过了这批批准允许的大小，没有发出，也不会被截短。可以只粘贴简历里需要的部分，重新导入后再整理。",
-    PROVIDER_UNAVAILABLE: "外部服务无法使用（无法建立，或和批准的接收方不符）。",
-    PROVIDER_CONFIG: "外部服务的本机设置有问题，请求在发出之前就停止了。",
-    PROVIDER_TIMEOUT: "外部服务没有在时限内回答。",
+    "cancelled": lazy("imp.rv.2"),
+    "logged_out": lazy("imp.rv.3"),
+    "expired": lazy("imp.rv.4"),
+    "run_timeout": lazy("imp.rv.5", p0=int(STALE_STRUCTURING_AFTER.total_seconds() // 60)),
+    "ended": lazy("imp.rv.6"),
+    "replaced": lazy("imp.rv.7"),
+    "shutdown": lazy("imp.rv.8"),
+    "gate_stopped": lazy("imp.rv.9"),
+    "gate_paused": lazy("imp.rv.10"),
+    "gate_busy": lazy("imp.rv.11"),
+    "gate_purpose": lazy("imp.rv.12"),
+    "gate_requests": lazy("imp.rv.13"),
+    "gate_cost": lazy("imp.rv.14"),
+    "gate_closed": lazy("imp.rv.15"),
+    "gate_ended": lazy("imp.rv.16"),
+    "gate_count": lazy("imp.rv.17"),
+    "gate_time": lazy("imp.rv.18"),
+    "gate_input": lazy("imp.rv.19"),
+    "gate_payload": lazy("imp.rv.20"),
+    PROVIDER_UNAVAILABLE: lazy("imp.rv.21"),
+    PROVIDER_CONFIG: lazy("imp.rv.22"),
+    PROVIDER_TIMEOUT: lazy("imp.rv.23"),
     # An unfinished answer, an error response, a refusal or no text: which one is not said.
-    PROVIDER_FAILED: "外部服务没有返回可用的整理结果。",
-    INTERNAL_ERROR: "整理时程序出错。",
-    INVALID_ANSWER: "外部服务返回的整理结果不是约定的格式。",
+    PROVIDER_FAILED: lazy("imp.rv.24"),
+    INTERNAL_ERROR: lazy("imp.rv.25"),
+    INVALID_ANSWER: lazy("imp.rv.26"),
     # The service's candidates and the local profile together: more than the contract allows is refused whole.
-    TOO_MANY: f"整理出的条目（连同本机规则整理的基本资料）超过了 {MAX_CANDIDATES} 条的上限。可以只粘贴简历里需要的部分，重新导入后再整理。",
+    TOO_MANY: lazy("imp.rv.27", p0=MAX_CANDIDATES),
     # A text with too little in it may end so (an expected outcome, no failure of the service): ask for more.
-    NOTHING_FOUND: "外部服务没有整理出任何条目：这份文字里可能没有足够的经历信息，可以补充更完整的内容后重新导入。",
-    NONE_VALID: "外部服务整理出的条目都没有通过原文核对。",
+    NOTHING_FOUND: lazy("imp.rv.28"),
+    NONE_VALID: lazy("imp.rv.29"),
 }
-SENT_TEXT = "已交给外部服务的请求：{}。这些请求可能已经产生费用；什么都没有保存。"
-NOT_SENT_TEXT = "没有发出请求，什么都没有保存。"
-INTERRUPTED_TEXT = "这次整理已经中断（应用可能重启过），结果不会保存；中断之前，计数请求和生成请求都可能已经发出。"
+SENT_TEXT = lazy("imp.rv.30")
+NOT_SENT_TEXT = lazy("imp.rv.31")
+INTERRUPTED_TEXT = lazy("imp.rv.32")
 # The marks of sent_suffix: sent, maybe sent, not sent.
 SENT_MARKS = {"s": Delivery.SENT, "m": Delivery.MAYBE, "-": Delivery.NOT_SENT}
 # What an outcome ended in before counts existed (U2-C3, structure version 8 all along): its one
@@ -138,12 +140,12 @@ LEGACY_SENT = "_sent"
 # The outcomes of a stopped run (structuring_runs.Stop): a cancel writes its own at once, before
 # its request has come back, so only these may still be set right by what the request showed.
 STOPPED = frozenset(stop.value for stop in Stop)
-STATE_LABELS = {CandidateState.PENDING: "待核对", CandidateState.EXCLUDED: "不加入", CandidateState.ADOPTED: "已加入"}
-ACTION_LABELS = {
-    AdoptionAction.NEW: "作为新的经历草稿加入",
-    AdoptionAction.SUPPLEMENT: "补充到已有经历",
-    AdoptionAction.PROFILE: "写入基本资料",
-}
+STATE_LABELS = MessageMap({CandidateState.PENDING: "imp.rv.33", CandidateState.EXCLUDED: "imp.rv.34", CandidateState.ADOPTED: "imp.rv.35"})
+ACTION_LABELS = MessageMap({
+    AdoptionAction.NEW: "imp.rv.36",
+    AdoptionAction.SUPPLEMENT: "imp.rv.37",
+    AdoptionAction.PROFILE: "imp.rv.38",
+})
 # What the history of a record says when an adoption wrote it (U2-B2b): events, never the words.
 ADOPTED_FROM_IMPORT = "adopted_from_import"
 SUPPLEMENTED_FROM_IMPORT = "supplemented_from_import"
@@ -482,9 +484,9 @@ def structurer_label(structurer: str) -> str:
         provider, _, rest = structurer.removeprefix(LIVE_PREFIX).partition("/")
         model = rest.rpartition("/")[0]
 
-        return f"外部 AI 服务（{provider} {model}）"
+        return t("imp.rv.39", p0=provider, p1=model)
 
-    return "整理服务"
+    return t("imp.rv.40")
 
 
 def failure_text(structurer: str, outcome: str | None) -> str | None:
@@ -678,7 +680,7 @@ def adoption_views(db: Session, owner_id: str, candidates: list[ImportCandidate]
         category = record_kind(kinds[adoption.candidate_id])
         item = db.get(ExperienceItem, adoption.item_id)
         here = item is not None and item.owner_id == owner_id and item.deleted_at is None
-        labels = {entry.name: entry.label for entry in CATEGORY_FIELDS[category]}
+        labels = {entry.name: label_of(category, entry.name) for entry in CATEGORY_FIELDS[category]}
         views[adoption.candidate_id] = AdoptionView(
             action=adoption.action,
             item_id=adoption.item_id,
@@ -862,9 +864,7 @@ def review_record(
     return {
         "import_id": row.id,
         "note": (
-            "这些是从导入的简历文字里整理出的候选，没有经过核实；只有你明确选择加入的，才写进了你的资料（见 adoption）。"
-            "found 是逐字摘自原文的内容，sources 是它的出处；edited 是你自己改写的内容，不是原文引用。"
-            "技能只在你选择时作为自述写进基本资料；当时的求职意向只作参考，不会改动求职偏好。"
+            t("imp.rv.41")
         ),
         "structured_by": structurer_label(structuring.structurer),
         "structurer": structuring.structurer,
@@ -912,7 +912,7 @@ def _candidate_record(candidate: ImportCandidate, segments: list, adoption: Adop
             continue
 
         fields[entry.name] = {
-            "label": entry.label,
+            "label": label_of(candidate.kind, entry.name),
             "found": found or None,
             "sources": [
                 {"where": where(segments, piece), "segment": piece["segment"], "quote": piece["quote"]}

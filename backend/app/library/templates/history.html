@@ -1,80 +1,120 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
+{% import "_icons.html" as i %}
+{% import "_preferences_overview.html" as prefs with context %}
 {% set document = item.category in DOCUMENT_KINDS %}
-{% block title %}历史 · {{ display_title(item.content, item.category) }}{% endblock %}
+{% set section = item.category if document else "library" %}
+{% set heading = t("hist.title." ~ item.category) if item.category in DOCUMENT_KINDS else t("hist.title.experience") %}
+{% block title %}{{ heading }} · {{ display_title(item.content, item.category) }}{% endblock %}
+{#- A record's history (owner redesign, plans 3.1 and 3.3, the history images and image 20): 历史版本 and 操作记录 as
+    two tabs; each version a compact row, all closed at first, one open at a time, read only, under its own real name
+    (初始版, 确认版 1 …) and the minute it was kept; the exact time and zone show inside. The ⋯ menu beside a row
+    (deleting, restoring) is apart from opening it. No restoring an old version into the record, no comparing. -#}
+{% macro version_body(version) %}
+<p class="muted small">{{ t("lib.version_when." ~ version.kind, at=version.created_at|localtime) }}</p>
+{% if item.category == PREFERENCES %}
+{{ prefs.overview(version.content) }}
+{% elif item.category == PROFILE %}
+{{ m.content_block(version.content, item.category) }}
+{% else %}
+<h3 class="version-title">{{ display_title(version.content, item.category) }}</h3>
+<dl class="version-fields">
+  <div><dt>{{ t("hist.kind") }}</dt><dd>{{ CATEGORY_LABELS[item.category] }}</dd></div>
+  {% for field in CATEGORY_FIELDS[item.category] %}
+  {% if version.content.get(field.name) and field.name != TITLE_FIELD_OF[item.category] %}
+  <div><dt>{{ label_of(item.category, field.name) }}</dt><dd>{% if field.name == "links" %}{{ m.link_list(version.content[field.name]) }}{% else %}<p class="text">{{ version.content[field.name] }}</p>{% endif %}</dd></div>
+  {% endif %}
+  {% endfor %}
+</dl>
+{% if version.private_note %}
+<div class="version-note"><p class="version-note-title">{{ i.icon("lock-keyhole") }}{{ t("lib.note_then") }}</p><p class="text">{{ version.private_note }}</p></div>
+{% endif %}
+{% endif %}
+{% endmacro %}
 {% block content %}
-{% if document %}
-<p class="crumbs"><a href="{{ record_page(item) }}">{{ display_title(item.content, item.category) }}</a> / 历史</p>
-{% else %}
-<p class="crumbs"><a href="/experiences">我的经历</a> / <a href="/experiences/{{ item.id }}">{{ display_title(item.content, item.category) }}</a> / 历史</p>
-{% endif %}
-<h1>历史</h1>
-{% if document %}
-<p class="muted">每次保存有变化时都会留一份历史版本，可以单独查看或删除。</p>
-{% else %}
-<p class="muted">保存草稿只更新当前内容，不会每次都留一份；历史只保留第一次保存时的初始版，以及每次确认时的确认版。</p>
-{% endif %}
-<h2>当前内容</h2>
-<ul class="version-list">
-  <li><a href="{{ record_page(item) }}">当前内容</a>{% if not document %} {{ m.state_badge(item) }}{% endif %} <span class="muted small">最近保存：{{ item.updated_at|localtime }}</span></li>
+<p class="back-line"><a class="library-back" href="{{ record_page(item) }}">{{ i.icon("arrow-left") }}{{ t("hist.back." ~ ("document" if document else "experience"), what=CATEGORY_LABELS[item.category]) }}</a></p>
+<header class="page-head">
+  <h1>{{ heading }}</h1>
+  {% if not document %}<p class="lede">{{ display_title(item.content, item.category) }}</p>{% endif %}
+</header>
+<nav class="chip-row history-tabs" aria-label="{{ heading }}">
+  <a class="chip" href="/experiences/{{ item.id }}/history"{% if history_tab != "events" %} aria-current="page"{% endif %}>{{ t("hist.versions") }}</a>
+  <a class="chip" href="/experiences/{{ item.id }}/history?tab=events"{% if history_tab == "events" %} aria-current="page"{% endif %}>{{ t("lib.events") }}</a>
+</nav>
+{% if history_tab == "events" %}
+<ul class="event-list history-events">
+  {% for event in events %}
+  <li><span class="event-when">{{ event.at|localtime }}</span><span>{{ event_label(event, item.category) }}</span></li>
+  {% endfor %}
 </ul>
-<h2>保存过的版本</h2>
+{% else %}
+{% if not document %}
+<p class="current-state"><span class="current-state-label">{{ t("hist.current_state") }}</span>{{ m.state_badge(item) }}</p>
+{% endif %}
 {% if versions %}
-<ul class="version-list">
+<ul class="history-list" data-history>
   {% for version in versions %}
-  <li>
+  <li class="history-item{% if version.deleted_at %} is-deleted{% endif %}">
     {% if version.deleted_at %}
-    <span class="deleted">{{ version_label(version) }}</span>
-    <span class="muted small">已删除；在 {{ version.purge_after|localtime }} 之前可以恢复（{{ format_remaining(version.purge_after, now) }}）</span>
-    {% if along.get(version.id) %}
-    <span class="muted small">连同 {{ along[version.id] }} 次方向探索，恢复这个版本时一起恢复</span>
-    {% endif %}
-    {% if analyses_with is defined and analyses_with.get(version.id) %}
-    <span class="muted small">连同 {{ analyses_with[version.id] }} 份岗位分析，恢复这个版本时一起恢复</span>
-    {% endif %}
-    <div class="row-actions">
-      <form method="post" action="/experiences/{{ item.id }}/versions/{{ version.id }}/restore" class="inline">
+    <div class="history-row-static">
+      <span class="history-label"><span class="deleted">{{ version_label(version) }}</span></span>
+      <span class="history-when">{{ t("lib.version_deleted_until", until=version.purge_after|localtime, left=format_remaining(version.purge_after, now)) }}</span>
+      {% if along.get(version.id) %}<span class="muted small">{{ t("lib.version_with_explorations", n=along[version.id]) }}</span>{% endif %}
+      {% if analyses_with is defined and analyses_with.get(version.id) %}<span class="muted small">{{ t("lib.version_with_analyses", n=analyses_with[version.id]) }}</span>{% endif %}
+    </div>
+    <div class="history-more">
+      {% call m.more_menu(t("hist.more_of", label=version_label(version))) %}
+      <form method="post" action="/experiences/{{ item.id }}/versions/{{ version.id }}/restore">
         {{ m.csrf() }}
         <input type="hidden" name="expected_state" value="{{ version_states[version.id] }}">
-        <button type="submit">恢复</button>
+        <button type="submit" class="menu-link menu-button">{{ t("common.restore") }}</button>
       </form>
-      <a class="danger-link" href="/experiences/{{ item.id }}/versions/{{ version.id }}/purge">永久删除…</a>
+      <a class="menu-link danger-link" href="/experiences/{{ item.id }}/versions/{{ version.id }}/purge">{{ t("lib.purge_ellipsis") }}</a>
+      {% endcall %}
     </div>
     {% else %}
-    <a href="/experiences/{{ item.id }}/versions/{{ version.id }}">{{ version_label(version) }}</a>
-    <span class="muted small">{% if version.kind == "initial" %}第一次保存于{% elif version.kind == "saved" %}保存于{% else %}确认于{% endif %} {{ version.created_at|localtime }}</span>
-    {% if is_current_confirmed(item, version) %}
-    <span class="badge state-confirmed">当前确认版本</span>
-    {% else %}
-    <a class="danger-link" href="/experiences/{{ item.id }}/versions/{{ version.id }}/delete">删除…</a>
-    {% endif %}
+    <details class="history-row" name="history-version">
+      <summary>
+        <span class="chevron">{{ i.icon("chevron-right") }}</span>
+        <span class="history-label">{{ version_label(version) }}</span>
+        <time class="history-when" datetime="{{ version.created_at.isoformat() }}">{{ version.created_at|shorttime }}</time>
+        {% if is_current_confirmed(item, version) %}<span class="badge state-confirmed">{{ t("lib.current_confirmed_version") }}</span>{% endif %}
+      </summary>
+      <div class="history-body">
+        {{ version_body(version) }}
+      </div>
+    </details>
+    <div class="history-more">
+      {% call m.more_menu(t("hist.more_of", label=version_label(version))) %}
+      <a class="menu-link" href="/experiences/{{ item.id }}/versions/{{ version.id }}">{{ t("hist.open_version") }}</a>
+      {% if not is_current_confirmed(item, version) %}
+      <a class="menu-link danger-link" href="/experiences/{{ item.id }}/versions/{{ version.id }}/delete">{{ t("lib.delete_version_link") }}</a>
+      {% endif %}
+      {% endcall %}
+    </div>
     {% endif %}
   </li>
   {% endfor %}
 </ul>
 {% else %}
-<p class="empty-state">没有保留的历史版本。</p>
+<p class="empty-state">{{ t("lib.no_versions") }}</p>
 {% endif %}
 {% if waiting %}
-<h2>等待清理的历史版本</h2>
+<h2 class="section-title">{{ t("lib.versions_waiting") }}</h2>
 <ul class="status-list">
   {% for job in waiting %}
-  <li>一个历史版本{% if job.reason == "user_request" %}已于 {{ job.due_at|localtime }} 申请永久删除{% else %}已于 {{ job.due_at|localtime }} 超过恢复期限{% endif %}，内容已经不能访问或恢复，正在等待清理{% if job.status == "failed" %}；上次清理失败（已尝试 {{ job.attempts }} 次），系统会自动重试{% endif %}。</li>
+  <li>{{ t("lib.version_waiting_item", why=(t("lib.version_asked_at", at=job.due_at|localtime) if job.reason == "user_request" else t("trash.expired_at", at=job.due_at|localtime))) }}{% if job.status == "failed" %}{{ t("trash.retrying", n=job.attempts) }}{% endif %}{{ t("common.sentence_end") }}</li>
   {% endfor %}
 </ul>
 {% endif %}
 {% if finished %}
-<h2>最近完成的清理</h2>
+<h2 class="section-title">{{ t("trash.finished") }}</h2>
 <ul class="status-list">
   {% for job in finished %}
-  <li>一个历史版本已于 {{ job.completed_at|localtime }} 清理完成。</li>
+  <li>{{ t("lib.version_cleaned_at", at=job.completed_at|localtime) }}</li>
   {% endfor %}
 </ul>
 {% endif %}
-<h2>操作记录</h2>
-<ul class="event-list">
-  {% for event in events %}
-  <li><span class="muted small">{{ event.at|localtime }}</span> {{ event_label(event, item.category) }}</li>
-  {% endfor %}
-</ul>
+{% endif %}
 {% endblock %}
+{% block scripts %}<script src="/static/history.js"></script>{% endblock %}

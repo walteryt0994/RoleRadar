@@ -38,6 +38,7 @@ import logging
 import os
 from collections.abc import Callable, Mapping
 
+from app import i18n
 from app.ai_provider import AIProvider, AIProviderConnectionError, SendState
 from app.discovery import agent, baseline, tools
 from app.discovery.contracts import EndReason
@@ -201,83 +202,87 @@ def run_search(
 
         return
 
-    sending = _Sending(store, task_id)
-    finished, problem, problems = None, None, ()
+    # Everything the search writes (tool summaries, rule notes, failure reasons, the trace) is in the result language
+    # confirmed for it, whatever thread runs it and whatever the interface is in now (Codex review F3, plan 6.3);
+    # user and source words are never translated.
+    with i18n.using(task.confirmation.result_language):
+        sending = _Sending(store, task_id)
+        finished, problem, problems = None, None, ()
 
-    try:
-        with provider_for(task, sending) as provider:
-            if binding is not None:
-                # Inside the gate, before anything is sent: both approvals claimed for this search, or none of it runs.
-                binding.bind()
-                sending.binding = binding
+        try:
+            with provider_for(task, sending) as provider:
+                if binding is not None:
+                    # Inside the gate, before anything is sent: both approvals claimed for this search, or none of it runs.
+                    binding.bind()
+                    sending.binding = binding
 
-            guarded = Guarded(provider)
-            run = tools.start(
-                database,
-                task.confirmation,
-                task.approval,
-                guarded,
-                register=register,
-                clock=clock,
-                cancel=_Stops(store, task_id),
-                monotonic=store.clock,
-                diagnose=diagnose,
-                stop_with_sources=binding is not None,
-            )
-            # The search's time is the task's: the same clock, from the same start.
-            run.deadline = task.started + task.seconds
-            sending.run = run
-
-            if trajectory is not None:
-                trajectory.start(run)
-
-            if task.flow is Flow.BASELINE:
-                finished = baseline.run_baseline(run)
-            else:
-                decider = decider_for(guarded)
+                guarded = Guarded(provider)
+                run = tools.start(
+                    database,
+                    task.confirmation,
+                    task.approval,
+                    guarded,
+                    register=register,
+                    clock=clock,
+                    cancel=_Stops(store, task_id),
+                    monotonic=store.clock,
+                    diagnose=diagnose,
+                    stop_with_sources=binding is not None,
+                )
+                # The search's time is the task's: the same clock, from the same start.
+                run.deadline = task.started + task.seconds
+                sending.run = run
 
                 if trajectory is not None:
-                    decider = trajectory.decider(decider)
+                    trajectory.start(run)
 
-                def on_step(step):
-                    store.progress(task_id, worker, step)
+                if task.flow is Flow.BASELINE:
+                    finished = baseline.run_baseline(run)
+                else:
+                    decider = decider_for(guarded)
 
                     if trajectory is not None:
-                        trajectory.step(step)
+                        decider = trajectory.decider(decider)
 
-                finished = agent.run_agent(run, decider, on_step=on_step)
-    except tools.StartRefused as refused:
-        # Nothing was sent: the confirmation does not hold as it is now.
-        problem, problems = START_REFUSED, refused.problems
-    except ApprovalsHeld as held:
-        # Nothing was sent: an approval of validation B may not be used for this search.
-        logger.error("a search did not start: its approvals may not be used (%s)", held.code)
-        problem = f"{APPROVALS}{held.code}"
-    except LiveBlocked as blocked:
-        # The gate let the search's task no further before it began (another task, its purpose, closed).
-        problem = f"gate_{blocked.reason.value}"
-    except (ProviderUnavailable, LiveRefused) as error:
-        logger.error("a search could not use its service (%s)", type(error).__name__)
-        problem = PROVIDER_UNAVAILABLE
-    except ParentStopped:
-        problem = STOPPED
-    except Exception as error:  # the store must learn that it failed; no text is logged
-        logger.error("a search failed unexpectedly (%s)", type(error).__name__)
-        problem = INTERNAL_ERROR
+                    def on_step(step):
+                        store.progress(task_id, worker, step)
 
-    if trajectory is not None:
-        try:
-            trajectory.finish(finished, problem)
-        except Exception as error:  # the search's outcome stands; its trajectory is left out
-            logger.error("a search's trajectory was not kept (%s)", type(error).__name__)
+                        if trajectory is not None:
+                            trajectory.step(step)
 
-    done = store.finish(task_id, worker=worker, finished=finished, problem=problem, problems=problems)
+                    finished = agent.run_agent(run, decider, on_step=on_step)
+        except tools.StartRefused as refused:
+            # Nothing was sent: the confirmation does not hold as it is now.
+            problem, problems = START_REFUSED, refused.problems
+        except ApprovalsHeld as held:
+            # Nothing was sent: an approval of validation B may not be used for this search.
+            logger.error("a search did not start: its approvals may not be used (%s)", held.code)
+            problem = f"{APPROVALS}{held.code}"
+        except LiveBlocked as blocked:
+            # The gate let the search's task no further before it began (another task, its purpose, closed).
+            problem = f"gate_{blocked.reason.value}"
+        except (ProviderUnavailable, LiveRefused) as error:
+            logger.error("a search could not use its service (%s)", type(error).__name__)
+            problem = PROVIDER_UNAVAILABLE
+        except ParentStopped:
+            problem = STOPPED
+        except Exception as error:  # the store must learn that it failed; no text is logged
+            logger.error("a search failed unexpectedly (%s)", type(error).__name__)
+            problem = INTERNAL_ERROR
 
-    if done is not None and retain is not None:
-        # Once, by the one executor whose word made it DONE (U3-D4b-2); whether its recommendations are held is the
-        # retention's to judge again (app.discovery.records.retention_problem), and taking a search twice changes
-        # nothing (JobRecommendationLatest).
-        try:
-            retain(done)
-        except Exception as error:  # the search's outcome stands; what was held is said by the retention, or nothing
-            logger.error("current recommendations were not held (%s)", type(error).__name__)
+        if trajectory is not None:
+            try:
+                trajectory.finish(finished, problem)
+            except Exception as error:  # the search's outcome stands; its trajectory is left out
+                logger.error("a search's trajectory was not kept (%s)", type(error).__name__)
+
+        done = store.finish(task_id, worker=worker, finished=finished, problem=problem, problems=problems)
+
+        if done is not None and retain is not None:
+            # Once, by the one executor whose word made it DONE (U3-D4b-2); whether its recommendations are held is the
+            # retention's to judge again (app.discovery.records.retention_problem), and taking a search twice changes
+            # nothing (JobRecommendationLatest).
+            try:
+                retain(done)
+            except Exception as error:  # the search's outcome stands; what was held is said by the retention, or nothing
+                logger.error("current recommendations were not held (%s)", type(error).__name__)

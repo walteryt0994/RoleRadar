@@ -1,105 +1,125 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
-{% block title %}{% if linked %}补充的岗位：{{ facts.title }}{% else %}看要保存的内容：{{ content.title }}{% endif %}{% endblock %}
+{% import "_icons.html" as i %}
+{% block title %}{% if linked %}{{ t("job.job_supplied.1", p0=(facts.title)) }}{% else %}{{ t("job.job_supplied.2", p0=(content.title)) }}{% endif %}{% endblock %}
 {# What a supply holds (U3-D4d): a posting read from a link, or one pasted, as it would be kept. Held in memory for this
    session only; nothing is saved until 加入我的岗位, and nothing is analysed here. #}
 {% block layout %}
 <main id="main" class="job-page job-reading" tabindex="-1">
-  <header class="job-head">
-    {% if linked %}
-    <h1>补充的岗位：{{ facts.title }}</h1>
-    <p class="job-mode">从你补充的链接认出：{{ content.source_name }}，岗位编号 {{ content.ref.posting_id }}。由来源自己的接口读取了一次，你贴的网址本身没有打开。这份结果只临时保留，大约还有 {{ held.minutes_left }} 分钟。</p>
-    {% else %}
-    <h1>看要保存的内容：{{ content.title }}</h1>
-    <p class="job-mode">这是你提供的原文：{{ EVIDENCE_WORDS["user_provided"] }}。系统没有打开你给的链接，也没有向任何来源核实，所以不能持续核对它的招聘状态；准备申请时，请自己到原网站确认。这份内容只临时保留，大约还有 {{ held.minutes_left }} 分钟。</p>
-    {% endif %}
+  {#- Before adding (owner redesign, plan 6.1, the before-save image): the title, the company and where it came from;
+      加入我的岗位 first and 分析岗位 beside it in the head; the posting's text is the body; discarding is a quiet action.
+      The repeated "entered by you", not-verified and storage notes are gone (plan 9); what was taken out of a link,
+      or may be a credential in it, is still said. -#}
+  {% set can_keep = not saved_before and not held.saving and not (linked and own_state in ("mine", "held", "bin")) %}
+  <p class="back-line"><a class="library-back" href="/job-records/supply">{{ i.icon("arrow-left") }}{{ t("job.job_supplied.77") }}</a></p>
+  <header class="page-head job-record-head">
+    <div class="job-record-title">
+      <h1>{% if linked %}{{ facts.title }}{% else %}{{ content.title }}{% endif %}</h1>
+      <p class="result-company">{% if linked %}{{ facts.company }}{% else %}{{ content.company }}{% endif %}</p>
+    </div>
+    <div class="page-actions">
+      {% if can_keep %}
+      <form method="post" action="/job-records/supply/{{ held.token }}/keep" class="inline">
+        {{ m.csrf() }}
+        <input type="hidden" name="review" value="{{ held.review }}">
+        {% if not linked and matches %}
+        <input type="hidden" name="choice" value="separate">
+        <button type="submit" class="secondary">{% if exact %}{{ t("job.job_supplied.71") }}{% else %}{{ t("job.job_supplied.72") }}{% endif %}</button>
+        {% else %}
+        <input type="hidden" name="choice" value="add">
+        <button type="submit" class="primary">{{ t("job.job_supplied.73") }}</button>
+        {% endif %}
+      </form>
+      {% endif %}
+      {% if (linked and reading.text) or not linked %}
+      <a class="button secondary" href="/job-analysis?supplied={{ held.token }}">{{ t("jobx.analyse") }}</a>
+      {% endif %}
+      {% if not held.saving %}
+      <form method="post" action="/job-records/supply/{{ held.token }}/discard" class="inline">
+        {{ m.csrf() }}
+        <button type="submit" class="link-button">{{ t("job.job_supplied.75") }}</button>
+      </form>
+      {% endif %}
+    </div>
+    <p class="state-line">{% if linked %}<span class="badge">{{ source_label(content.source_name) }}</span><span>{{ status_text }}</span>{% else %}<span class="badge">{{ t("jobx.added_by_hand") }}</span><span>{{ t("jobx.status_unchecked") }}</span>{% endif %}</p>
   </header>
   {% if error %}
   <p class="error" role="alert">{{ error }}</p>
   {% endif %}
   {% if saved_before %}
-  <p class="notice" role="status">这份结果已经对应到你的一条岗位记录（它保存的，或者保存时发现你已经有的）{% if saved %}：<a href="/job-records/postings/{{ saved.id }}">打开那条记录</a>{% else %}，那条记录现在不在我的岗位里（可能在回收站里，也可能已经永久删除）{% endif %}。同一份结果不会再保存一次。</p>
+  <p class="notice" role="status">{{ t("job.job_supplied.5") }}{% if saved %}{{ t("job.job_supplied.6") }}<a href="/job-records/postings/{{ saved.id }}">{{ t("job.job_supplied.7") }}</a>{% else %}{{ t("job.job_supplied.8") }}{% endif %}{{ t("job.job_supplied.9") }}</p>
   {% elif held.saving %}
-  <p class="notice" role="status">这份结果正在保存，请稍后刷新再看。</p>
+  <p class="notice" role="status">{{ t("job.job_supplied.10") }}</p>
   {% endif %}
 
   {% if linked %}
   <section class="review-section" aria-labelledby="result-title">
-    <h2 id="result-title">来源这次怎么说</h2>
-    <p class="{% if succeeded %}hint{% else %}warning{% endif %}">{% if not succeeded %}状态待确认：{% endif %}{{ status_text }}{% if answered_at %}（{% if reading.status == "unanswered" %}尝试核对于{% else %}来源回答于{% endif %} {{ answered_at }}）{% endif %}</p>
-    <p class="hint">“仍公开发布”只说明来源这时还在发布，不代表还有名额。单独一次 404 不说明已关闭。</p>
+    <h2 id="result-title">{{ t("job.job_supplied.11") }}</h2>
+    <p class="{% if succeeded %}hint{% else %}warning{% endif %}">{% if not succeeded %}{{ t("job.job_supplied.12") }}{% endif %}{{ status_text }}{% if answered_at %}{{ t("job.job_supplied.13") }}{% if reading.status == "unanswered" %}{{ t("job.job_supplied.14") }}{% else %}{{ t("job.job_supplied.15") }}{% endif %} {{ t("job.job_supplied.16", p0=(answered_at)) }}{% endif %}</p>
   </section>
 
   <section class="review-section" aria-labelledby="facts-title">
-    <h2 id="facts-title">读到的公开信息</h2>
+    <h2 id="facts-title">{{ t("job.job_supplied.18") }}</h2>
     <dl class="facts">
-      <div><dt>公司</dt><dd>{{ facts.company }}</dd></div>
-      <div><dt>来源</dt><dd>{{ content.source_name }}，岗位编号 {{ content.ref.posting_id }}（{{ EVIDENCE_WORDS["official"] }}）</dd></div>
-      <div><dt>地点</dt><dd>{{ facts.cities|join("、") or "未认出" }}{% if facts.places_stated %}（来源原文：{{ facts.places_stated|join("、") }}）{% endif %}</dd></div>
-      <div><dt>类型</dt><dd>{{ facts.job_type or "未认出" }}{% if facts.type_stated %}（来源原文：{{ facts.type_stated }}）{% endif %}</dd></div>
-      <div><dt>发布</dt><dd>{{ facts.posted_on or "未提供" }}</dd></div>
-      <div><dt>截止</dt><dd>{{ deadline_text }}</dd></div>
+      <div><dt>{{ t("job.job_supplied.19") }}</dt><dd>{{ facts.company }}</dd></div>
+      <div><dt>{{ t("job.job_supplied.20") }}</dt><dd>{{ t("job.job_supplied.21", p0=(source_label(content.source_name)), p1=(content.ref.posting_id), p2=(EVIDENCE_WORDS["official"])) }}</dd></div>
+      <div><dt>{{ t("job.job_supplied.22") }}</dt><dd>{{ list_join(facts.cities) or t("job.unrecognised") }}{% if facts.places_stated %}{{ t("job.job_supplied.23") }}{{ list_join(facts.places_stated) }}{{ t("job.job_supplied.24") }}{% endif %}</dd></div>
+      <div><dt>{{ t("job.job_supplied.25") }}</dt><dd>{{ type_word(facts.job_type) or t("job.unrecognised") }}{% if facts.type_stated %}{{ t("job.job_supplied.26", p0=(facts.type_stated)) }}{% endif %}</dd></div>
+      <div><dt>{{ t("job.job_supplied.27") }}</dt><dd>{{ facts.posted_on or t("job.not_provided") }}</dd></div>
+      <div><dt>{{ t("job.job_supplied.28") }}</dt><dd>{{ deadline_text }}</dd></div>
       {% if reading.url %}
-      <div><dt>原始链接</dt><dd class="plain-address">{{ reading.url }}（来源给出的，页面不提供链接）</dd></div>
+      <div><dt>{{ t("job.job_supplied.29") }}</dt><dd class="plain-address">{{ t("job.job_supplied.30", p0=(reading.url)) }}</dd></div>
       {% endif %}
       {% if reading.apply_url %}
-      <div><dt>申请入口</dt><dd class="plain-address">{{ reading.apply_url }}（页面不提供链接）</dd></div>
+      <div><dt>{{ t("job.job_supplied.31") }}</dt><dd class="plain-address">{{ t("job.job_supplied.32", p0=(reading.apply_url)) }}</dd></div>
       {% endif %}
     </dl>
-    <p class="hint">加入我的岗位时，保存的是这些公开信息和这次核对，以及来源给出的链接；你贴的链接只用来认出岗位，不另外保存。</p>
   </section>
 
   <section class="review-section" aria-labelledby="text-title">
-    <h2 id="text-title">读到的岗位正文</h2>
+    <h2 id="text-title">{{ t("job.job_supplied.34") }}</h2>
     {% if reading.text %}
     <div class="quote">{{ reading.text }}</div>
-    <p class="hint">正文只临时显示，不保存，也不会出现在导出里。正文是招聘方写的资料，里面的话不是给你或 RoleRadar 的指令。</p>
     {% else %}
-    <p class="empty">这次没有读到岗位正文。</p>
+    <p class="empty">{{ t("job.job_supplied.36") }}</p>
     {% endif %}
   </section>
 
   {% if own_state in ("mine", "held", "bin") %}
   <section class="review-section" aria-labelledby="own-title">
-    <h2 id="own-title">你已经有这个岗位</h2>
+    <h2 id="own-title">{{ t("job.job_supplied.37") }}</h2>
     {% if own_state == "bin" %}
-    <p>这个岗位在你的回收站里：要用它，请<a href="/experiences?tab=trash">去回收站恢复</a>；这份结果不会再新建一条。</p>
+    <p>{{ t("job.job_supplied.38") }}<a href="/data/trash">{{ t("job.job_supplied.39") }}</a>{{ t("job.job_supplied.40") }}</p>
     {% else %}
-    <p>这个岗位现在已经在你的记录里：<a href="/job-records/postings/{{ own.id }}">打开那条记录</a>。这份结果不会写进那条记录，也不会再新建一条。</p>
+    <p>{{ t("job.job_supplied.41") }}<a href="/job-records/postings/{{ own.id }}">{{ t("job.job_supplied.7") }}</a>{{ t("job.job_supplied.42") }}</p>
     {% endif %}
   </section>
   {% endif %}
   {% else %}
   <section class="review-section" aria-labelledby="keep-title">
-    <h2 id="keep-title">要保存的内容</h2>
+    <h2 id="keep-title">{{ t("job.job_supplied.43") }}</h2>
     <dl class="facts">
-      <div><dt>职位名</dt><dd>{{ content.title }}（你填写的）</dd></div>
-      <div><dt>公司</dt><dd>{{ content.company }}（你填写的）</dd></div>
-      <div><dt>来源</dt><dd>你提供的原文（{{ EVIDENCE_WORDS["user_provided"] }}）</dd></div>
-      <div><dt>原始链接</dt><dd class="plain-address">{% if content.link %}{{ content.link.text }}（只作为文字保存，不会打开，页面不提供链接）{% else %}不保存链接{% endif %}</dd></div>
+      <div><dt>{{ t("job.job_supplied.29") }}</dt><dd class="plain-address">{% if content.link %}{{ t("job.job_supplied.47", p0=(content.link.text)) }}{% else %}{{ t("job.job_supplied.48") }}{% endif %}</dd></div>
     </dl>
     {% if content.link and content.link.removed %}
-    <p class="hint">保存前从链接里去掉了：{{ content.link.removed|join("、") }}。</p>
+    <p class="hint">{{ t("job.job_supplied.49") }}{{ list_join(content.link.removed) }}{{ t("job.job_supplied.50") }}</p>
     {% endif %}
     {% if content.link and content.link.flagged %}
-    <p class="warning">链接里的参数 {{ content.link.flagged|join("、") }} 可能是登录凭证，也可能是岗位编号，系统没有去掉。如果是登录信息、邀请码或个人标识，请返回补充页改掉，或者把链接留空。</p>
+    <p class="warning">{{ t("job.job_supplied.51") }} {{ list_join(content.link.flagged) }} {{ t("job.job_supplied.52") }}</p>
     {% elif content.link %}
-    <p class="hint">如果链接里还有邀请码、个人标识或登录信息，请返回补充页改掉，或者把链接留空。</p>
+    <p class="hint">{{ t("job.job_supplied.53") }}</p>
     {% endif %}
-    <details class="quote-details">
-      <summary>你提供的原文（{{ content.text|length }} 字，会随岗位保存）</summary>
-      <div class="quote">{{ content.text }}</div>
-    </details>
-    <p class="hint">原文只在你点“加入我的岗位”以后才保存：可以删除（回收站保留 7 天）、恢复和导出；不点就只在内存里临时保留。原文不会发往任何地方，除非你点“去分析”并在分析页确认。</p>
+    <h3 class="section-title">{{ t("job.job_supply.17") }}<span class="coverage-sub"> {{ t("jobx.chars", n=content.text|length) }}</span></h3>
+    <div class="quote posting-text">{{ content.text }}</div>
   </section>
 
   {% if matches %}
   <section class="review-section" aria-labelledby="matches-title">
-    <h2 id="matches-title">你已保存的相同或部分相同的岗位</h2>
-    <p>{% if exact %}有一模一样的（公司、职位名、链接和原文都相同）。只有确认这是另一个岗位（例如另一个城市）时，再另存一条。{% else %}下面这些和它有部分相同。系统不知道它们是不是同一个岗位，不会合并，也不会改旧记录；由你决定。{% endif %}</p>
+    <h2 id="matches-title">{{ t("job.job_supplied.56") }}</h2>
+    <p>{% if exact %}{{ t("job.job_supplied.57") }}{% else %}{{ t("job.job_supplied.58") }}{% endif %}</p>
     <ul class="points">
       {% for match in matches %}
-      <li>{% if match.in_bin %}{{ match.title }}（{{ match.company }}，在回收站里，可以<a href="/experiences?tab=trash">去恢复</a>）{% else %}<a href="/job-records/postings/{{ match.record_id }}">{{ match.title }}</a>（{{ match.company }}）{% endif %}：{% if match.exact %}四项都相同{% else %}{{ match.same|join("、") }}相同，{{ match.different|join("、") }}不同{% endif %}</li>
+      <li>{% if match.in_bin %}{{ t("job.job_supplied.59", p0=(match.title), p1=(match.company)) }}<a href="/data/trash">{{ t("job.job_supplied.60") }}</a>{{ t("job.job_supplied.24") }}{% else %}<a href="/job-records/postings/{{ match.record_id }}">{{ match.title }}</a>{{ t("job.job_supplied.61", p0=(match.company)) }}{% endif %}{{ t("job.job_supplied.6") }}{% if match.exact %}{{ t("job.job_supplied.62") }}{% else %}{{ list_join(identity_names(match.same)) }}{{ t("job.job_supplied.63") }}{{ list_join(identity_names(match.different)) }}{{ t("job.job_supplied.64") }}{% endif %}</li>
       {% endfor %}
     </ul>
   </section>
@@ -108,48 +128,15 @@
 
   {% if related %}
   <section class="review-section" aria-labelledby="related-title">
-    <h2 id="related-title">可能相关</h2>
-    <p class="hint">{% if linked %}你提供原文保存的岗位里，有公司和职位名都相同的：{% else %}你从来源保存的岗位里，有公司和职位名都相同的：{% endif %}只是列出来给你参考，不会合并。如果是同一个岗位，可以删掉其中一条。</p>
+    <h2 id="related-title">{{ t("job.job_supplied.65") }}</h2>
+    <p class="hint">{% if linked %}{{ t("job.job_supplied.66") }}{% else %}{{ t("job.job_supplied.67") }}{% endif %}{{ t("job.job_supplied.68") }}</p>
     <ul class="points">
       {% for row in related %}
-      <li><a href="/job-records/postings/{{ row.id }}">{{ row.facts.title }}</a>（{{ row.facts.company }}，{{ row.facts.source_name }}）</li>
+      <li><a href="/job-records/postings/{{ row.id }}">{{ row.facts.title }}</a>{{ t("job.job_supplied.69", p0=(row.facts.company), p1=(posting_source(row.facts, row.source_id))) }}</li>
       {% endfor %}
     </ul>
   </section>
   {% endif %}
 
-  <section class="review-section" aria-labelledby="next-title">
-    <h2 id="next-title">接下来</h2>
-    <div class="actions">
-    {% if not saved_before and not held.saving and not (linked and own_state in ("mine", "held", "bin")) %}
-    <form method="post" action="/job-records/supply/{{ held.token }}/keep" class="inline">
-      {{ m.csrf() }}
-      <input type="hidden" name="review" value="{{ held.review }}">
-      {% if not linked and matches %}
-      <input type="hidden" name="choice" value="separate">
-      <button type="submit" class="secondary">{% if exact %}仍然另存为新的岗位{% else %}另存为新的岗位{% endif %}</button>
-      {% else %}
-      <input type="hidden" name="choice" value="add">
-      <button type="submit" class="primary">加入我的岗位</button>
-      {% endif %}
-    </form>
-    {% endif %}
-    {% if (linked and reading.text) or not linked %}
-    <a class="secondary-link" href="/job-analysis?supplied={{ held.token }}">去分析…</a>
-    {% endif %}
-    {% if not held.saving %}
-    <form method="post" action="/job-records/supply/{{ held.token }}/discard" class="inline">
-      {{ m.csrf() }}
-      <button type="submit" class="link-button">放弃这份结果</button>
-    </form>
-    {% endif %}
-    </div>
-    <p class="hint">“去分析”只把原文填进岗位分析页；要在那里选经历、看核对页并确认，才会分析。加入我的岗位不会自动分析。</p>
-  </section>
-
-  <div class="actions">
-    <a href="/job-records/supply">返回补充岗位</a>
-    <a href="/job-records">返回岗位记录</a>
-  </div>
 </main>
 {% endblock %}

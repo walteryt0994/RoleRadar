@@ -8,6 +8,24 @@
 // Loaded in <head>, so the blocks can be hidden before the first paint.
 (function () {
   "use strict";
+  // The words of this page's language (the html element's data-ui-text, UI bilingual batch); the Chinese is a fallback.
+  var UI_TEXT = null;
+
+  function say(key, fallback, values) {
+    if (UI_TEXT === null) {
+      var root = document.documentElement;
+      try {
+        UI_TEXT = root && root.getAttribute ? JSON.parse(root.getAttribute("data-ui-text") || "{}") : {};
+      } catch (error) {
+        UI_TEXT = {};
+      }
+    }
+    var text = UI_TEXT[key] || fallback;
+    Object.keys(values || {}).forEach(function (name) {
+      text = text.split("{" + name + "}").join(values[name]);
+    });
+    return text;
+  }
 
   const root = document.documentElement;
   const reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -202,7 +220,7 @@
       body.hidden = true;
       skeleton.hidden = false;
       pane.setAttribute("aria-busy", "true");
-      status.textContent = "正在打开…";
+      status.textContent = say("js.motion.opening", "正在打开…");
       giveUpTimer = window.setTimeout(function () {
         stopOpening();
         offerRetry(url);
@@ -216,8 +234,8 @@
       note.className = "notice";
       note.setAttribute("role", "status");
       retry.href = url.pathname + url.search;
-      retry.textContent = "重新打开";
-      note.append("页面打开得比平时慢，已停止打开，下面仍是原来的内容。", retry);
+      retry.textContent = say("js.motion.retry", "重新打开");
+      note.append(say("js.motion.slow", "页面打开得比平时慢，已停止打开，下面仍是原来的内容。"), retry);
       body.prepend(note);
     }
 

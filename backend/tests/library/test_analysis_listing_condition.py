@@ -393,7 +393,7 @@ def test_a_pasted_posting_s_words_are_never_taken_for_the_adapter_s_line(databas
 
 
 def test_a_search_s_analysis_is_of_a_posting_a_source_adapter_read():
-    confirmation = SimpleNamespace(owner_id="o", selection=(), recipient=None, preferences=(), notice_version="n")
+    confirmation = SimpleNamespace(owner_id="o", selection=(), recipient=None, preferences=(), notice_version="n", result_language="zh-CN")
 
     assert child_request(confirmation, "text").posting_from_source is True
 

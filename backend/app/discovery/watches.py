@@ -63,6 +63,8 @@ from app.library.job_watches import KEEP_NEW_FOR, SEEN_THRESHOLD
 from app.library.lifecycle import active_job_record, check_record_revision, posting_in_bin, posting_in_use, skipped_postings
 from app.library.models import JobSearch, JobWatch, JobWatchPosting, JobWatchSeen
 from app.library.service import new_id
+from app import i18n
+from app.i18n import lazy, t
 
 # The accesses a watch may use (U3-D6): synthetic data, and the D6 batch's board; either only while the set the app runs
 # on keeps it (keep) and can call it.
@@ -90,11 +92,11 @@ ANSWERED, NOT_ANSWERED, REFUSED, UNREACHED = "answered", "failed", "refused", "u
 # What a run's budget ran out on, as its outcome says why it stopped.
 STOP_REASONS = {"calls_used_up": "calls_limit", "time_used_up": "time_limit", "stopped": "app_closing"}
 
-NOT_READ = "这份摘要读不出检索的来源、检索词和筛选，不能开启每日查新。"
-NO_SEARCH = "这份摘要里没有可以重查的检索，不能开启每日查新。"
-ON_ALREADY = "这份摘要已经开启了每日查新。"
-TOO_MANY = f"每个人最多同时开启 {MAX_WATCHES} 个每日查新；要开启这一个，请先停止并清除另一个。"
-FULL = f"这个每日查新见过的岗位已经达到 {SEEN_THRESHOLD} 个，不再开始新的一轮；要继续，请停止并清除以后重新开启（会重新建立基准）。"
+NOT_READ = lazy("job.watch.1")
+NO_SEARCH = lazy("job.watch.2")
+ON_ALREADY = lazy("job.watch.3")
+TOO_MANY = lazy("job.watch.4", p0=MAX_WATCHES)
+FULL = lazy("job.watch.5", p0=SEEN_THRESHOLD)
 
 
 class Trigger(StrEnum):
@@ -147,6 +149,9 @@ class Conditions:
     sources: tuple[dict, ...]
     scope: SearchScope
     items: tuple[Item, ...]
+    # The result language of the search the summary kept: what a run writes of its own (a new posting's screening) is
+    # in it, as the search's own words were (Codex review F3); a summary older than languages wrote Chinese.
+    language: str = "zh-CN"
 
     def source(self, source_id: str) -> dict:
         return next(source for source in self.sources if source.get("source_id") == source_id)
@@ -207,7 +212,9 @@ def conditions_of(summary: dict) -> Conditions | None:
     except (KeyError, TypeError, ValueError, AttributeError):
         return None
 
-    return Conditions(sources, scope, tuple(items[: LIMITS.searches]))
+    language = summary.get("result_language") if isinstance(summary.get("result_language"), str) else None
+
+    return Conditions(sources, scope, tuple(items[: LIMITS.searches]), i18n.chosen(language) or "zh-CN")
 
 
 def item_key(source_id: str, words: str, filters) -> str:
@@ -244,7 +251,7 @@ def unavailable(found: Conditions | None, keep: frozenset[str], register: Regist
             or (entry.name, entry.evidence.value) != (source.get("name"), source.get("evidence"))
             or register.refusal(source_id) is not None
         ):
-            return f"来源“{name}”现在不能用于每日查新：这次运行的来源里没有它，或者这次运行不能保存它的结果。没有发出请求。"
+            return t("job.watch.6", p0=name)
 
     return None
 
@@ -447,49 +454,52 @@ def run(
     if begun is None:
         return RunResult(None)
 
-    budget = Budget(limits.calls, limits.seconds, monotonic, stop)
-    answers: list[Answer] = []
-    reasons: list[str] = []
-    outcome = INTERRUPTED
-    closed = False
-
-    try:
-        try:
-            _ask(database, begun, sources, budget, answers, reasons, now)
-        except Stopped:
-            # Removed, or held by another run: nothing of this run is written, and there is nothing of it to close.
-            return RunResult(begun.watch_id, None)
-
-        outcome = INTERRUPTED if "app_closing" in reasons else _outcome(answers)
-
-        with database.transaction() as db:
-            # The app may have begun closing while the last call was out, or since it came back, with no call after it
-            # to find out (U3-D4c F1): asked again here, in the write's own transaction, before anything is written. A
-            # run it reaches is interrupted and writes nothing of what it found; closing after this point finds the
-            # write made, and what was committed stays as it was.
-            if outcome != INTERRUPTED and stop.is_set():
-                outcome = INTERRUPTED
-                reasons.append("app_closing")
-
-            if outcome == INTERRUPTED:
-                # The app is closing: nothing it found is written, and the run counts for neither.
-                closed = _close(db, begun, INTERRUPTED, reasons, budget.made, _counts(answers), now())
-
-                return RunResult(begun.watch_id, INTERRUPTED, False, _counts(answers))
-
-            counts = _write(db, begun, answers, outcome, reasons, budget.made, now())
-            closed = counts is not None
-
-        return RunResult(begun.watch_id, outcome if closed else None, closed, counts or {})
-    except Exception:
+    # What the run writes of its own (a new posting's screening, said as the rules say it) is in the result language of
+    # the search its summary kept, whatever thread runs it (Codex review F3); codes and the sources' words stay as they are.
+    with i18n.using(begun.conditions.language):
+        budget = Budget(limits.calls, limits.seconds, monotonic, stop)
+        answers: list[Answer] = []
+        reasons: list[str] = []
         outcome = INTERRUPTED
-        reasons.append("error")
-        raise
-    finally:
-        if not closed and outcome == INTERRUPTED:
-            # An error half way: said to be interrupted (when the watch still stands with this run), nothing written.
+        closed = False
+
+        try:
+            try:
+                _ask(database, begun, sources, budget, answers, reasons, now)
+            except Stopped:
+                # Removed, or held by another run: nothing of this run is written, and there is nothing of it to close.
+                return RunResult(begun.watch_id, None)
+
+            outcome = INTERRUPTED if "app_closing" in reasons else _outcome(answers)
+
             with database.transaction() as db:
-                _close(db, begun, INTERRUPTED, reasons, budget.made, _counts(answers), now())
+                # The app may have begun closing while the last call was out, or since it came back, with no call after it
+                # to find out (U3-D4c F1): asked again here, in the write's own transaction, before anything is written. A
+                # run it reaches is interrupted and writes nothing of what it found; closing after this point finds the
+                # write made, and what was committed stays as it was.
+                if outcome != INTERRUPTED and stop.is_set():
+                    outcome = INTERRUPTED
+                    reasons.append("app_closing")
+
+                if outcome == INTERRUPTED:
+                    # The app is closing: nothing it found is written, and the run counts for neither.
+                    closed = _close(db, begun, INTERRUPTED, reasons, budget.made, _counts(answers), now())
+
+                    return RunResult(begun.watch_id, INTERRUPTED, False, _counts(answers))
+
+                counts = _write(db, begun, answers, outcome, reasons, budget.made, now())
+                closed = counts is not None
+
+            return RunResult(begun.watch_id, outcome if closed else None, closed, counts or {})
+        except Exception:
+            outcome = INTERRUPTED
+            reasons.append("error")
+            raise
+        finally:
+            if not closed and outcome == INTERRUPTED:
+                # An error half way: said to be interrupted (when the watch still stands with this run), nothing written.
+                with database.transaction() as db:
+                    _close(db, begun, INTERRUPTED, reasons, budget.made, _counts(answers), now())
 
 
 def _ask(database, begun: Begun, sources: Register, budget: Budget, answers: list[Answer], reasons: list[str], now) -> None:

@@ -1,172 +1,19 @@
 {% extends "workspace.html" %}
 {% import "_macros.html" as m with context %}
-{% import "_icons.html" as i %}
+{% import "_experience_md.html" as x with context %}
+{% set section = "library" %}
+{% set md = True %}
+{% set md_selected = True %}
 {% block title %}{{ display_title(item.content, item.category) }}{% endblock %}
 {% block content %}
-{% set content = item.content %}
-{% set reading = READINGS[item.category] %}
-{# A record, read top to bottom: what it was, what came out of it, then the
-   user's own part, as its category lays it out. The text is shown exactly
-   as written. #}
-<header class="record-head" data-reveal>
-  <h1>{{ display_title(content, item.category) }}</h1>
-  {% if reading.subtitle and content.get(reading.subtitle) %}
-  <p class="record-context">{{ content[reading.subtitle] }}</p>
-  {% endif %}
-  {% set meta = namespace(any=False) %}
-  {% for name in reading.meta %}
-  {% if content.get(name) %}
-  {% set meta.any = True %}
-  {% endif %}
-  {% endfor %}
-  {% if meta.any %}
-  <dl class="record-meta">
-    {% for name in reading.meta %}
-    {% if content.get(name) %}
-    <div><dt>{{ field_label(item.category, name) }}</dt><dd>{{ content[name] }}</dd></div>
-    {% endif %}
-    {% endfor %}
-  </dl>
-  {% endif %}
-  {# The badge names the state; the line after it only adds what the badge cannot say. #}
-  <p class="state-line">
-    {{ m.state_badge(item) }}
-    {% if item.state == "confirmed" %}
-    <span>确认于 {{ item.last_confirmed_at|shorttime }}</span>
-    {% else %}
-    <span>最近保存 {{ item.updated_at|shorttime }}</span>
-    {% endif %}
-  </p>
-  {% if item.state != "confirmed" and item.last_confirmed_at %}
-  <p class="state-explain">上次确认于 {{ item.last_confirmed_at|shorttime }}。之前的确认版本只留在历史里，不再代表当前事实。</p>
-  {% elif item.state != "confirmed" %}
-  <p class="state-explain">还没有确认属实，保存不等于确认。</p>
-  {% endif %}
-</header>
-<div class="actions record-actions">
-  <a class="button primary" href="/experiences/{{ item.id }}/edit">编辑</a>
-  {% if item.state != "confirmed" %}
-  <form method="post" action="/experiences/{{ item.id }}/confirm" class="inline">
-    {{ m.csrf() }}
-    <input type="hidden" name="expected_revision" value="{{ item.revision }}">
-    <button type="submit" class="confirm">确认这些内容属实</button>
-  </form>
-  {% endif %}
-  <a class="button secondary" href="/experiences/{{ item.id }}/history">{{ i.icon("rotate-ccw-clock") }}查看历史</a>
-  <a class="button secondary" href="/experiences/{{ item.id }}/export.md" download>导出为 Markdown</a>
-  <a class="danger-link" href="/experiences/{{ item.id }}/delete">删除…</a>
-</div>
-{% if reading.highlight and content.get(reading.highlight) %}
-<section class="record-outcome" data-reveal aria-labelledby="read-{{ reading.highlight }}">
-  <h2 class="section-label" id="read-{{ reading.highlight }}">{{ field_label(item.category, reading.highlight) }}</h2>
-  <p class="prose">{{ content[reading.highlight] }}</p>
-</section>
+{# A record opened by its own address, beside the list it was opened from (with that list's filter). If the list
+   cannot be read, the record still shows, with a short note where the list would be. #}
+{{ x.head() }}
+{% if sidebar_items is none %}
+<p class="library-unavailable" role="status">{{ t("lib.list_unavailable") }}</p>
+{% else %}
+{{ x.filters() }}
 {% endif %}
-{% for name in reading.sections %}
-{% if content.get(name) %}
-<section class="record-contribution" data-reveal aria-labelledby="read-{{ name }}">
-  <h2 class="section-label" id="read-{{ name }}">{{ field_label(item.category, name) }}</h2>
-  <p class="prose">{{ content[name] }}</p>
-</section>
-{% endif %}
-{% endfor %}
-{% set folds = namespace(any=False) %}
-{% for name in reading.folds %}
-{% if content.get(name) %}
-{% set folds.any = True %}
-{% endif %}
-{% endfor %}
-{% if folds.any %}
-<div class="record-more" data-reveal>
-  {% for name in reading.folds %}
-  {% if content.get(name) %}
-  <details class="fold">
-    {{ m.fold_summary(field_label(item.category, name)) }}
-    {% if name == "links" %}
-    {{ m.link_list(content[name]) }}
-    {% else %}
-    <p class="prose">{{ content[name] }}</p>
-    {% endif %}
-  </details>
-  {% endif %}
-  {% endfor %}
-</div>
-{% endif %}
-{% if item.private_note %}
-<details class="fold fold-private" data-reveal>
-  {{ m.fold_summary(NOTE_FIELD.label, private=True) }}
-  <p class="private-notice">只给你自己看；不会进入资料快照或简历。导出时会包含，分享导出文件之前请检查。</p>
-  <p class="prose">{{ item.private_note }}</p>
-</details>
-{% endif %}
-{% set unfilled = unfilled_labels(content, item.category) %}
-{% if unfilled %}
-<p class="record-unfilled">尚未填写：{{ unfilled|join("、") }}。</p>
-{% endif %}
-{# The files kept for this record. Only ready ones are listed, and one whose
-   file went missing says so instead of offering a download that fails.
-   Uploading is its own action: it never saves the record's text. The
-   section does not rise in: its error and status lines must never wait. #}
-<section class="record-attachments" id="attachments" aria-labelledby="attachments-title">
-  <h2 class="section-label" id="attachments-title">附件</h2>
-  {% if attachments %}
-  <ul class="attachment-list">
-    {% for attachment in attachments %}
-    {% set state = file_states[attachment.id] %}
-    <li>
-      <span class="attachment-name">{{ attachment.filename }}</span>
-      <span class="attachment-meta">{{ TYPE_LABELS[attachment.media_type] }} · {{ format_size(attachment.size) }} · 上传于 {{ attachment.created_at|shorttime }}</span>
-      <span class="row-actions">
-        {% if state == "present" %}
-        <a href="/experiences/{{ item.id }}/attachments/{{ attachment.id }}/download" download>下载<span class="visually-hidden">：{{ attachment.filename }}</span></a>
-        {% else %}
-        <span class="attachment-problem">{% if state == "missing" %}文件找不到了，不能下载{% else %}文件无法读取，不能下载{% endif %}</span>
-        {% endif %}
-        <a class="danger-link" href="/experiences/{{ item.id }}/attachments/{{ attachment.id }}/delete">删除…<span class="visually-hidden">：{{ attachment.filename }}</span></a>
-      </span>
-    </li>
-    {% endfor %}
-  </ul>
-  {% else %}
-  <p class="empty">还没有附件。</p>
-  {% endif %}
-  {% if upload_error %}
-  <p class="error" role="alert">{{ upload_error }}</p>
-  {% endif %}
-  {% if places_left %}
-  <form class="attachment-upload" method="post" action="/experiences/{{ item.id }}/attachments" enctype="multipart/form-data" data-upload>
-    {{ m.csrf() }}
-    <input type="hidden" name="upload_key" value="{{ upload_key }}">
-    <label for="attachment-file">添加附件</label>
-    <span class="hint" id="attachment-hint">作为补充材料保存，只有你能下载。PDF、PNG 或 JPEG，单个不超过 10 MB；每条经历最多 {{ MAX_ATTACHMENTS }} 个，回收站里还能恢复的也算在内，现在还能添加 {{ places_left }} 个。</span>
-    <div class="attachment-picker">
-      <input type="file" id="attachment-file" name="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" required aria-describedby="attachment-hint">
-      <button type="submit" data-upload-button>上传</button>
-    </div>
-    <p class="upload-status" data-upload-status role="status"></p>
-  </form>
-  {% else %}
-  <p class="hint">已经有 {{ MAX_ATTACHMENTS }} 个附件（包括回收站里还能恢复的），达到上限。删除不需要的附件，并在下方永久删除后，才能再添加。</p>
-  {% endif %}
-  {% if binned_attachments %}
-  <h3 class="attachment-bin-title">已删除的附件</h3>
-  <ul class="attachment-list">
-    {% for attachment in binned_attachments %}
-    <li>
-      <span class="attachment-name">{{ attachment.filename }}</span>
-      <span class="attachment-meta">删除于 {{ attachment.deleted_at|shorttime }}；在 {{ attachment.purge_after|localtime }} 之前可以恢复（{{ format_remaining(attachment.purge_after, now) }}）</span>
-      <span class="row-actions">
-        <form method="post" action="/experiences/{{ item.id }}/attachments/{{ attachment.id }}/restore" class="inline">
-          {{ m.csrf() }}
-          <input type="hidden" name="expected_revision" value="{{ attachment.revision }}">
-          <button type="submit">恢复<span class="visually-hidden">：{{ attachment.filename }}</span></button>
-        </form>
-        <a class="danger-link" href="/experiences/{{ item.id }}/attachments/{{ attachment.id }}/purge">永久删除…<span class="visually-hidden">：{{ attachment.filename }}</span></a>
-      </span>
-    </li>
-    {% endfor %}
-  </ul>
-  {% endif %}
-</section>
+{{ x.area() }}
 {% endblock %}
 {% block scripts %}<script src="/static/upload.js"></script>{% endblock %}

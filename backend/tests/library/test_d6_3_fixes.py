@@ -520,9 +520,12 @@ def test_the_result_page_names_the_posting_its_check_step_got_no_answer_for(app,
     url = search_of(review(browser_a, sources=[library], use_preferences=True))
     assert confirm(browser_a, url).status_code == 303
     page = text_of(browser_a.get(url).text)
+    checked = next(step for step in stored(app, browser_a, url).finished.trace.steps if step.tool is Tool.CHECK)
 
-    assert f"这一步其中 1 个岗位没有结果：{shown(asked[1])}（来源没有在时限内回答）" in page
-    assert f"- [{shown(asked[0])}] 核对时仍公开发布" in page
+    # The steps are no longer listed on the result page (owner redesign, plan 5.3): the trace keeps which posting of
+    # the step came to no answer, and on the page that posting says it in its own check line, never "still listed".
+    assert checked.failed == (f"{shown(asked[1])}（来源没有在时限内回答）",)
+    assert "岗位状态待确认：最近一次核对" in page and "没有得到回答" in page and "核对时仍公开发布" in page
     assert "原因：来源没有在时限内回答" not in page
 
 
@@ -587,7 +590,7 @@ def test_the_keep_page_says_its_checks_are_the_searchs_own(app, browser_a, libra
     record_id = held_records(app, task.owner_id)[0]
 
     page = keep_page(browser_a, url, result)
-    assert "本次查找时的来源核对" in page and "本次查找时最后一次有回答：" in page
+    assert "查找时的核对" in page and "本次查找时最后一次有回答：" in page
     assert "查找以后的核对记在岗位记录里，以记录为准" in page
     # Never "最后一次有回答" with no word of whose checks they are.
     assert "来源核对 最后一次有回答" not in page
@@ -606,5 +609,5 @@ def test_the_keep_page_says_its_checks_are_the_searchs_own(app, browser_a, libra
 
     # A posting with no record: the search's own lines, and no word of a record.
     page = keep_page(browser_a, url, lead)
-    assert "本次查找时的来源核对" in page and "以记录为准" not in page
+    assert "查找时的核对" in page and "以记录为准" not in page
     assert "本次查找时最后一次有回答：" in page or "这次查找没有得到回答的核对" in page

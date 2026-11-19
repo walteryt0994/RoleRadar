@@ -1,7 +1,11 @@
 """UI batch 1: a calm grey workspace whose reading page is a project record.
 It keeps every field, every safety flow and readable contrast; its few
 Lucide icons stay decorative, local and licensed; and its motion never
-keeps content hidden."""
+keeps content hidden.
+
+UI bilingual batch (plan 3, 5.2): one column, the first-level places in a side bar, 数据管理 holding the bin and
+the export, and an experience written in one 经历内容 field (the older split fields still read and cite as before).
+These tests keep what batch 1 protected, said for that layout."""
 import hashlib
 import re
 import sqlite3
@@ -12,18 +16,35 @@ import pytest
 from sqlalchemy import event
 from sqlalchemy.exc import OperationalError
 
+from app.i18n import t
 from app.library import web
-from app.library.content import FIELD_NAMES, NOTE_FIELD, PROJECT_FIELDS
+from app.library.content import BODY, BODY_SOURCES, FIELD_NAMES, MAIN_FIELDS, MORE_FIELDS, NOTE_FIELD, PROJECT_FIELDS
 from app.library.models import ExperienceItem
-from app.library.presentation import FIELD_GROUPS, FOLDED_GROUPS, READING_ORDER
+from app.library.presentation import FIELD_GROUPS, READING_ORDER
 from app.library.web import PACKAGE_DIR
 from library_helpers import Browser, item_id_from
 
-GROUP_LABELS = ("基本信息", "过程与收获", "相关资料")
-OPEN_GROUP_LABELS = ("基本信息", "过程与收获")
+GROUP_LABELS = ("基本信息", "经历内容", "过程与收获", "相关资料")
+MORE = "补充信息"
+SPLIT_ORIGINAL = "原来的分栏内容"
 LIST_UNAVAILABLE = "经历列表暂时无法显示"
 LUCIDE_DIR = PACKAGE_DIR / "third_party" / "lucide"
-ICON_NAMES = ("arrow-left", "chevron-right", "lock-keyhole", "plus", "radar", "rotate-ccw-clock")
+# Copied unchanged from the official repository at release 1.64.0 (UI batch 1).
+OFFICIAL_ICONS = ("arrow-left", "chevron-right", "lock-keyhole", "plus", "radar", "rotate-ccw-clock")
+# UI bilingual batch: rebuilt offline from the lucide-react 0.542.0 icon nodes already on this computer; the README
+# says so, and its hashes are of the files as written here, not of the official repository's.
+REBUILT_ICONS = (
+    "briefcase", "chevron-down", "compass", "database", "file-plus", "file-text", "house", "menu", "search",
+    "triangle-alert", "user",
+    # Owner redesign (2026-11-17): rebuilt the same way, recorded in the README's third table.
+    "calendar", "check", "circle-check", "circle-x", "clock", "ellipsis", "file-up", "pencil", "star", "upload", "x",
+    # Owner review (2026-11-18): the resume import's downloads, rebuilt the same way and recorded in the same table.
+    "download",
+)
+ICON_NAMES = tuple(sorted(OFFICIAL_ICONS + REBUILT_ICONS))
+# The places of the side bar, in order, and the parts of 我的资料 beside its pages.
+PLACES = ("/workspace", "/experiences", "/directions", "/discover")
+PROFILE_PARTS = ("/experiences", "/basic-profile", "/job-preferences", "/imports")
 DRAWING = re.compile(r"<(?:path|circle|rect|line|polyline|polygon|ellipse)\b[^>]*/>")
 CSS = (PACKAGE_DIR / "static" / "library.css").read_text(encoding="utf-8")
 MOTION = (PACKAGE_DIR / "static" / "motion.js").read_text(encoding="utf-8")
@@ -47,15 +68,10 @@ def anchors_in(html: str) -> list[dict]:
     return reader.anchors
 
 
-def library_aside(html: str) -> str:
-    start = html.index('<aside class="library"')
+def region(html: str, start: str, end: str) -> str:
+    begin = html.index(start)
 
-    return html[start: html.index("</aside>", start)]
-
-
-def record_list(html: str) -> str:
-    """Where a page lists the records: beside a record, or the overview itself."""
-    return library_aside(html) if '<aside class="library"' in html else main_of(html)
+    return html[begin: html.index(end, begin)]
 
 
 def main_of(html: str) -> str:
@@ -129,29 +145,38 @@ def test_every_field_is_in_exactly_one_page_group():
 
     assert tuple(grouped) == FIELD_NAMES
     assert NOTE_FIELD.name not in grouped
-    assert tuple(label for label, _ in FIELD_GROUPS) == GROUP_LABELS
+    assert tuple(t(label) for label, _ in FIELD_GROUPS) == GROUP_LABELS
 
 
-def test_the_form_has_all_nine_fields_with_labels_hints_and_limits(browser_a, icon):
-    item_id = browser_a.create(actions="一句话")
+def test_the_form_has_every_field_it_writes_with_labels_hints_and_limits(browser_a, icon):
+    item_id = browser_a.create(body="一句话")
+    fields = {field.name: field for field in PROJECT_FIELDS}
+    written = (*MAIN_FIELDS["project"], BODY, *MORE_FIELDS["project"])
 
     for path in ("/experiences/new", f"/experiences/{item_id}/edit"):
         page = browser_a.get(path).text
 
-        for label in OPEN_GROUP_LABELS:
-            assert f"<legend>{label}</legend>" in page, (path, label)
-
-        assert set(folds_in(page)) == {*FOLDED_GROUPS, NOTE_FIELD.label}, path
+        # The name and the facts beside it, one 经历内容, then 补充信息 and the private note, each folded (P02).
+        assert set(folds_in(page)) == {MORE, NOTE_FIELD.label}, path
         assert f'<summary>{icon("lock-keyhole")}<span class="fold-title">{NOTE_FIELD.label}</span>' in page, path
 
-        for field in (*PROJECT_FIELDS, NOTE_FIELD):
-            assert f'name="{field.name}"' in page, (path, field.name)
-            assert f'maxlength="{field.max_length}"' in page, (path, field.name)
-            assert field.hint in page, (path, field.name)
+        for name in written:
+            if name == "period":
+                # The time is a year-and-month picker (owner redesign, plan 3.1), named by its legend.
+                assert f"<legend>{fields[name].label}</legend>" in page and 'name="period_start_year"' in page, path
+                continue
 
-        for field in PROJECT_FIELDS:
-            assert f'<label for="f-{field.name}">{field.label}</label>' in page, (path, field.name)
+            assert f'name="{name}"' in page, (path, name)
+            assert f'maxlength="{fields[name].max_length}"' in page, (path, name)
+            assert fields[name].hint in page, (path, name)
+            assert f'<label for="f-{name}">{fields[name].label}</label>' in page, (path, name)
 
+        # The older split fields are never inputs of their own: what the user writes is one text (plan 5.2).
+        for name in BODY_SOURCES["project"]:
+            assert f'name="{name}"' not in page, (path, name)
+
+        assert f'name="{NOTE_FIELD.name}"' in page and f'maxlength="{NOTE_FIELD.max_length}"' in page
+        assert NOTE_FIELD.hint in page
         assert "分享导出文件之前请先检查" in page
         assert 'name="csrf_token"' in page
         assert '<input type="hidden" name="after_save" value="">' in page
@@ -161,21 +186,26 @@ def test_the_form_has_all_nine_fields_with_labels_hints_and_limits(browser_a, ic
 
 
 def test_folded_sections_open_for_what_they_hold_and_for_errors(browser_a):
-    plain = browser_a.create(actions="没有链接也没有备注")
-    full = browser_a.create(actions="有链接和备注", links="https://example.com/a", private_note="合成备注")
+    plain = browser_a.create(body="没有链接也没有备注")
+    full = browser_a.create(body="有链接和备注", links="https://example.com/a", private_note="合成备注")
+    before = browser_a.create(actions="旧格式写下的内容")
 
-    assert folds_in(browser_a.get("/experiences/new").text) == {"相关资料": False, NOTE_FIELD.label: False}
-    assert folds_in(browser_a.get(f"/experiences/{plain}/edit").text) == {"相关资料": False, NOTE_FIELD.label: False}
+    assert folds_in(browser_a.get("/experiences/new").text) == {MORE: False, NOTE_FIELD.label: False}
+    assert folds_in(browser_a.get(f"/experiences/{plain}/edit").text) == {MORE: False, NOTE_FIELD.label: False}
     # Links are part of the record; the private note stays folded until it is needed.
-    assert folds_in(browser_a.get(f"/experiences/{full}/edit").text) == {"相关资料": True, NOTE_FIELD.label: False}
+    assert folds_in(browser_a.get(f"/experiences/{full}/edit").text) == {MORE: True, NOTE_FIELD.label: False}
+    # A record of the older split fields shows them folded, to read beside the one text the form offers.
+    assert folds_in(browser_a.get(f"/experiences/{before}/edit").text) == {
+        SPLIT_ORIGINAL: False, MORE: False, NOTE_FIELD.label: False,
+    }
 
     note_only = browser_a.submit("/experiences/new", "/experiences", private_note="只有备注")
-    too_long = browser_a.submit("/experiences/new", "/experiences", actions="有内容", links="x" * 2001)
+    too_long = browser_a.submit("/experiences/new", "/experiences", body="有内容", links="x" * 2001)
 
     assert note_only.status_code == 422
     assert folds_in(note_only.text)[NOTE_FIELD.label] is True
     assert too_long.status_code == 422
-    assert folds_in(too_long.text)["相关资料"] is True
+    assert folds_in(too_long.text)[MORE] is True
     assert "最多 2000 个字" in too_long.text
 
 
@@ -186,68 +216,99 @@ def test_reading_order_names_every_field_once():
     assert sorted(READING_ORDER) == sorted(FIELD_NAMES)
 
 
-def test_the_reading_page_reads_as_a_project_record_with_the_outcome_first(browser_a):
-    values = {field.name: f"{field.label}的合成内容" for field in PROJECT_FIELDS}
+def body_section(main: str) -> str:
+    return region(main, 'id="read-body"', "</section>")
+
+
+def test_the_reading_page_reads_as_a_project_record(browser_a):
+    values = {name: f"{name}的合成内容" for name in ("title", "context", "role", "period", BODY)}
     values["links"] = "https://example.com/work"
     item_id = browser_a.create(**values, private_note="合成的私有备注")
-    main = main_of(browser_a.get(f"/experiences/{item_id}").text)
+    # The record beside the library's list (owner redesign, plan 3.1): read in its own column.
+    page = main_of(browser_a.get(f"/experiences/{item_id}").text)
+    main = page[page.index('<section class="md-detail"'):]
     head = main[: main.index("</header>")]
     order = [
         main.index(marker)
         for marker in (
             "</header>",
-            '<h2 class="section-label" id="read-outcome">结果与产出</h2>',
-            '<h2 class="section-label" id="read-actions">我的贡献</h2>',
-            '<span class="fold-title">收获与反思</span>',
-            '<span class="fold-title">相关资料</span>',
+            '<h3 class="section-title" id="read-body">经历内容</h3>',
+            f'<span class="fold-title">{MORE}</span>',
             f'<span class="fold-title">{NOTE_FIELD.label}</span>',
         )
     ]
 
+    # What it is and its state head the page; the user's own text follows (P03).
     assert order == sorted(order)
-    assert main.count(values["title"]) == 1
-    assert f"<h1>{values['title']}</h1>" in head
+    # One page title (经历库); the record's name heads its column.
+    assert f'<h2 id="record-title">{values['title']}</h2>' in head
+
+    for name in ("title", "context", "role", "period"):
+        assert main.count(values[name]) == 1, name
 
     for name in ("context", "role", "period"):
         assert values[name] in head, name
 
     assert "待核对" in head
-
-    for name in ("outcome", "actions", "reflection"):
-        assert f'<p class="prose">{values[name]}</p>' in main, name
-
+    assert f'<p class="prose">{values[BODY]}</p>' in body_section(main)
     assert '<a href="https://example.com/work" rel="noopener noreferrer">https://example.com/work</a>' in main
-    assert folds_in(main) == {"收获与反思": False, "相关资料": False, NOTE_FIELD.label: False}
+    # The attachments open on demand too (owner redesign, image 04), closed while there are none.
+    assert folds_in(main) == {MORE: False, NOTE_FIELD.label: False, "附件": False}
     assert "合成的私有备注" in main
     assert "不会进入资料快照或简历" in main
     assert "尚未填写" not in main
 
 
+def test_a_record_of_before_reads_each_older_field_under_its_own_name(browser_a):
+    values = {"actions": "我的贡献的合成内容", "outcome": "结果的合成内容", "reflection": "反思的合成内容"}
+    item_id = browser_a.create(title="旧格式的经历", **values)
+    section = body_section(main_of(browser_a.get(f"/experiences/{item_id}").text))
+    labels = ("我的贡献", "结果与产出", "收获与反思")
+
+    # In the order the form joins them into one text, each kept whole under its own name (plan 5.2).
+    assert [section.index(f'<h4 class="split-label">{label}</h4>') for label in labels] == sorted(
+        section.index(f'<h4 class="split-label">{label}</h4>') for label in labels
+    )
+
+    for name in BODY_SOURCES["project"]:
+        assert f'<p class="prose">{values[name]}</p>' in section, name
+
+    assert "原来的分栏格式" in section
+
+
 def test_the_reading_page_keeps_the_users_own_words_and_lines(browser_a):
-    actions = "- 第一点：画了流程图\n- 第二点：写了接口\n\n第二段，<b>不是加粗</b>，逗号，不拆开"
-    item_id = browser_a.create(title="原文保留", actions=actions, outcome="第一行\n第二行")
+    body = "- 第一点：画了流程图\n- 第二点：写了接口\n\n第二段，<b>不是加粗</b>，逗号，不拆开"
+    item_id = browser_a.create(title="原文保留", body=body, outcome="第一行\n第二行")
     main = main_of(browser_a.get(f"/experiences/{item_id}").text)
-    contribution = main[main.index('id="read-actions"'): main.index("</section>", main.index('id="read-actions"'))]
+    section = body_section(main)
 
     assert (
         '<p class="prose">- 第一点：画了流程图\n- 第二点：写了接口\n\n第二段，&lt;b&gt;不是加粗&lt;/b&gt;，逗号，不拆开</p>'
-        in contribution
+        in section
     )
-    assert '<p class="prose">第一行\n第二行</p>' in main
+    # An older field beside the body keeps its lines as well.
+    assert '<p class="prose">第一行\n第二行</p>' in section
     assert "<b>" not in main
-    assert "<li>" not in contribution
+    assert "<li>" not in section
 
 
 def test_empty_fields_are_named_once_and_nothing_is_made_up(browser_a):
-    item_id = browser_a.create(actions="只写了做了什么")
+    item_id = browser_a.create(body="只写了经历内容")
     main = main_of(browser_a.get(f"/experiences/{item_id}").text)
 
-    assert "尚未填写：标题、场景或组织、我的角色、时间、结果与产出、收获与反思、相关资料。" in main
+    assert "尚未填写：标题、场景或组织、我的角色、时间、相关资料。" in main
     # One merged line: no empty block per field, and no sentence explaining the line again.
     assert main.count("未填写") == 1
-    assert 'id="read-outcome"' not in main
-    assert "<details" not in main
+    assert "split-part" not in main
+    # No fold either but the attachments' (the record's 更多 menu is a menu, not a block of the record).
+    assert re.findall(r'<details class="fold[^"]*"', main) == ['<details class="fold record-attachments"']
     assert "<dl" not in main
+
+    # The older split fields are never asked for: a record of before that holds one of them asks for the same facts.
+    before = main_of(browser_a.get(f"/experiences/{browser_a.create(actions='只写了做了什么')}").text)
+
+    assert "尚未填写：标题、场景或组织、我的角色、时间、相关资料。" in before
+    assert "结果与产出" not in before and "收获与反思" not in before
 
 
 # --- the layout does the explaining -------------------------------------------
@@ -255,7 +316,7 @@ def test_empty_fields_are_named_once_and_nothing_is_made_up(browser_a):
 
 def test_each_action_and_label_is_offered_once_and_the_layout_carries_the_rest(browser_a, browser_b):
     item_id = browser_a.create(
-        title="只说一次", actions="合成内容", reflection="合成反思", links="https://example.com", private_note="合成备注",
+        title="只说一次", body="合成内容", links="https://example.com", private_note="合成备注",
     )
     pages = {
         "listing": browser_a.get("/experiences").text,
@@ -266,13 +327,18 @@ def test_each_action_and_label_is_offered_once_and_the_layout_carries_the_rest(b
     }
 
     for name, page in pages.items():
-        # The list on the left and the top bar already say where you are and lead back.
-        assert 'class="crumbs"' not in main_of(page), name
+        main = main_of(page)
+
+        # The side bar, the parts of 我的资料 and the way back already say where you are and lead back.
+        assert 'class="crumbs"' not in main, name
         # A folded row is its title and an arrow, with no hint such as "展开阅读" beside it.
         assert "fold-hint" not in page, name
-        # Starting a record and exporting everything are each offered once.
-        assert page.count('href="/experiences/new"') == 1, name
-        assert page.count('href="/export/all.zip"') == 1, name
+        # Starting a record is offered at most once where you are; exporting everything is 数据管理's (plan 3),
+        # reached from every page, and offered on none of these.
+        assert main.count('href="/experiences/new"') <= 1, name
+        assert 'href="/export/all.zip"' not in page and 'href="/data"' in page, name
+
+    assert main_of(pages["listing"]).count('href="/experiences/new"') == 1
 
     detail = pages["detail"]
 
@@ -280,11 +346,12 @@ def test_each_action_and_label_is_offered_once_and_the_layout_carries_the_rest(b
     assert detail.count(f'href="/experiences/{item_id}/edit"') == 1
     assert "修订号" not in detail
     assert 'name="expected_revision"' in main_of(detail)
-    # The overview is the list itself: one way to start a record, then each record
-    # once, with nothing beside it. An empty library invites the first record once.
-    assert '<aside class="library"' not in pages["listing"]
-    assert [a["href"] for a in anchors_in(main_of(pages["listing"]))] == ["/experiences/new", f"/experiences/{item_id}"]
-    assert [a["href"] for a in anchors_in(main_of(pages["empty"]))] == ["/experiences/new"]
+    # The library (owner redesign, plan 3.1): one way to start a record and one to import, the state chips, each
+    # record once in the list, and the first one open beside it. An empty library invites the first record once.
+    listing_links = [a["href"] for a in anchors_in(main_of(pages["listing"]))]
+    assert listing_links[:2] == ["/experiences/new", "/imports"]
+    assert listing_links.count(f"/experiences/{item_id}") == 1
+    assert [a["href"] for a in anchors_in(main_of(pages["empty"]))] == ["/experiences/new", "/imports"]
     assert 'class="library-filter"' not in pages["empty"]
 
 
@@ -302,8 +369,9 @@ def test_what_must_be_said_is_still_said_where_it_matters(browser_a):
     assert '<p class="state-explain">还没有确认属实，保存不等于确认。</p>' in draft_page
     assert "确认这些内容属实" in draft_page
     assert "待核对" in draft_page and "已确认" in confirmed_page and "确认于" in confirmed_page
-    assert '<p class="lede">保存后是“待核对”的草稿，不等于确认属实。</p>' in main_of(new_form)
-    assert '<p class="warning">这条经历目前是“已确认”。保存修改后会变成“已修改，待核对”，需要你再次确认。</p>' in confirmed_form
+    # The form's own note on it is gone (owner redesign, plan 9); the badge and the reading page say it.
+    assert "保存后是“待核对”的草稿，不等于确认属实。" not in new_form
+    assert '<p class="warning">这条经历目前是“已确认”。保存修改后会变成“修改后待核对”，需要你再次确认。</p>' in confirmed_form
     # The private note's limits, the caveat about closing the page and the local-only banner.
     assert '<p class="private-notice">只给你自己看；不会进入资料快照或简历。导出时会包含，分享导出文件之前请检查。</p>' in draft_page
     assert f'<span class="hint" id="h-note">{NOTE_FIELD.hint}。分享导出文件之前请先检查。</span>' in new_form
@@ -311,83 +379,91 @@ def test_what_must_be_said_is_still_said_where_it_matters(browser_a):
     assert '<div class="dev-banner">本地开发模式：只用合成资料。' in new_form
 
 
-# --- the record list on the left --------------------------------------------
+# --- the overview and the way back ------------------------------------------
 
 
-def test_workspace_pages_list_my_records_and_mark_the_open_one(browser_a):
-    first = browser_a.create(title="第一条经历", actions="做了第一件事")
-    second = browser_a.create(actions="没有标题的第二条")
-    pages = {
-        "/experiences": None,
-        "/experiences/new": None,
-        f"/experiences/{first}": first,
-        f"/experiences/{first}/edit": first,
-        "/experiences?tab=trash": None,
-    }
+def test_the_overview_lists_my_records_and_each_record_page_leads_back_to_it(browser_a):
+    first = browser_a.create(title="第一条经历", body="做了第一件事")
+    second = browser_a.create(body="没有标题的第二条")
+    overview = main_of(browser_a.get("/experiences").text)
 
-    for path, selected in pages.items():
-        aside = record_list(browser_a.get(path).text)
-        current = [a for a in anchors_in(aside) if a.get("aria-current") == "page"]
+    assert "第一条经历" in overview
+    assert "（未写标题）没有标题的第二条" in overview
+    # The list beside one record (owner redesign, plan 3.1): the first listed is open, and only it is marked so.
+    current = [a["href"] for a in anchors_in(overview) if a.get("aria-current") and "md-item" in (a.get("class") or "")]
+    assert len(current) == 1 and current[0] in (f"/experiences/{first}", f"/experiences/{second}")
 
-        assert "第一条经历" in aside and "做了第一件事" in aside, path
-        assert "（未写标题）没有标题的第二条" in aside, path
-        assert [a["href"] for a in current] == ([f"/experiences/{selected}"] if selected else []), path
+    for path in ("/experiences/new", f"/experiences/{first}", f"/experiences/{first}/edit", f"/experiences/{second}"):
+        main = main_of(browser_a.get(path).text)
 
-    hrefs = [a["href"] for a in anchors_in(library_aside(browser_a.get(f"/experiences/{second}").text))]
-
-    assert "/experiences/new" in hrefs
-    assert "/experiences" in hrefs
+        # The way back to the library (on narrow screens for a record beside the list, plan 2.4); the forms are one
+        # panel with no list beside them, a record's page has the list beside it (plan 3.1).
+        assert [a["href"] for a in anchors_in(main) if a.get("class") == "library-back"] == ["/experiences"], path
+        assert ('class="md-items"' in main) == ("/edit" not in path and path != "/experiences/new"), path
 
 
 def test_the_navigation_marks_the_part_of_my_data_you_are_in(browser_a):
-    item_id = browser_a.create(title="合成经历", actions="合成内容")
+    item_id = browser_a.create(title="合成经历", body="合成内容")
     profile = browser_a.submit("/basic-profile/edit", "/basic-profile", city="合成城")
     assert profile.status_code == 303
     [profile_id] = re.findall(r'href="/experiences/([0-9a-f-]{36})/history"', browser_a.get("/basic-profile").text)
-    binned = browser_a.create(title="回收站里的", actions="x")
+    binned = browser_a.create(title="回收站里的", body="x")
     assert browser_a.submit(f"/experiences/{binned}/delete", f"/experiences/{binned}/delete").status_code == 303
 
     def marks(path):
         page = browser_a.get(path).text
+        top = anchors_in(region(page, '<nav class="primary-nav"', "</nav>"))
+        foot = anchors_in(region(page, '<div class="sidebar-foot">', "</nav>"))
+        parts = anchors_in(region(page, '<nav class="tabs"', "</nav>"))
 
-        def region(start, end):
-            return page[page.index(start): page.index(end, page.index(start))]
-
-        top = anchors_in(region('<nav class="nav"', "</nav>"))
-        parts = anchors_in(region('<nav class="subnav"', "</nav>"))
-        menu = anchors_in(region('<details class="manage"', "</details>"))
-
-        # 我的资料 is the current area; 方向探索 (U3-C3a) and 岗位机会 beside it are not.
-        assert [(a["href"], a.get("aria-current")) for a in top] == [
-            ("/experiences", "true"), ("/directions", None), ("/job-analysis", None)
-        ], path
+        # The side bar's places in order, one of them at most marked; 数据管理 sits in its foot.
+        assert tuple(a["href"] for a in top) == PLACES, path
+        assert [a["href"] for a in foot] == ["/data"], path
         return (
+            [a["href"] for a in top if a.get("aria-current")],
             [a["href"] for a in parts if a.get("aria-current") == "page"],
-            [a["href"] for a in menu if a.get("aria-current") == "page"],
+            [a["href"] for a in foot if a.get("aria-current")],
         )
 
     for path in ("/experiences", "/experiences/new", f"/experiences/{item_id}", f"/experiences/{item_id}/history"):
-        assert marks(path) == (["/experiences"], []), path
+        assert marks(path) == (["/experiences"], ["/experiences"], []), path
 
     # The profile's own pages, also its history and deletion, belong to 基本资料.
     for path in ("/basic-profile", f"/experiences/{profile_id}/history", f"/experiences/{profile_id}/delete"):
-        assert marks(path) == (["/basic-profile"], []), path
+        assert marks(path) == (["/experiences"], ["/basic-profile"], []), path
 
-    assert marks("/job-preferences/edit") == (["/job-preferences"], [])
-    # The recycle bin is under 资料管理, and so is purging what it holds.
-    assert marks("/experiences?tab=trash") == ([], ["/experiences?tab=trash"])
-    assert marks(f"/experiences/{binned}/purge") == ([], ["/experiences?tab=trash"])
+    assert marks("/job-preferences/edit") == (["/experiences"], ["/job-preferences"], [])
+    # The recycle bin is 数据管理's, under its older address as well, and so is purging what it holds.
+    for path in ("/data/trash", "/experiences?tab=trash", f"/experiences/{binned}/purge"):
+        assert marks(path) == ([], ["/data/trash"], ["/data"]), path
 
 
-def test_the_record_list_never_shows_another_users_records(browser_a, browser_b):
+def test_a_shared_message_page_stays_in_the_area_it_belongs_to(browser_a):
+    # A result that is gone is said on the page every area shares; it keeps the area's place in the side bar.
+    for path, current in (
+        ("/job-analysis/tasks/no-such-task", "/discover"),
+        ("/directions/tasks/no-such-task", "/directions"),
+        ("/data/export/result/no-such-token", "/data"),
+    ):
+        page = browser_a.get(path).text
+        marked = anchors_in(region(page, '<nav class="primary-nav"', "</nav>")) + anchors_in(
+            region(page, '<div class="sidebar-foot">', "</nav>")
+        )
+
+        assert [a["href"] for a in marked if a.get("aria-current")] == [current], path
+        # Its parts are the area's own, never 我的资料's.
+        assert 'href="/basic-profile"' not in region(page, '<nav class="tabs"', "</nav>"), path
+
+
+def test_no_page_shows_another_users_records(browser_a, browser_b):
     item_id = browser_a.create(title="A 的合成标题-9f2c")
 
-    for path in ("/experiences", "/experiences/new", "/experiences?tab=trash"):
+    for path in ("/workspace", "/experiences", "/experiences/new", "/data/trash", "/experiences?tab=trash"):
         page = browser_b.get(path).text
 
-        assert "A 的合成标题-9f2c" not in page
-        assert ("先记下一段经历" if path == "/experiences" else "还没有记录") in record_list(page)
+        assert "A 的合成标题-9f2c" not in page, path
 
+    assert "先记下一段经历" in main_of(browser_b.get("/experiences").text)
     assert browser_b.get(f"/experiences/{item_id}").status_code == 404
 
 
@@ -404,11 +480,14 @@ def test_only_the_skip_link_is_exempt_from_the_leave_guard(browser_a):
 
     assert exempt == [{"class": "skip-link", "href": "#main", "data-skip-leave-guard": None}]
     assert 'id="main"' in page
-    assert "/experiences/new" in guarded
     assert f"/experiences/{item_id}" in guarded
-    assert len([href for href in guarded if re.fullmatch(r"/experiences/[0-9a-f-]{36}", href)]) >= 2
-    assert "/experiences?tab=trash" in guarded
+    # Every place the side bar, the menu and the parts of 我的资料 lead to, 数据管理 with the bin included.
+    assert {*PLACES, *PROFILE_PARTS, "/data"} <= set(guarded)
     assert '<form method="post" action="/logout" class="inline" data-logout>' in page
+    # Changing the interface language is a form of the site as well: the guard asks before it too, and on 放弃修改
+    # sends it with the language chosen (leave_guard.js: requestSubmit with the pressed button).
+    assert page.count('<form method="post" action="/language" class="language-form" data-language-form') == 2
+    assert "other.requestSubmit(submitter)" in (PACKAGE_DIR / "static" / "leave_guard.js").read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("case", ["created", "saved", "unchanged"])
@@ -455,10 +534,10 @@ def test_every_page_the_form_links_to_says_what_was_saved(browser_a, form):
     links = anchors_in(browser_a.get(form_path).text)
     destinations = sorted({a["href"] for a in links if "data-skip-leave-guard" not in a and "download" not in a})
 
-    assert "/experiences/new" in destinations and "/experiences?tab=trash" in destinations
+    assert {*PLACES, *PROFILE_PARTS, "/data"} <= set(destinations)
 
     for destination in destinations:
-        response = browser_a.submit(form_path, action, next=destination, actions=f"离开去 {destination} 之前写的内容")
+        response = browser_a.submit(form_path, action, next=destination, body=f"离开去 {destination} 之前写的内容")
         landing = browser_a.get(response.headers["location"])
 
         assert landing.status_code == 200, destination
@@ -539,10 +618,17 @@ def _contrast(first: str, second: str) -> float:
 def test_the_colour_tokens_keep_readable_contrast():
     token = dict(re.findall(r"--([a-z-]+):\s*(#[0-9a-f]{6});", CSS))
 
-    assert (token["ink"], token["page"], token["paper"], token["outcome"], token["accent"]) == (
-        "#303236", "#f3f4f4", "#fafafa", "#eceeef", "#a3623e"
+    # The owner redesign's palette (plan 2.1): grey and white with one copper accent.
+    assert (token["ink"], token["ink-soft"], token["page"], token["line"], token["accent"]) == (
+        "#2e3135", "#62676e", "#f4f5f6", "#dde0e3", "#a35e3b"
     )
-    assert token["field-line"] == "#85888d"
+    assert (token["paper"], token["white"]) == ("#ffffff", "#ffffff")
+    assert token["field-line"] == "#868a90"
+    # Copper words on the light copper ground of the place you are in, and links on the page and on white.
+    assert _contrast(token["accent-strong"], token["accent-soft"]) >= 4.5
+    assert _contrast(token["ink"], token["accent-soft"]) >= 4.5
+    assert _contrast(token["accent"], token["white"]) >= 4.5
+    assert _contrast(token["accent"], token["page"]) >= 4.5
 
     for background in ("paper", "page", "outcome"):
         assert _contrast(token["ink"], token[background]) >= 4.5
@@ -563,20 +649,34 @@ def test_the_colour_tokens_keep_readable_contrast():
     assert _contrast(token["white"], token["ink"]) >= 4.5
 
 
-def test_the_accent_only_marks_the_main_action():
+def test_the_accent_marks_actions_the_current_place_and_what_waits_never_errors_or_danger():
+    # Owner redesign (plan 2.1): copper marks the main action, links, the place or choice you are in, what still
+    # waits for you, and the one highlighted area of a page; nothing else, and never an error or a dangerous action.
     allowed = re.compile(
-        r'(\.button\.primary|button\.primary|button\[data-save-button\]|button\[data-leave-choice="save"\])(:hover|:active)?'
+        "|".join(
+            (
+                r'(\.button\.primary|button\.primary|button\[data-save-button\]|button\[data-leave-choice="save"\])(:hover|:active)?',
+                r"a(:hover)?|a\.home-row-title:hover|\.link-button(:hover|:active)?|\.continue-link:hover|\.add-row|\.choose-file",
+                r'.*(\[aria-current(="(page|step)")?\]|\[aria-pressed="true"\]|\[aria-selected="true"\]|:checked|\[open\]|\.is-open|\.is-over).*',
+                r"\.badge\.state-draft|\.stance-tag\.stance-ideal|\.current-state|\.finding-verdict\.is-supported|\.md-item-line|\.step-check",
+                r"\.coverage-(card|figure|headline|percent)|\.decision-bar|\.task-entries|\.task-entries a:hover|\.stepper (ol|li \+ li::before)",
+                r"\.brand-mark",
+                r"\.check input\[type=(checkbox|radio)\]|\.pick-choice input\[type=checkbox\]",
+            )
+        )
     )
+    never = re.compile(r".*(\.error|\.danger|danger-link|\.warning|\.result-alert|\.field-error|\.has-error).*")
 
     for selectors, body in css_rules(CSS):
         if "var(--accent" in body:
             assert all(allowed.fullmatch(selector) for selector in selectors), selectors
+            assert not any(never.fullmatch(selector) for selector in selectors), selectors
 
 
 def test_no_second_colour_slips_in():
     token = dict(re.findall(r"--([a-z-]+):\s*(#[0-9a-f]{6});", CSS))
     # The accent is the only colour: errors and dangerous actions are grey as well.
-    coloured = {token[name] for name in ("accent", "accent-strong")}
+    coloured = {token[name] for name in ("accent", "accent-strong", "accent-soft", "accent-line")}
 
     for colour in set(re.findall(r"#[0-9a-fA-F]{6}\b", CSS)):
         channels = [int(colour[i:i + 2], 16) for i in (1, 3, 5)]
@@ -609,7 +709,10 @@ def test_errors_and_dangerous_actions_are_told_by_words_a_heavier_border_and_the
     confirm = browser_a.get(f"/experiences/{item_id}/delete").text
 
     # The link only leads to a page that says what deleting does before anything happens.
-    assert detail.index("导出为 Markdown") < detail.index(f'<a class="danger-link" href="/experiences/{item_id}/delete">删除…</a>')
+    # In the record's 更多 menu, deleting comes last, after exporting (P03).
+    assert detail.index("导出为 Markdown") < detail.index(
+        f'<a class="menu-link danger-link" href="/experiences/{item_id}/delete">删除…</a>'
+    )
     assert '<button type="submit" class="danger">移到回收站</button>' in confirm
     assert "删除后立即停止使用" in confirm and "天内" in confirm
 
@@ -640,13 +743,13 @@ def test_each_page_has_at_most_one_main_action(browser_a, browser_b):
 # --- a few local Lucide icons ----------------------------------------------------
 
 
-def test_each_icon_draws_the_official_lucide_shape(icon):
+def test_each_icon_draws_the_recorded_lucide_shape(icon):
     assert tuple(sorted(path.stem for path in (LUCIDE_DIR / "icons").glob("*.svg"))) == ICON_NAMES
 
     for name in ICON_NAMES:
-        official = (LUCIDE_DIR / "icons" / f"{name}.svg").read_text(encoding="utf-8")
+        recorded = (LUCIDE_DIR / "icons" / f"{name}.svg").read_text(encoding="utf-8")
 
-        assert DRAWING.findall(str(icon(name))) == DRAWING.findall(official), name
+        assert DRAWING.findall(str(icon(name))) == DRAWING.findall(recorded), name
 
 
 def test_icons_are_decorative_and_load_nothing(icon):
@@ -680,28 +783,59 @@ def test_an_unknown_icon_name_stops_the_page_instead_of_drawing_nothing(icon):
         icon("history")  # Lucide's former name for rotate-ccw-clock
 
 
-def test_each_icon_sits_beside_the_words_of_its_control(browser_a, browser_b, icon):
-    item_id = browser_a.create(title="带图标的经历", actions="合成内容", reflection="合成反思", private_note="合成备注")
+def test_each_icon_sits_beside_the_words_of_its_control(app, browser_a, browser_b, icon):
+    item_id = browser_a.create(title="带图标的经历", body="合成内容", links="https://example.com", private_note="合成备注")
     listing = browser_a.get("/experiences").text
     detail = browser_a.get(f"/experiences/{item_id}").text
     edit = browser_a.get(f"/experiences/{item_id}/edit").text
+    workspace = browser_a.get("/workspace").text
     history = anchors_in(browser_a.get(f"/experiences/{item_id}/history").text)
     version = browser_a.get(next(a["href"] for a in history if "/versions/" in a["href"])).text
     chevron = f'<span class="chevron">{icon("chevron-right")}</span>'
+    down = f'<span class="chevron">{icon("chevron-down")}</span>'
     lock = icon("lock-keyhole")
 
-    assert f'<a class="brand" href="/experiences"><span class="brand-mark">{icon("radar")}</span>RoleRadar</a>' in listing
+    # The page frame: the brand, each place with its name, 数据管理, the user menu and the narrow screens' menu.
+    assert f'<a class="brand" href="/workspace"><span class="brand-mark">{icon("radar")}</span>RoleRadar</a>' in listing
+    assert f'<a class="nav-item" href="/experiences" aria-current="true">{icon("user")}<span>我的资料</span></a>' in listing
+
+    for href, name, label in (
+        ("/workspace", "house", "工作台"), ("/directions", "compass", "方向探索"),
+        ("/discover", "briefcase", "岗位机会"), ("/data", "database", "数据管理"),
+    ):
+        assert f'<a class="nav-item" href="{href}">{icon(name)}<span>{label}</span></a>' in listing, name
+
+    assert f'{icon("user")}<span class="user-name">合成用户 A</span>{down}</summary>' in listing
+    assert f'<summary>{icon("menu")}<span>菜单</span></summary>' in listing
+    assert f'<summary>界面语言{down}</summary>' in Browser(app).get("/login").text
+    # The overview and a record.
     assert f'<a class="button primary" href="/experiences/new">{icon("plus")}记录经历</a>' in main_of(listing)
-    assert f'<summary>资料管理{chevron}</summary>' in listing
-    assert f'<a class="button secondary" href="/experiences/new">{icon("plus")}新建记录</a>' in detail
-    assert f'<a class="library-back" href="/experiences">{icon("arrow-left")}返回经历库（1 条）</a>' in detail
+    assert f'<a class="button secondary" href="/imports">{icon("upload")}导入简历</a>' in main_of(listing)
+    assert f'<a class="library-back" href="/experiences">{icon("arrow-left")}返回经历库</a>' in detail
+    assert f'<a class="button secondary" href="/experiences/{item_id}/edit">{icon("pencil")}编辑</a>' in detail
     assert f'<a class="button secondary" href="/experiences/{item_id}/history">{icon("rotate-ccw-clock")}查看历史</a>' in detail
-    assert f'<summary><span class="fold-title">收获与反思</span>{chevron}</summary>' in detail
+    # The ⋯ menu names itself to screen readers (owner redesign, plan 2.3).
+    assert f'<summary class="button secondary more-button">{icon("ellipsis")}<span class="visually-hidden">更多</span></summary>' in detail
+    assert f'<button type="submit" class="primary confirm">{icon("circle-check")}确认这些内容属实</button>' in detail
+    assert f'<summary><span class="fold-title">{MORE}</span>{chevron}</summary>' in detail
     assert f'<summary>{lock}<span class="fold-title">{NOTE_FIELD.label}</span>{chevron}</summary>' in detail
     assert f'<summary>{lock}<span class="fold-title">{NOTE_FIELD.label}</span>{chevron}</summary>' in edit
     assert f"<h2>{lock}当时的私有备注</h2>" in version
     assert f'<a class="button secondary" href="/experiences/{item_id}/history">{icon("arrow-left")}回到历史</a>' in version
     assert f'<a class="button primary" href="/experiences/new">{icon("plus")}记录第一段经历</a>' in browser_b.get("/experiences").text
+
+    # The workspace's four tasks (owner redesign, plan 8.1, image 15), each with its icon and words.
+    for href, name, label in (
+        ("/experiences/new", "file-text", "记录经历"), ("/directions", "compass", "探索方向"),
+        ("/discover", "briefcase", "发现岗位"), ("/job-analysis", "search", "分析岗位"),
+    ):
+        assert f'<a href="{href}">{icon(name)}<span>{label}</span></a>' in workspace, name
+
+    # Why a task cannot start yet: the warning sign beside those words, on the two review pages that can say it.
+    for name in ("direction_review.html", "discover_review.html"):
+        source = (PACKAGE_DIR / "templates" / name).read_text(encoding="utf-8")
+
+        assert '<p class="warning-title">{{ i.icon("triangle-alert") }}{{ t("task.cannot_start") }}</p>' in source, name
 
 
 def test_headings_are_plain_words_and_only_the_private_note_has_a_lock(browser_a, icon):
@@ -721,26 +855,40 @@ def test_headings_are_plain_words_and_only_the_private_note_has_a_lock(browser_a
 
 def test_the_icon_files_are_the_recorded_lucide_release():
     readme = (LUCIDE_DIR / "README.md").read_text(encoding="utf-8")
-    recorded = dict(re.findall(r"^\| `([^`]+)` \| `[^`]+` \| `([0-9a-f]{40})` \|", readme, re.M))
+    official_part, rebuilt_part = readme.split("## Icons added for the bilingual UI", 1)
+    row = re.compile(r"^\| `([^`]+)` \| `[^`]+` \| `([0-9a-f]{40})` \|", re.M)
+    official, rebuilt = dict(row.findall(official_part)), dict(row.findall(rebuilt_part))
 
-    assert sorted(recorded) == ["LICENSE", *(f"icons/{name}.svg" for name in ICON_NAMES)]
-    assert "release **1.64.0**" in readme and "be09619c1c1124ad09c19fc3e87ee3b939409bbd" in readme
+    assert sorted(official) == ["LICENSE", *(f"icons/{name}.svg" for name in OFFICIAL_ICONS)]
+    assert sorted(rebuilt) == [f"icons/{name}.svg" for name in sorted(REBUILT_ICONS)]
+    assert "release **1.64.0**" in official_part and "be09619c1c1124ad09c19fc3e87ee3b939409bbd" in official_part
+    # The added ones say where they come from, and that their hashes are not the official repository's.
+    assert "lucide-react 0.542.0" in rebuilt_part and "**not** the official repository's files" in rebuilt_part
 
-    for path, sha in recorded.items():
+    for path, sha in {**official, **rebuilt}.items():
         raw = (LUCIDE_DIR / path).read_bytes()
 
-        # Git's blob hash, comparable with the official repository at that tag.
+        # Git's blob hash: for the six of batch 1 comparable with the official repository at that tag; for the
+        # others it pins the files as recorded here.
         assert hashlib.sha1(b"blob %d\0" % len(raw) + raw).hexdigest() == sha, path
 
 
 def test_the_icons_keep_their_lucide_and_feather_licences():
     licence = (LUCIDE_DIR / "LICENSE").read_text(encoding="utf-8")
     feather = re.search(r"derived from the Feather project:\n\n(.+)\n", licence).group(1).split(", ")
+    readme = " ".join((LUCIDE_DIR / "README.md").read_text(encoding="utf-8").split())
 
     assert licence.startswith("ISC License\n\nCopyright (c) 2026 Lucide Icons and Contributors\n")
     assert "The MIT License (MIT) (for the icons listed above)\n\nCopyright (c) 2013-present Cole Bemis\n" in licence
-    # The source note says the MIT notice also covers these three.
-    assert sorted(set(feather) & set(ICON_NAMES)) == ["arrow-left", "chevron-right", "plus"]
+    # The source notes say the MIT notice also covers these: three of batch 1, four of the bilingual batch.
+    assert sorted(set(feather) & set(ICON_NAMES)) == [
+        "arrow-left", "calendar", "check", "chevron-down", "chevron-right", "clock", "compass", "database", "download",
+        "plus", "search", "upload", "x",
+    ]
+    assert "`plus`, `arrow-left` and `chevron-right` are among the icons derived from Feather" in readme
+    assert "`compass`, `database`, `search`, `chevron-down` are among the icons derived from Feather" in readme
+    assert "`calendar`, `check`, `clock`, `upload`, `x` are among the icons derived from Feather" in readme
+    assert "`download` (added in the owner review) is derived from Feather too" in readme
 
 
 # --- motion that never keeps content hidden --------------------------------------
@@ -776,7 +924,7 @@ def test_content_is_only_hidden_while_motion_is_allowed():
 def test_urgent_content_never_waits_for_an_animation(browser_a):
     item_id = browser_a.create(title="紧急内容", actions="合成内容")
     browser_a.submit(f"/experiences/{item_id}", f"/experiences/{item_id}/confirm")
-    rejected = browser_a.submit(f"/experiences/{item_id}/edit", f"/experiences/{item_id}/draft", title="", actions="")
+    rejected = browser_a.submit(f"/experiences/{item_id}/edit", f"/experiences/{item_id}/draft", title="", body="")
     paths = (
         f"/experiences/{item_id}?notice=confirmed", f"/experiences/{item_id}/edit",
         "/experiences/new?notice=saved_before_leaving", "/experiences?notice=deleted", "/experiences?tab=trash",

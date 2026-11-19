@@ -28,6 +28,7 @@ those are, by their source, never by what a posting says of itself.
 """
 import re
 from dataclasses import dataclass
+from app.i18n import MessageMap
 
 EMAIL = "email"
 PHONE = "phone"
@@ -42,6 +43,17 @@ LABELS = {
     ADDRESS: "详细地址",
     CONFIDENTIAL: "保密或内部内容",
 }
+# The same kinds as the pages name them, in the interface language (UI bilingual batch). LABELS stays as it is: a
+# masked placeholder sent to a service is written with it.
+NAMES = MessageMap(
+    {
+        EMAIL: "found.email",
+        PHONE: "found.phone",
+        ID_NUMBER: "found.id_number",
+        ADDRESS: "found.address",
+        CONFIDENTIAL: "found.confidential",
+    }
+)
 
 # An address as the Chinese rules find it: a label, a road and house number, a building or a room.
 CN_ADDRESS = re.compile(

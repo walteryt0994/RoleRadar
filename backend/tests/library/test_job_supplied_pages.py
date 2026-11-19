@@ -98,7 +98,9 @@ def test_a_link_is_read_once_shown_and_kept_only_when_asked(app, browser_a, boar
     token = token_of(read_link(browser_a))
     shown = page_text(browser_a, f"{SUPPLY}/{token}")
 
-    assert "由来源自己的接口读取了一次，你贴的网址本身没有打开" in shown and "核对时仍公开发布" in shown
+    # The source's state stays in view; the long notes on how it was read are gone (owner feedback, journey 4). That
+    # the address given was never opened is what the source calls show: its own read and check, nothing else.
+    assert "核对时仍公开发布" in shown
     assert board.calls == [("read", POSTING), ("check", POSTING)] and rows(app, JobPosting) == []
 
     record_id = record_of(keep(browser_a, token))
@@ -106,7 +108,7 @@ def test_a_link_is_read_once_shown_and_kept_only_when_asked(app, browser_a, boar
     [check] = rows(app, JobPostingRecheck)
     [run] = rows(app, JobUpdateRun)
 
-    assert "这个岗位是你用补充链接加入的" in page and "补充链接时读取" in page and "再核对一次" in page
+    assert "这个岗位是你用补充链接加入的" in page and "补充链接时读取" in page and "更新岗位" in page
     assert (run.trigger, check.status) == ("link", "open") and rows(app, JobPostingText) == []
     # Nothing was analysed and no search ran: the 岗位分析 and the search stores hold nothing.
     assert app.state.job_analysis.store._tasks == {} and len(board.calls) == 2
@@ -180,7 +182,8 @@ def test_a_pasted_posting_is_shown_exactly_as_it_would_be_kept(app, browser_a):
     page = text_of(page_html)
 
     assert record.facts["via"]["link"] == SHOWN_LINK and text.text == supplied.kept_text(TEXT)
-    assert "这是你提供的原文（用户提供，系统未独立核验）" in page and updates.PASTED in page
+    # Said once that it is the user's, not verified (owner feedback, journey 4: no repeated "你填写的").
+    assert "用户提供，系统未独立核验" in page and str(updates.PASTED) in page
     assert "再核对一次</button>" not in page_html and "/feedback" not in page_html
     assert f'href="/job-analysis?record={record_id}"' in page_html and not re.search(r'<a [^>]*href="https?://jobs\.example\.com', page_html)
 
@@ -191,7 +194,7 @@ def test_a_pasted_posting_is_checked_by_nothing(app, browser_a):
     for action in ("recheck", "apply-check"):
         response = post(browser_a, f"/job-records/postings/{record_id}/{action}", revision="1")
 
-        assert response.status_code == 403 and updates.PASTED in text_of(response.text)
+        assert response.status_code == 403 and str(updates.PASTED) in text_of(response.text)
 
     assert rows(app, JobUpdateRun) == [] and rows(app, JobPostingRecheck) == []
 
@@ -343,7 +346,9 @@ def test_the_records_page_offers_supply_and_says_a_pasted_posting_is_the_users(a
     record_of(keep(browser_a, token_of(paste(browser_a))))
     page = page_text(browser_a, "/job-records")
 
-    assert "补充岗位…" in page and "用户提供，系统未独立核验" in page and "用户提供，系统不核对招聘状态" in page
+    # 补充岗位 at the top right of 我的岗位 (owner redesign, plan 5.3); a pasted job says it was added by hand and that its
+    # hiring status is not checked (the journey 4 image's words).
+    assert "补充岗位" in page and "手动添加" in page and "招聘状态未核实" in page
 
 
 def test_the_export_says_how_each_came_and_has_the_pasted_text_only(app, browser_a, board):

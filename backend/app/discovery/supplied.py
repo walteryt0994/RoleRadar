@@ -48,6 +48,8 @@ from app.discovery import lever, synthetic, updates
 from app.discovery.contracts import Access, EvidenceLevel, PostingRef
 from app.discovery.sources import Register
 from app.library.job_choices import RECHECK_REASONS
+from app.i18n import lazy, t
+from app.library.job_words import source_label
 
 MAX_LINK_CHARS = 2048
 MAX_NAME_CHARS = 100
@@ -66,14 +68,13 @@ AMBIGUOUS_NAMES = frozenset({"code", "key", "auth", "ticket", "otp", "sig", "ses
 # A posting id in a synthetic address, as the synthetic sources name theirs.
 SYNTHETIC_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
-NOT_READABLE = "这个来源现在不能读取：它不在这次运行的来源里，或者不是本机合成数据。没有发出请求；可以在下面粘贴岗位原文。"
-LEAD_LINK = "这是待核验线索的地址，不读取；请补充它指向的官方岗位的链接，或者在下面粘贴原文。没有发出请求。"
-READ_FAILED = "读取没有成功（{reason}），没有重试。可以在下面粘贴岗位原文。"
+NOT_READABLE = lazy("job.supp.1")
+LEAD_LINK = lazy("job.supp.2")
+READ_FAILED = lazy("job.supp.3")
 NOT_FOUND = (
-    "来源说找不到这个编号（404）。单独一次 404 不说明岗位已关闭：编号可能不对，岗位可能已下线，来源也可能暂时异常。"
-    "没有重试；可以在下面粘贴岗位原文。"
+    lazy("job.supp.4")
 )
-MISMATCH = "来源回答的岗位和链接里的编号对不上，没有采用。可以在下面粘贴岗位原文。"
+MISMATCH = lazy("job.supp.5")
 
 
 class LinkProblem(Exception):
@@ -92,18 +93,18 @@ def checked_link(raw: str) -> str:
     link = (raw or "").strip()
 
     if not link:
-        raise LinkProblem("没有填写链接。")
+        raise LinkProblem(t("job.supp.6"))
 
     if len(link) > MAX_LINK_CHARS:
-        raise LinkProblem(f"链接超过 {MAX_LINK_CHARS} 个字符，没有识别，也不会保存。")
+        raise LinkProblem(t("job.supp.7", p0=MAX_LINK_CHARS))
 
     if any(character.isspace() or unicodedata.category(character) in ("Cc", "Cf") for character in link):
-        raise LinkProblem("链接中间有空白或看不见的控制字符，没有识别，也不会保存。")
+        raise LinkProblem(t("job.supp.8"))
 
     parts = _split(link)
 
     if not parts.scheme or not parts.netloc:
-        raise LinkProblem("这不像一个网址（没有协议或主机），没有识别，也不会保存。")
+        raise LinkProblem(t("job.supp.9"))
 
     return link
 
@@ -112,10 +113,10 @@ def match(raw: str) -> PostingRef:
     """The registered source and posting id the link names, by its address shape alone; LinkProblem if it names none.
     Which of them the app may read now is refusal's to say."""
     parts = _split(checked_link(raw))
-    unknown = LinkProblem("认不出这个链接属于哪个已登记的来源。没有打开这个链接，也没有发出请求；可以在下面粘贴岗位原文。")
+    unknown = LinkProblem(t("job.supp.10"))
 
     if parts.scheme.lower() != "https":
-        raise LinkProblem("只认 https 的岗位链接。没有打开这个链接，也没有发出请求；可以在下面粘贴岗位原文。")
+        raise LinkProblem(t("job.supp.11"))
 
     if "@" in parts.netloc or _port(parts) is not None:
         raise unknown
@@ -181,7 +182,7 @@ def stored_link(raw: str) -> StoredLink:
     parts = _split(checked_link(raw))
 
     if parts.scheme.lower() not in ("http", "https"):
-        raise LinkProblem("这不是网页地址（只保存 http 或 https 的链接），不会保存；可以改正，或者留空。")
+        raise LinkProblem(t("job.supp.12"))
 
     removed: list[str] = []
     flagged: list[str] = []
@@ -189,18 +190,18 @@ def stored_link(raw: str) -> StoredLink:
 
     if "@" in netloc:
         netloc = netloc.rsplit("@", 1)[1]
-        removed.append("登录信息（@ 前面的部分）")
+        removed.append(t("job.supp.13"))
 
     if not netloc or not urlsplit(f"//{netloc}").hostname:
-        raise LinkProblem("这个链接没有主机，不会保存；可以改正，或者留空。")
+        raise LinkProblem(t("job.supp.14"))
 
     path = "/".join(_kept_segment(segment, removed) for segment in parts.path.split("/"))
-    query = _kept_pairs(parts.query, "参数", removed, flagged)
+    query = _kept_pairs(parts.query, t("job.supp.15"), removed, flagged)
     fragment = _kept_fragment(parts.fragment, removed, flagged)
     text = urlunsplit((parts.scheme, netloc, path, query, fragment))
 
     if len(text) > MAX_LINK_CHARS:
-        raise LinkProblem(f"链接超过 {MAX_LINK_CHARS} 个字符，不会保存；可以改短，或者留空。")
+        raise LinkProblem(t("job.supp.16", p0=MAX_LINK_CHARS))
 
     return StoredLink(text, tuple(removed), tuple(flagged))
 
@@ -219,7 +220,7 @@ def _split(link: str) -> SplitResult:
     try:
         return urlsplit(link)
     except ValueError:
-        raise LinkProblem("这不像一个网址，没有识别，也不会保存。") from None
+        raise LinkProblem(t("job.supp.17")) from None
 
 
 def _port(parts: SplitResult):
@@ -253,7 +254,7 @@ def _kept_segment(segment: str, removed: list[str]) -> str:
         name = param.split("=", 1)[0]
 
         if _credential(name):
-            removed.append(f"路径里的 {_shown_name(name)}")
+            removed.append(t("job.supp.18", p0=_shown_name(name)))
         else:
             kept.append(param)
 
@@ -286,11 +287,11 @@ def _kept_fragment(fragment: str, removed: list[str], flagged: list[str]) -> str
     route, mark, pairs = fragment.partition("?")
 
     if mark:
-        kept = _kept_pairs(pairs, "# 后的参数", removed, flagged)
+        kept = _kept_pairs(pairs, t("job.supp.19"), removed, flagged)
 
         return route + (f"?{kept}" if kept else "")
 
-    return _kept_pairs(fragment, "# 后的参数", removed, flagged)
+    return _kept_pairs(fragment, t("job.supp.19"), removed, flagged)
 
 
 def _shown_name(name: str) -> str:
@@ -348,6 +349,9 @@ class PastedContent:
     link: StoredLink | None
     provided_at: datetime
     kind: str = PASTED
+    # Its own posting id from the moment it is supplied (Codex review F2): random, never the text's or its names'. A
+    # standalone analysis of it and the posting it becomes in 我的岗位 share it, whichever is saved first.
+    posting_id: str = ""
 
 
 def read(ref: PostingRef, register: Register, *, delisting: frozenset[str], now: Callable[[], datetime]) -> LinkContent:
@@ -374,7 +378,7 @@ def failure_text(reading: updates.Reading) -> str:
     if reading.reason == "identity_mismatch":
         return MISMATCH
 
-    return READ_FAILED.format(reason=RECHECK_REASONS.get(reading.reason or "", reading.reason or "原因不明"))
+    return READ_FAILED.format(reason=RECHECK_REASONS.get(reading.reason or "", reading.reason or t("job.supp.20")))
 
 
 # --- the store -----------------------------------------------------------------------------------------------------------
@@ -422,6 +426,8 @@ class Held:
     minutes_left: int
     # Being saved now: a page shows no button to save it meanwhile.
     saving: bool = False
+    # The seconds it still has when looked at, for a clear time it goes (UI bilingual batch).
+    seconds_left: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -563,6 +569,19 @@ class Supplied:
                 entry.shown = frozenset(matches)
 
             return self._held(token, entry)
+
+    def listed(self, user_id: str, session: str) -> list[Held]:
+        """This session's results not yet saved as a record, newest first, as pages show them: what the workspace
+        lists under 继续处理 (UI bilingual batch, plan 5.1). Reads only: nothing is extended, shown or claimed."""
+        with self._lock:
+            self._sweep()
+            mine = [
+                (token, entry)
+                for token, entry in self._entries.items()
+                if entry.user_id == user_id and entry.session == session and entry.saved is None
+            ]
+
+            return [self._held(token, entry) for token, entry in sorted(mine, key=lambda pair: pair[1].made, reverse=True)]
 
     def prefill(self, token: str, user_id: str, session: str) -> str | None:
         """Its text, for the 岗位分析 page to fill in (nothing more is ever taken from here): None if it is gone."""
@@ -706,7 +725,7 @@ class Supplied:
     def _held(self, token: str, entry: _Entry) -> Held:
         seconds = self.ttl - (self.clock() - entry.made)
 
-        return Held(token, entry.content, entry.review, entry.shown, entry.saved, max(1, int(seconds // 60)), entry.saving is not None)
+        return Held(token, entry.content, entry.review, entry.shown, entry.saved, max(1, int(seconds // 60)), entry.saving is not None, max(0.0, seconds))
 
     def _drop(self, token: str, entry: _Entry) -> None:
         del self._entries[token]
@@ -746,6 +765,6 @@ def readable_sources(keep: Iterable[str], register: Register) -> list[str]:
             and entry.evidence is EvidenceLevel.OFFICIAL
             and register.refusal(source_id) is None
         ):
-            names.append(entry.name)
+            names.append(source_label(entry.name))
 
     return names

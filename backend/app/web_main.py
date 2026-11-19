@@ -60,6 +60,8 @@ from app.job_analysis.tasks import SWEEP_SECONDS
 from app.job_analysis.web import JobAnalysisRuntime, install_job_analysis
 from app.live_structuring.web import install_structuring
 from app.library.web import LibraryRuntime, build_templates, install_web
+from app.workspace import install_workspace
+from app.data_management import ExportHolds, install_data_management
 from app.live_gate import LiveRefused, LiveSetup, open_gate
 
 LOCAL_HOST = "127.0.0.1"
@@ -261,6 +263,9 @@ def _create_app(config, clock, simulation_delay, job_sweep_seconds, environ, liv
         live=service,
         batch=batch if batch is not None and batch.launch is batch_live.Launch.DIRECTION else None,
     )
+    # The workspace and data management read what the pages above keep (UI bilingual batch); they keep nothing.
+    install_workspace(app)
+    install_data_management(app)
 
     return app
 
@@ -291,10 +296,13 @@ async def _lifespan(app: FastAPI):
     jobs = app.state.job_analysis
     searches = app.state.discovery
     explorations = app.state.directions
+    exports = app.state.export_holds
     # Analysis tasks, searches and explorations expire, and overdue ones stop, even when no page asks about them.
     jobs.sweeper = asyncio.create_task(_sweep_loop(jobs))
     searches.sweeper = asyncio.create_task(_sweep_loop(searches))
     explorations.sweeper = asyncio.create_task(_sweep_loop(explorations))
+    # So are built export packages past their time: closed with their files, without another export request.
+    exports.sweeper = asyncio.create_task(_sweep_loop(exports))
     # The automatic check, when it is on: at once (catching up), then every update_seconds while the app runs.
     checks = asyncio.create_task(_update_loop(searches, runtime)) if searches.update_seconds else None
 
@@ -304,7 +312,7 @@ async def _lifespan(app: FastAPI):
         # A batch running stops before its next call, and says it was interrupted.
         searches.stopping.set()
 
-        for running in (task, jobs.sweeper, searches.sweeper, explorations.sweeper, checks):
+        for running in (task, jobs.sweeper, searches.sweeper, explorations.sweeper, exports.sweeper, checks):
             if running is not None:
                 running.cancel()
 
@@ -318,6 +326,8 @@ async def _lifespan(app: FastAPI):
         explorations.shutdown()
         searches.shutdown()
         jobs.shutdown()
+        # Built export packages waiting for their download are freed (plan 5.6).
+        app.state.export_holds.shutdown()
 
         if app.state.live_service is not None and jobs.live is None:
             app.state.live_service.close()
@@ -352,8 +362,9 @@ async def _update_loop(searches: DiscoveryRuntime, runtime) -> None:
         await asyncio.sleep(searches.update_seconds)
 
 
-async def _sweep_loop(jobs: JobAnalysisRuntime | DiscoveryRuntime | DirectionsRuntime) -> None:
-    """Sweep the analysis tasks, or the searches, every jobs.sweep_seconds for as long as the app runs."""
+async def _sweep_loop(jobs: JobAnalysisRuntime | DiscoveryRuntime | DirectionsRuntime | ExportHolds) -> None:
+    """Sweep the analysis tasks, the searches, the explorations or the built export packages, every jobs.sweep_seconds
+    for as long as the app runs."""
     while True:
         await asyncio.sleep(jobs.sweep_seconds)
 

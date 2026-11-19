@@ -250,7 +250,7 @@ def test_an_exploration_deleted_and_restored_since_the_page_refuses_the_whole_de
     refused = browser_a.post(page_url, {**form.fields, "delete_along": "yes"})
 
     # Nothing at all is deleted: back in use as before, the exploration is not the one the page showed.
-    assert refused.status_code == 409 and ALONG_CHANGED in text_of(refused.text)
+    assert refused.status_code == 409 and str(ALONG_CHANGED) in text_of(refused.text)
     assert row(app, *deleted).deleted_at is None and row(app, DirectionExploration, exploration).deleted_at is None
 
     # The page again, as things are now, the choice unticked: ticked again, it goes as listed now.
@@ -291,7 +291,7 @@ def test_only_the_users_own_explorations_resting_on_the_record_can_be_named(app,
     _, form = deletion_form(browser_a, f"/experiences/{item}/delete")
     refused = browser_a.post(f"/experiences/{item}/delete", {**form.fields, "delete_along": "yes", "along": forged})
 
-    assert refused.status_code == 409 and ALONG_CHANGED in text_of(refused.text) and "别人的方向" not in refused.text
+    assert refused.status_code == 409 and str(ALONG_CHANGED) in text_of(refused.text) and "别人的方向" not in refused.text
     assert row(app, ExperienceItem, item).deleted_at is None
     assert [row(app, DirectionExploration, one).deleted_at for one in (listed, elsewhere, theirs)] == [None, None, None]
 
@@ -325,7 +325,7 @@ def test_a_page_older_than_the_record_is_answered_as_before_and_takes_nothing(ap
     refused = browser_a.post(f"/experiences/{item}/delete", {**form.fields, "delete_along": "yes"})
 
     # The record's own check comes first, with its own page: the exploration list is not what stopped it.
-    assert refused.status_code == 409 and "内容已经更新" in text_of(refused.text) and ALONG_CHANGED not in text_of(refused.text)
+    assert refused.status_code == 409 and "内容已经更新" in text_of(refused.text) and str(ALONG_CHANGED) not in text_of(refused.text)
     assert row(app, ExperienceItem, item).deleted_at is None and row(app, DirectionExploration, exploration).deleted_at is None
 
 

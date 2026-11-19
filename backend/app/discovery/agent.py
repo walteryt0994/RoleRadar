@@ -40,6 +40,7 @@ graph runs inside tracing_context(enabled=False) besides.
 """
 import itertools
 import json
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal, Protocol, TypedDict
@@ -60,7 +61,8 @@ from app.ai_provider import (
 from app.discovery import rules, tools
 from app.discovery.contracts import (
     DIMENSION_LABELS,
-    END_LABELS,
+    DIMENSION_NAMES,
+    END_NAMES,
     EVIDENCE_LABELS,
     CheckStatus,
     Dimension,
@@ -77,6 +79,7 @@ from app.discovery.contracts import (
     ToolResult,
 )
 from app.discovery.sources import KeywordScope, keyword_scope
+from app.i18n import list_join, t, t_in
 from app.discovery.tools import FILTER_FIELDS, Found, SearchRun
 from app.live_gate import FIXED_RESERVE_V1, LiveBlocked
 from app.outbound_review import masked_posting, review
@@ -94,7 +97,10 @@ SUMMARY_CHARS = 120
 RECURSION_LIMIT = 6 * MAX_DECISIONS
 ACTION_SCHEMA_NAME = "discovery_action"
 CLAIMS = ("enough", "scope_done", "no_results")
-WITHHELD = "（不合要求，没有保存）"
+# A value the trace does not keep, said in the search's result language (Codex review F3); WITHHELD is its Chinese
+# words, what a Chinese search keeps as it always has.
+WITHHELD_KEY = "disc.agent.withheld"
+WITHHELD = t_in("zh-CN", WITHHELD_KEY)
 
 
 class PostingId(BaseModel):
@@ -206,12 +212,12 @@ def make_action(
 def parse_action(raw: str | None) -> tuple[Action | None, Tool | None, str | None]:
     """The action a decider answered with, the tool it names if any, and why it cannot be used: never its words."""
     if raw is None:
-        return None, None, "决策没有给出动作"
+        return None, None, t("disc.agent.no_action")
 
     try:
         action = Action.model_validate_json(raw)
     except ValidationError:
-        return None, _named_tool(raw), "动作不是规定结构的 JSON：栏目缺少或多余、类型不对，或者太长"
+        return None, _named_tool(raw), t("disc.agent.not_json")
 
     problem = _shape_problem(action)
 
@@ -234,10 +240,10 @@ def _shape_problem(action: Action) -> str | None:
         given = getattr(action, name) not in (None, [])
 
         if name in NEEDS[action.tool] and not given:
-            return f"{action.tool.value} 缺少 {name}"
+            return t("disc.agent.field_missing", tool=action.tool.value, name=name)
 
         if name not in TAKES[action.tool] and given:
-            return f"{action.tool.value} 不用 {name}，要填 {'[]' if name == 'postings' else 'null'}"
+            return t("disc.agent.field_unused", tool=action.tool.value, name=name, empty="[]" if name == "postings" else "null")
 
     return None
 
@@ -349,6 +355,8 @@ class Observation:
     listed: frozenset[str] = frozenset()
     # The sources that say what they match keywords against, with what they say (U3-D2-E4 F1).
     matching: tuple[tuple[str, KeywordScope], ...] = ()
+    # The language the search's notes are asked for (plan 6.3); never part of the observation's text.
+    result_language: str = "zh-CN"
 
 
 def observe(
@@ -390,13 +398,29 @@ def observe(
         partial=run.partial_reads(),
         listed=frozenset(run.listings),
         matching=_matching(run, sources),
+        result_language=run.confirmation.result_language,
     )
 
     return _with_text(observation, limit)
 
 
+# Added to a decision's prompt only when the search asks for English results (UI bilingual batch, plan 6.3): only the
+# free text of the note changes language; the actions, ids, values, rules and the observation stay as they are. A
+# Chinese search's prompt is unchanged, word for word.
+OUTPUT_LANGUAGE_LINES = {
+    "en": "OUTPUT LANGUAGE: English. Write the note in English. Keep every id, source id, keyword and filter value "
+    "exactly as the observation and the user's scope write them; never translate them.",
+}
+
+
 def decision_prompt(observation: Observation) -> str:
-    """What a model is sent for one decision: the instructions, then the observation."""
+    """What a model is sent for one decision: the instructions, then the observation; for a search asking for
+    English results, one line about the language of the note between them."""
+    language = OUTPUT_LANGUAGE_LINES.get(observation.result_language)
+
+    if language:
+        return f"{DECISION_INSTRUCTIONS}\n\n{language}\n\n{observation.text}"
+
     return f"{DECISION_INSTRUCTIONS}\n\n{observation.text}"
 
 
@@ -688,6 +712,29 @@ class ScriptedDecider:
         return item if isinstance(item, str) else json.dumps(item, ensure_ascii=False)
 
 
+# The simulated decider's fixed notes, for a search asking for English results (UI bilingual batch, plan 6.3); each
+# fits in NOTE_CHARS, so a step shows it whole and never cut inside a word (UI R4).
+SIMULATED_NOTES_EN = {
+    "按工具的说明去掉检索词里的城市或类型，条件不变再查一次": "Retry without city or type in the terms, as the tool says",
+    "分析核对时仍公开发布的岗位": "Analyze the postings still listed at the check",
+    "读取线索指向的官方岗位": "Read the official postings the leads point to",
+    "其余条件只能从读了一部分的列表里查，按规则结束": "The rest is only in partly read lists, so end by the rules",
+    "检索次数已经用完，按规则结束": "No searches are left, so the search ends by the rules",
+    "还没有找到范围内的岗位，查下一个组合": "Nothing in scope found yet, so search the next combination",
+    "范围里还有没查的组合，先查完再下结论": "Some combinations are not searched yet; search them first",
+    "读取找到的岗位详情": "Read the details of the postings found",
+    "核对读过的岗位是否仍公开发布": "Check whether the postings read are still listed",
+    "已经有分析结果，结束": "There are analysis results, so finish",
+    "没有选择经历，只查找和核对，结束": "No experiences chosen: only search and check, then finish",
+    "找到的岗位都超出条件": "Every posting found is outside the conditions",
+    "范围内的组合都查过了": "Every combination in the scope has been searched",
+    "还没有完整结果，继续查没查的组合": "No complete result yet; keep searching what is left",
+}
+# The one note with a value in it: the job type added to the search terms, kept as the scope writes it.
+SIMULATED_RETRY = re.compile(r"^上次结果都是资深或超出条件的岗位，把“(?P<type>.+)”写进检索词再查一次$")
+SIMULATED_RETRY_EN = 'Only senior or out-of-scope results; retry with "{type}"'
+
+
 class SimulatedDecider:
     """Fixed rules on this machine standing in for a model, so a search can run offline end to end (6.4).
 
@@ -712,7 +759,15 @@ class SimulatedDecider:
     kind = "simulated"
 
     def decide(self, observation: Observation) -> str:
-        return json.dumps(self._choose(observation), ensure_ascii=False)
+        action = self._choose(observation)
+
+        if observation.result_language == "en":
+            # A search asking for English results gets its fixed notes in English (plan 6.3); nothing else changes.
+            note = action.get("note") or ""
+            retry = SIMULATED_RETRY.match(note)
+            action = {**action, "note": SIMULATED_RETRY_EN.format(type=retry["type"]) if retry else SIMULATED_NOTES_EN.get(note, note)}
+
+        return json.dumps(action, ensure_ascii=False)
 
     def _choose(self, o: Observation) -> dict:
         if o.decisions_left <= 1:
@@ -915,12 +970,12 @@ def request_problem(
     (AIProvider.request_body); otherwise a Responses request built for its model. Bytes, never tokens.
     """
     if review(prompt, posting=True):
-        return "决策提示没有通过外发检查"
+        return t("disc.agent.prompt_stopped")
 
     size = request_bytes(_decision_body(prompt, provider, output_tokens))
 
     if size > max_bytes:
-        return f"决策请求有 {size} 字节，超过 {max_bytes} 字节的上限"
+        return t("disc.agent.prompt_too_large", size=size, most=max_bytes)
 
     return None
 
@@ -1002,7 +1057,7 @@ def safe_note(note: str) -> str:
     masked, _, stopping = masked_posting(flat)
 
     if stopping:
-        return "（行动说明里有疑似地址或标明不公开的内容，没有保存）"
+        return t("disc.agent.note_withheld")
 
     return _cut(masked, NOTE_CHARS)
 
@@ -1016,15 +1071,18 @@ def params(action: Action | None) -> tuple[tuple[str, str], ...]:
         filters = ((Dimension.CITY, action.city), (Dimension.JOB_TYPE, action.job_type), (Dimension.DIRECTION, action.direction))
 
         return (
-            ("来源", _plain_word(action.source_id, id_like=True)),
-            ("检索词", _plain_word(action.keywords)),
-            *((DIMENSION_LABELS[dimension], "不限" if value is None else _plain_word(value)) for dimension, value in filters),
+            (t("disc.agent.param_source"), _plain_word(action.source_id, id_like=True)),
+            (t("disc.agent.param_keywords"), _plain_word(action.keywords)),
+            *(
+                (DIMENSION_NAMES[dimension], t("disc.agent.any") if value is None else _plain_word(value))
+                for dimension, value in filters
+            ),
         )
 
     if action.tool is Tool.FINISH:
-        return (("结束理由", END_LABELS[EndReason(action.claim)]),)
+        return ((t("disc.agent.param_end"), END_NAMES[EndReason(action.claim)]),)
 
-    return (("岗位", "、".join(tools.shown_ref(item.ref) for item in action.postings)),)
+    return ((t("disc.agent.param_postings"), list_join([tools.shown_ref(item.ref) for item in action.postings], "list")),)
 
 
 def _plain_word(text: str, *, id_like: bool = False) -> str:
@@ -1032,7 +1090,7 @@ def _plain_word(text: str, *, id_like: bool = False) -> str:
     pattern = tools.PLAIN_ID if id_like else tools.KEYWORDS
 
     if not flat or len(flat) > 40 or not pattern.fullmatch(flat) or review(flat):
-        return WITHHELD
+        return t(WITHHELD_KEY)
 
     return flat
 
@@ -1130,20 +1188,20 @@ class _Loop:
         try:
             self.step["raw"] = self.decider.decide(self.observation)
         except DecisionNotSent as not_sent:
-            self._halt(EndReason.GATE, f"决策请求没有发出：{not_sent.reason}")
+            self._halt(EndReason.GATE, t("disc.agent.decision_not_sent", reason=not_sent.reason))
         except LiveBlocked as blocked:
-            self._halt(EndReason.GATE, "闸门没有放行这次决策请求", blocked.reason.value)
+            self._halt(EndReason.GATE, t("disc.agent.decision_gated"), blocked.reason.value)
             # Why, for the result page (U3-D2-E3), unless something stopped the search before.
             if self.run.ended is EndReason.GATE and self.run.gate_reason is None:
                 self.run.gate_reason = blocked.reason.value
         except AIProviderError:
             # Kept back because the search stopped, or the service gave no usable answer.
             if not self.run.stopping():
-                self.step["unusable"] = "决策请求没有得到可用的回答"
+                self.step["unusable"] = t("disc.agent.decision_unusable")
 
         if "halted" not in self.step and self.run.stopping():
             # Back after the search stopped: nothing it says is done.
-            self.step["halted"] = f"决策返回时查找已经结束（{END_LABELS[self.run.ended]}），这一步没有执行"
+            self.step["halted"] = t("disc.agent.decision_late", end=END_NAMES[self.run.ended])
             self.step["reason"] = self.run.ended.value
 
         return {"decisions": number, "go": "update" if "halted" in self.step else "validate"}

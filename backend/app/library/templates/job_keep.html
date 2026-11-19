@@ -1,87 +1,108 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
 {% import "_job_forms.html" as jf with context %}
-{% block title %}保存这个岗位{% endblock %}
+{% import "_icons.html" as i %}
+{% block title %}{{ t("job.job_keep.1") }}{% endblock %}
+{#- Saving one job from a search (owner redesign, plan 5.3 and 6.1, the layout of a job before it is added): the job's
+    title and company in the head with 加入我的岗位 as its main action; its facts short; a decision to make with it,
+    if the user wants one (the four choices, each with its reasons and note, filled in as saved); saving its analysis
+    and saying a fact is wrong, each apart. Nothing is saved until a button is pressed; saving one thing never saves
+    another. -#}
 {% block layout %}
 <main id="main" class="job-page job-reading" tabindex="-1">
-  <header class="job-head">
-    <h1>保存这个岗位</h1>
-    <p class="job-mode">只有你点了下面的按钮才会保存。岗位（含决定）和分析各自单独保存，保存一样不会带上另一样，都不含岗位原文。</p>
+  <p class="back-line"><a class="library-back" href="/discover/tasks/{{ task.id }}">{{ i.icon("arrow-left") }}{{ t("job.job_keep.35") }}</a></p>
+  {% set hidden = {"source": item.ref.source_id, "posting": item.ref.posting_id, "record": mine.id if mine else "", "revision": mine.revision if mine else ""} %}
+  <header class="page-head job-record-head">
+    <div class="job-record-title">
+      <h1>{{ item.title }}</h1>
+      <p class="result-company">{{ item.company }}</p>
+    </div>
+    <div class="page-actions">
+      {% if not mine or held %}
+      <form method="post" action="/discover/tasks/{{ task.id }}/keep" class="inline">
+        {{ m.csrf() }}
+        {{ jf.hidden_fields(dict(hidden, action="keep")) }}
+        <button type="submit" class="primary">{{ t("jobx.add_to_mine") }}</button>
+      </form>
+      {% else %}
+      <a class="button secondary" href="/job-records/postings/{{ mine.id }}">{{ t("job.job_keep.36") }}</a>
+      {% endif %}
+    </div>
+    <p class="state-line"><span class="badge">{{ evidence_label(item.evidence) }}</span><span>{{ source_label(item.source) }}</span></p>
   </header>
+  {# That nothing is saved until a button says so, and that the job and its analysis are saved apart, in one line. #}
+  <p class="hint">{{ t("job.job_keep.2") }}</p>
   {% if error %}
   <p class="error" role="alert">{{ error }}</p>
   {% endif %}
+  {% if mine and held %}
+  <p class="notice">{{ t("job.job_keep.12") }}{% if held[0] == "closed" %}{{ t("job.job_keep.13") }}{% endif %}{{ t("job.job_keep.14", p0=(held[1].until|localtime)) }}{{ t("common.sentence_gap") }}<a href="/job-records/postings/{{ mine.id }}">{{ t("job.job_keep.15") }}</a></p>
+  {% elif mine %}
+  <p class="notice">{{ t("job.job_keep.16", p0=(decision_label(mine.decision)), p1=(mine.kept_at|localtime)) }}</p>
+  {% endif %}
 
-  <section class="review-section" aria-labelledby="posting-title">
-    <h2 id="posting-title">{{ item.title }}</h2>
-    <p class="review-meta"><span>{{ item.company }}</span><span>{{ item.source }}</span><span>岗位编号 {{ item.ref.posting_id }}</span></p>
-    <dl class="facts">
-      <div><dt>地点</dt><dd>{{ place_text(item) }}</dd></div>
-      <div><dt>类型</dt><dd>{{ type_text(item) }}</dd></div>
-      <div><dt>发布</dt><dd>{{ stated(item.posted_on) }}</dd></div>
-      <div><dt>截止</dt><dd>{% if is_result %}{{ deadlines_text(item.deadlines) }}{% else %}{{ stated(item.deadline) }}{% endif %}</dd></div>
-      <div><dt>本次查找时的来源核对</dt><dd>{% for line in check_lines %}{{ line }}{% if not loop.last %}；{% endif %}{% endfor %}</dd></div>
-      <div><dt>证据</dt><dd>{{ evidence_label(item.evidence) }}</dd></div>
-      {% if is_result %}
-      <div><dt>原始链接</dt><dd class="plain-address">{{ item.url }}{{ SOURCE_SET.link_note }}</dd></div>
-      {% endif %}
-    </dl>
-    {% if mine and held %}
-    <p class="notice">这是临时留存跟踪的推荐{% if held[0] == "closed" %}（来源已明确关闭，不再跟踪）{% endif %}：到 {{ held[1].until|localtime }} 自动删除，还没加入我的岗位。保存、做决定或指出不准，都会把它加入我的岗位；保存它的分析不会。<a href="/job-records/postings/{{ mine.id }}">查看记录</a></p>
-    {% elif mine %}
-    <p class="notice">已加入我的岗位：{{ decision_label(mine.decision) }}，保存于 {{ mine.kept_at|localtime }}。<a href="/job-records/postings/{{ mine.id }}">查看记录</a></p>
-    {% endif %}
-  </section>
+  <div class="job-about">
+    <div class="job-about-main">
+      <h2 class="section-title">{{ t("jobx.overview") }}</h2>
+      <dl class="facts">
+        <div><dt>{{ t("job.job_keep.4") }}</dt><dd>{{ place_text(item) }}</dd></div>
+        <div><dt>{{ t("job.job_keep.5") }}</dt><dd>{{ type_text(item) }}</dd></div>
+        <div><dt>{{ t("job.job_keep.6") }}</dt><dd>{{ stated(item.posted_on) }}</dd></div>
+        <div><dt>{{ t("job.job_keep.7") }}</dt><dd>{% if is_result %}{{ deadlines_text(item.deadlines) }}{% else %}{{ stated(item.deadline) }}{% endif %}</dd></div>
+      </dl>
+    </div>
+    <aside class="job-about-side" aria-labelledby="keep-info-title">
+      <h2 class="section-title" id="keep-info-title">{{ t("jobx.job_info") }}</h2>
+      <dl class="facts compact-facts">
+        <div><dt>{{ t("job.job_keep.8") }}</dt><dd>{% for line in check_lines %}{{ line }}{% if not loop.last %}{{ t("job.job_keep.9") }}{% endif %}{% endfor %}</dd></div>
+        <div><dt>{{ t("job.job_keep.10") }}</dt><dd>{{ evidence_label(item.evidence) }} · {{ t("job.job_keep.3", p0=(item.ref.posting_id)) }}</dd></div>
+        {% if is_result %}
+        <div><dt>{{ t("job.job_keep.11") }}</dt><dd class="plain-address">{{ item.url }}{{ SOURCE_SET.link_note }}</dd></div>
+        {% endif %}
+      </dl>
+    </aside>
+  </div>
 
-  {% set hidden = {"source": item.ref.source_id, "posting": item.ref.posting_id, "record": mine.id if mine else "", "revision": mine.revision if mine else ""} %}
-  <section class="review-section" aria-labelledby="decide-title">
-    <h2 id="decide-title">做决定</h2>
-    <p class="hint">收藏、暂缓只是标记，不影响以后的查找。跳过以后，下次查找不再列出这个岗位，指向它的线索也不列出（只按同一来源、同一岗位编号，不影响公司、方向和城市，也不改你的求职偏好）；撤销跳过、改成别的决定或删除这条记录，下次会重新列出。原因和备注只存在本机，不会发给任何服务。</p>
-    {{ jf.decision_forms("/discover/tasks/" ~ task.id ~ "/keep", dict(hidden, action="decide"), mine.decision if mine else None) }}
-    {% if not mine or held %}
-    <form method="post" action="/discover/tasks/{{ task.id }}/keep" class="inline">
-      {{ m.csrf() }}
-      {{ jf.hidden_fields(dict(hidden, action="keep")) }}
-      <button type="submit" class="link-button">只加入我的岗位，先不做决定</button>
-    </form>
-    {% endif %}
+  <section class="review-section keep-decide" aria-labelledby="decide-title">
+    <h2 id="decide-title">{{ t("job.job_keep.17") }}</h2>
+    <p class="hint">{{ t("job.job_keep.18") }}</p>
+    {{ jf.decision_forms("/discover/tasks/" ~ task.id ~ "/keep", dict(hidden, action="decide"), mine.decision if mine else None, reasons_now=(mine.reasons if mine else ()), note_now=(mine.note if mine else "")) }}
   </section>
 
   {% if analysis_keep.allowed %}
   <section class="review-section" aria-labelledby="analysis-title">
-    <h2 id="analysis-title">保存这份分析</h2>
+    <h2 id="analysis-title">{{ t("job.job_keep.20") }}</h2>
     {% if analysis_keep.row and not analysis_keep.row.deleted_at %}
-    <p class="notice">这份分析已保存于 {{ analysis_keep.row.saved_at|localtime }}。<a href="/job-records/analyses/{{ analysis_keep.row.id }}">查看分析</a></p>
+    <p class="notice">{{ t("job.job_keep.21", p0=(analysis_keep.row.saved_at|localtime)) }}{{ t("common.sentence_gap") }}<a href="/job-records/analyses/{{ analysis_keep.row.id }}">{{ t("job.job_keep.22") }}</a></p>
     {% elif analysis_keep.row %}
-    <p class="notice">这份分析保存过，现在在回收站里，可以在<a href="/experiences?tab=trash">回收站</a>恢复；不会再保存一份。</p>
+    <p class="notice">{{ t("job.job_keep.23") }}<a href="/data/trash">{{ t("job.job_keep.24") }}</a>{{ t("job.job_keep.25") }}</p>
     {% elif analysis_keep.purged %}
-    <p class="notice">这份分析保存以后已经永久删除，不能再从这次结果保存。</p>
+    <p class="notice">{{ t("job.job_keep.26") }}</p>
     {% else %}
-    <p class="hint">单独保存这个岗位的分析，不会同时保存岗位、决定或查找摘要。</p>
-    <ul class="points">
-      <li>会存：分类、各条招聘条件的判断和理由、岗位原文引文、所选经历的原话和分析时读的那句话、偏好原话；不存岗位全文和整段经历。</li>
-      <li>依据：{{ analysis_keep.basis|join("；") }}。</li>
-      <li>留多久：留到你删除为止；删除后在回收站留 {{ RESTORE_DAYS }} 天，然后清除。以后经历改了或删了，记录会标出来，不会自动删除，也不会用于新的分析。</li>
-      <li>只存在本机，不发给任何服务。</li>
-    </ul>
+    <p class="hint">{{ t("job.job_keep.27") }}</p>
     <form method="post" action="/discover/tasks/{{ task.id }}/keep" class="inline">
       {{ m.csrf() }}
       {{ jf.hidden_fields({"source": item.ref.source_id, "posting": item.ref.posting_id, "record": "", "revision": "", "action": "analysis"}) }}
-      <button type="submit" class="secondary">保存这份分析</button>
+      <button type="submit" class="secondary">{{ t("job.job_keep.20") }}</button>
     </form>
+    {#- What it keeps, how long and where, one fold away: it stays true, it no longer stands in the way. -#}
+    <details class="fold">
+      {{ m.fold_summary(t("jobx.what_is_kept")) }}
+      <ul class="points">
+        <li>{{ t("job.job_keep.28") }}</li>
+        <li>{{ t("job.job_keep.29") }}{{ list_join(analysis_keep.basis, "clauses") }}{{ t("job.job_keep.30") }}</li>
+        <li>{{ t("job.job_keep.31", p0=(RESTORE_DAYS)) }}</li>
+        <li>{{ t("job.job_keep.32") }}</li>
+      </ul>
+    </details>
     {% endif %}
   </section>
   {% endif %}
 
-  <section class="review-section" aria-labelledby="feedback-title">
-    <h2 id="feedback-title">指出不准</h2>
-    <p class="hint">发现公司、职位、地点、类型、日期、核对结果或链接不对，可以记下来；会同时保存这个岗位。</p>
+  <details class="fold feedback-fold">
+    {{ m.fold_summary(t("job.job_keep.33")) }}
+    <p class="hint">{{ t("job.job_keep.34") }}</p>
     {{ jf.feedback_form("/discover/tasks/" ~ task.id ~ "/keep", dict(hidden, action="feedback")) }}
-  </section>
-
-  <div class="actions">
-    <a href="/discover/tasks/{{ task.id }}">返回结果</a>
-    <a href="/job-records">查看岗位记录</a>
-  </div>
+  </details>
 </main>
 {% endblock %}

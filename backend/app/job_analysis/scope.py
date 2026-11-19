@@ -22,6 +22,7 @@ from app.library.content import CATEGORY_FIELDS, display_title
 from app.library.presentation import field_label
 from app.library.projection import ConfirmedExperience, current_preferences, read_selected_confirmations
 from app.outbound_review import ADDRESS, CONFIDENTIAL, kinds, masked_posting, review
+from app.i18n import list_join, t
 
 # Limits of one task, said on the input page next to what they limit.
 MAX_POSTING_CHARS = 8000
@@ -55,6 +56,11 @@ class TaskInputs:
     use_preferences: bool
     # "<experience id>:<field>" or "preferences:<field>" the user chose to leave out.
     left_out: frozenset[str] = field(default_factory=frozenset)
+    # The language the results are asked for (UI bilingual batch, plan 6.3).
+    result_language: str = "zh-CN"
+    # Where a filled-in posting came from (plan 5.3): "record:<id>" or "supplied:<token>", a reference the server
+    # verifies at the review (the user's own, still there, the very text), never trusted as said.
+    origin: str = ""
 
 
 @dataclass(frozen=True)
@@ -114,40 +120,39 @@ def build_plan(db: Session, owner_id: str, inputs: TaskInputs) -> ScopePlan:
     chosen = inputs.chosen
 
     if not chosen:
-        raise InputProblem("请至少选择一段已确认的经历。", "sources")
+        raise InputProblem(t("job.scope.1"), "sources")
 
     if len(chosen) > MAX_EXPERIENCES:
-        raise InputProblem(f"一次最多选择 {MAX_EXPERIENCES} 段经历，现在选了 {len(chosen)} 段。", "sources")
+        raise InputProblem(t("job.scope.2", p0=MAX_EXPERIENCES, p1=len(chosen)), "sources")
 
     if len({item_id for item_id, _ in chosen}) != len(chosen):
-        raise InputProblem("同一段经历只能选择一次，请重新选择。", "sources")
+        raise InputProblem(t("job.scope.3"), "sources")
 
     posting = clean_posting(inputs.posting)
 
     if not posting:
-        raise InputProblem("请粘贴岗位描述。", "posting")
+        raise InputProblem(t("job.scope.4"), "posting")
 
     if len(posting) > MAX_POSTING_CHARS:
         raise InputProblem(
-            f"岗位描述最多 {MAX_POSTING_CHARS} 字，现在是 {len(posting)} 字。请删去和岗位无关的部分后再核对。",
+            t("job.scope.5", p0=MAX_POSTING_CHARS, p1=len(posting)),
             "posting",
         )
 
     if any(unicodedata.category(ch) == "Cc" and ch not in "\n\t" for ch in posting):
-        raise InputProblem("岗位描述里有无法处理的控制字符，请重新粘贴纯文本。", "posting")
+        raise InputProblem(t("job.scope.6"), "posting")
 
     masked, hidden, stopping = masked_posting(posting)
 
     if stopping:
         reasons = {
-            ADDRESS: "有像是详细地址的内容（例如“家庭地址”“××路 88 号”“3栋502”），"
-            "自动遮盖分不清地址到哪里结束",
-            CONFIDENTIAL: "有“内部资料”“机密”“不得外传”等字样，像是不公开的内容",
+            ADDRESS: t("job.scope.7"),
+            CONFIDENTIAL: t("job.scope.8"),
         }
 
         raise InputProblem(
-            "岗位描述里" + "；还".join(reasons[kind] for kind in stopping)
-            + "，所以没有生成发送预览，什么都没有发送。请删去这部分后再核对。",
+            t("job.scope.9") + list_join((reasons[kind] for kind in stopping), "clauses_also")
+            + t("job.scope.11"),
             "posting",
         )
 
@@ -155,8 +160,7 @@ def build_plan(db: Session, owner_id: str, inputs: TaskInputs) -> ScopePlan:
 
     if problems:
         raise InputProblem(
-            f"你选择的经历里有 {len(problems)} 段已经修改、重新确认或删除，不能按原来的版本使用。"
-            "下面已按当前内容刷新，请重新选择。",
+            t("job.scope.12", p0=len(problems)),
             "sources",
         )
 
@@ -165,8 +169,7 @@ def build_plan(db: Session, owner_id: str, inputs: TaskInputs) -> ScopePlan:
     for source in sources:
         if not source.sent:
             raise InputProblem(
-                f"“{source.title}”没有可以发送的栏目（都被排除或含有疑似敏感信息）。"
-                "请取消选择它，或修改这段经历后重新确认。",
+                t("job.scope.13", p0=source.title),
                 "sources",
             )
 
@@ -177,7 +180,7 @@ def build_plan(db: Session, owner_id: str, inputs: TaskInputs) -> ScopePlan:
 
     if outbound > MAX_OUTBOUND_CHARS:
         raise InputProblem(
-            f"这次要发送的内容共 {outbound} 字，超过了 {MAX_OUTBOUND_CHARS} 字的上限。请少选几段经历，或排除一些栏目。",
+            t("job.scope.14", p0=outbound, p1=MAX_OUTBOUND_CHARS),
             "sources",
         )
 
@@ -232,7 +235,9 @@ def preference_plans(db: Session, owner_id: str, left_out: frozenset[str]) -> tu
     return tuple(plans)
 
 
-def build_request(owner_id: str, plan: ScopePlan, recipient: Recipient, notice_version: str) -> AnalysisRequest:
+def build_request(
+    owner_id: str, plan: ScopePlan, recipient: Recipient, notice_version: str, result_language: str = "zh-CN"
+) -> AnalysisRequest:
     """The analysis request of exactly what the review shows as going out."""
     return AnalysisRequest(
         owner_id=owner_id,
@@ -243,4 +248,5 @@ def build_request(owner_id: str, plan: ScopePlan, recipient: Recipient, notice_v
         recipient=recipient,
         preferences=tuple(SelectedPreference(item.field, item.text) for item in plan.sent_preferences),
         notice_version=notice_version,
+        result_language=result_language if result_language in ("zh-CN", "en") else "zh-CN",
     )

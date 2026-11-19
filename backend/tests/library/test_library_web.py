@@ -21,7 +21,8 @@ from app.library.models import (
 from app.library.web import PACKAGE_DIR
 from library_helpers import PNG, Browser, all_routes, form_for, forms_in, item_id_from
 
-PUBLIC_ROUTES = {("GET", "/"), ("GET", "/health"), ("GET", "/login"), ("POST", "/login/dev")}
+# The language is the browser's own choice, set from any page, the sign-in page included (UI bilingual batch, 6.1).
+PUBLIC_ROUTES = {("GET", "/"), ("GET", "/health"), ("GET", "/login"), ("POST", "/login/dev"), ("POST", "/language")}
 # Which prepared resource each path parameter is filled with.
 GET_ROUTES = {
     "/experiences": {},
@@ -74,11 +75,27 @@ JOB_ROUTES = {
     ("POST", "/job-analysis/tasks/{task_id}/confirm"),
     ("POST", "/job-analysis/tasks/{task_id}/cancel"),
     ("POST", "/job-analysis/tasks/{task_id}/again"),
+    # Keeping a standalone analysis (UI bilingual batch, 5.3); test_ui_job_connections.py checks it.
+    ("POST", "/job-analysis/tasks/{task_id}/save"),
+}
+# The workspace and 数据管理 (UI bilingual batch, 5.1, 5.6); test_ui_workspace.py and test_ui_data_management.py check
+# their rules.
+WORKSPACE_ROUTES = {
+    ("GET", "/workspace"),
+    ("GET", "/data"),
+    ("GET", "/data/trash"),
+    ("GET", "/data/export"),
+    ("POST", "/data/export/build"),
+    ("GET", "/data/export/result/{token}"),
+    ("GET", "/data/export/download/{token}"),
+    ("POST", "/data/export/cancel/{token}"),
 }
 # The search preview (U3-A3); test_discovery_pages.py checks their access rules.
 DISCOVERY_ROUTES = {
     ("GET", "/discover"),
     ("POST", "/discover/review"),
+    # 开始查找 in one protected post (owner redesign, plan 5.2).
+    ("POST", "/discover/start"),
     ("GET", "/discover/tasks/{task_id}"),
     ("GET", "/discover/tasks/{task_id}/status"),
     ("POST", "/discover/tasks/{task_id}/confirm"),
@@ -118,6 +135,9 @@ JOB_RECORD_ROUTES = {
     ("POST", "/discover/tasks/{task_id}/keep"),
     ("POST", "/discover/tasks/{task_id}/summary"),
     ("GET", "/job-records"),
+    # 查找与分析记录 and 更新岗位 (UI bilingual batch, plan 2 and 5.4).
+    ("GET", "/job-records/history"),
+    ("POST", "/job-records/postings/{record_id}/refresh"),
     ("GET", "/job-records/postings/{record_id}"),
     ("POST", "/job-records/postings/{record_id}/decide"),
     ("POST", "/job-records/postings/{record_id}/feedback"),
@@ -328,6 +348,7 @@ def test_every_route_is_either_public_or_listed_as_protected(app):
         | {("POST", path) for path in POST_ROUTES}
         | {("POST", path) for path in UPLOAD_ROUTES}
         | JOB_ROUTES
+        | WORKSPACE_ROUTES
         | DISCOVERY_ROUTES
         | DIRECTION_ROUTES
         | JOB_RECORD_ROUTES
@@ -344,7 +365,14 @@ def test_static_files_hold_no_user_data_and_are_public(app):
     names = sorted(path.name for path in (PACKAGE_DIR / "static").iterdir())
     anonymous = Browser(app)
 
-    assert names == ["import.js", "job_analysis.js", "leave_guard.js", "library.css", "menu.js", "motion.js", "upload.js"]
+    # Owner redesign: the picker, the preferences editor, the history, the direction cards, the search setup, the
+    # results' list and the add-a-job switch each have a small script of their own.
+    # Owner review (2026-11-18): the count beside the experiences to analyze, and the tabs of a job and of the import
+    # review, each a small script too.
+    assert names == [
+        "directions.js", "discover.js", "history.js", "import.js", "job_analysis.js", "leave_guard.js", "library.css",
+        "menu.js", "months.js", "motion.js", "picks.js", "preferences.js", "results.js", "supply.js", "tabs.js", "upload.js",
+    ]
 
     for name in names:
         assert anonymous.get(f"/static/{name}").status_code == 200
@@ -521,8 +549,9 @@ def test_one_sentence_saves_as_a_draft_that_is_not_yet_confirmed(browser_a):
     assert "已保存（待核对）" in page
     assert "保存不等于确认" in page
     assert "确认这些内容属实" in page
-    # Every empty field is named, once, in the reading page's merged line.
-    assert "尚未填写：标题、场景或组织、我的角色、时间、结果与产出、收获与反思、相关资料。" in page
+    # Every empty field is named, once, in the reading page's merged line; since the UI bilingual batch the older split
+    # fields are never asked for, the sentence being the experience details (plan 5.2).
+    assert "尚未填写：标题、场景或组织、我的角色、时间、相关资料。" in page
 
 
 def test_an_empty_form_is_refused_with_a_chinese_hint(browser_a):
@@ -624,11 +653,12 @@ def test_editing_a_confirmed_experience_warns_and_returns_it_to_review(browser_a
     item_id = browser_a.create(actions="确认过的内容")
     browser_a.submit(f"/experiences/{item_id}", f"/experiences/{item_id}/confirm")
     edit_page = browser_a.get(f"/experiences/{item_id}/edit").text
-    browser_a.submit(f"/experiences/{item_id}/edit", f"/experiences/{item_id}/draft", actions="改过的内容")
+    browser_a.submit(f"/experiences/{item_id}/edit", f"/experiences/{item_id}/draft", body="改过的内容")
     detail = browser_a.get(f"/experiences/{item_id}").text
 
-    assert "保存修改后会变成“已修改，待核对”" in edit_page
-    assert "已修改，待核对" in detail
+    # The state is named 修改后待核对 since the UI bilingual batch (plan 7).
+    assert "保存修改后会变成“修改后待核对”" in edit_page
+    assert "修改后待核对" in detail
     assert "不再代表当前事实" in detail
 
 
@@ -730,15 +760,15 @@ def test_saving_from_the_leave_dialog_continues_the_interrupted_search(browser_a
 def test_a_save_that_fails_or_conflicts_never_continues_to_the_search(browser_a):
     item_id = browser_a.create(actions="原来的内容")
     edit, draft = f"/experiences/{item_id}/edit", f"/experiences/{item_id}/draft"
-    refused = browser_a.submit(edit, draft, actions="  ", next=SEARCH_TARGET)
+    refused = browser_a.submit(edit, draft, body="  ", next=SEARCH_TARGET)
 
     # Shown again with its error; the search waits for the save that succeeds.
     assert refused.status_code == 422 and "location" not in refused.headers
     assert form_for(refused.text, draft).fields["next"] == SEARCH_TARGET
 
     stale = browser_a.form(edit, draft)
-    assert browser_a.submit(edit, draft, actions="另一个标签页先保存的").status_code == 303
-    clash = browser_a.post(draft, {**stale.fields, "actions": "我在这页写的", "next": SEARCH_TARGET})
+    assert browser_a.submit(edit, draft, body="另一个标签页先保存的").status_code == 303
+    clash = browser_a.post(draft, {**stale.fields, "body": "我在这页写的", "next": SEARCH_TARGET})
 
     assert clash.status_code == 409 and "location" not in clash.headers
     assert "我在这页写的" in clash.text
@@ -747,10 +777,12 @@ def test_a_save_that_fails_or_conflicts_never_continues_to_the_search(browser_a)
 def test_search_forms_never_put_the_page_token_into_an_address(browser_a):
     item_id = browser_a.create(title="有侧栏的页面")
 
+    # The search lives on the list since the UI bilingual batch (plan 3): a reading or editing page is one column.
+    assert [form for form in forms_in(browser_a.get("/experiences").text) if form.method.lower() == "get"]
+
     for page in ("/experiences", f"/experiences/{item_id}", f"/experiences/{item_id}/edit", "/experiences/new"):
         searches = [form for form in forms_in(browser_a.get(page).text) if form.method.lower() == "get"]
 
-        assert searches, page
         assert all("csrf_token" not in form.fields for form in searches), page
 
 
@@ -917,8 +949,8 @@ def test_full_flow_from_one_sentence_to_deletion_and_export(browser_a):
     confirmed = browser_a.submit(detail, f"{detail}/confirm")
     assert "已确认属实" in browser_a.get(confirmed.headers["location"]).text
 
-    browser_a.submit(f"{detail}/edit", f"{detail}/draft", outcome="还没上线，先停在原型")
-    assert "已修改，待核对" in browser_a.get(detail).text
+    browser_a.submit(f"{detail}/edit", f"{detail}/draft", body="和同学做了一个记账小程序。还没上线，先停在原型")
+    assert "修改后待核对" in browser_a.get(detail).text
 
     history = browser_a.get(f"{detail}/history").text
     version_links = sorted(set(re.findall(rf"{detail}/versions/[0-9a-f-]{{36}}(?=\")", history)))

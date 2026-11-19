@@ -30,7 +30,8 @@ from test_direction_records import direction, quote, trusted
 from test_discovery_pages import CHOSEN, PROJECT, checked, inline, search_of, searches, stored
 
 BASE = "/discover"
-RECORDS = "/directions/records"
+# The decisions, and the hand-over of the kept ones, are the records page's second tab (owner redesign, plan 4.3).
+RECORDS = "/directions/records?tab=decisions"
 PREFERENCES = dict(
     cities_ideal="北京",
     job_types_ideal="实习",
@@ -115,8 +116,12 @@ def entered(browser, path=BASE, **changes) -> dict:
     page = browser.get(path).text
     data = {"csrf_token": browser.csrf_token(), **CHOSEN}
 
-    for name in ("city", "job_type", "direction", "kept"):
-        data[name] = checked(page, name)
+    # The setup page names each dimension's chosen values {dimension}_pick (owner redesign, plan 5.1); the older
+    # review route these tests post to reads them by the dimension's own name.
+    for name in ("city", "job_type", "direction"):
+        data[name] = checked(page, f"{name}_pick")
+
+    data["kept"] = checked(page, "kept")
 
     data.update(changes)
 
@@ -211,7 +216,9 @@ def test_handing_over_ticks_what_was_chosen_offers_the_rest_and_writes_or_starts
     # Opened directly, every usable kept direction is offered and none is ticked for the user.
     assert sorted(offered_kept(direct)) == sorted([ref(chosen), ref(other)]) and checked(direct, "kept") == []
     assert sorted(offered_kept(handed)) == sorted([ref(chosen), ref(other)]) and checked(handed, "kept") == [ref(chosen)]
-    assert "保留的方向（来自探索记录，只用于这次查找，不改求职偏好）" in text_of(handed)
+    # Each kept direction is a chip beside the directions, marked as kept (owner redesign, plan 5.1: the long label
+    # is gone; it is still only this search's and never changes the preferences, as checked below).
+    assert re.search(r'name="kept" value="[^"]+" checked><span>.*?商业分析<span class="value-note">保留</span>', handed, re.S)
     assert '<a href="/directions">方向还不确定？先去探索方向</a>' in handed
 
     with database_of(app).transaction() as db:

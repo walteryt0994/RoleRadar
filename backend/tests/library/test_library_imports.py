@@ -146,7 +146,7 @@ def form_fields(browser) -> dict:
     """The import form's own fields (CSRF token, one-time key), as the page has them."""
     form = browser.form("/imports", "/imports")
 
-    return {name: value for name, value in form.fields.items() if name not in ("file", "text", "consent")}
+    return {name: value for name, value in form.fields.items() if name not in ("file", "text", "consent", "mode")}
 
 
 def send(browser, *, file=NO_FILE, text: str = "", consent: bool = True, fields: dict | None = None):
@@ -468,7 +468,8 @@ def test_a_pdf_import_is_read_and_shown_as_it_was_found(app, browser_a, clock):
 
     assert page.status_code == 200
     assert "已暂存，没有加入经历库。" in page.text
-    assert "文字已读取" in page.text and "还没有加入经历库" in page.text
+    # Owner redesign (plan 3.4): the state is said; the long note on what reading does is gone.
+    assert "文字已读取" in page.text and "还没有加入经历库，也不会自动加入" not in page.text
     assert "第 1 页" in page.text and "第 2 页" in page.text
     assert all(line in page.text for line in RESUME_LINES)
     assert row.state == ImportState.READ and row.source == "pdf" and row.filename == "合成简历.pdf"
@@ -653,7 +654,7 @@ def test_a_refusal_at_the_limit_gives_back_the_typed_text_with_its_guard(app, br
     assert both.status_code == 422 and f"{typed}</textarea>" in both.text
 
     # The limit still holds for the form the refusal shows ...
-    again = {name: value for name, value in form_for(page, "/imports").fields.items() if name not in ("file", "text", "consent")}
+    again = {name: value for name, value in form_for(page, "/imports").fields.items() if name not in ("file", "text", "consent", "mode")}
     assert send(browser_a, text=typed, fields=again).status_code == 409
     assert len(all_rows(app)) == MAX_OPEN_IMPORTS
 
@@ -1018,13 +1019,16 @@ def test_imports_need_a_session_and_its_token(app, browser_a, browser_b):
 
 def test_the_import_page_asks_for_consent_and_guards_unsaved_input(app, browser_a):
     page = browser_a.get("/imports").text
-    subnav = page[page.index('<nav class="subnav"'): page.index("</nav>", page.index('<nav class="subnav"'))]
+    subnav = page[page.index('<nav class="tabs"'): page.index("</nav>", page.index('<nav class="tabs"'))]
 
     assert '<a href="/imports" aria-current="page">导入简历</a>' in subnav
     assert 'enctype="multipart/form-data"' in page and "data-leave-guard" in page and 'id="leave-dialog"' in page
-    assert 'name="consent" value="yes" required' in page and "最多 7 天" in page and "不会发给外部 AI" in page
+    # Owner redesign (plan 3.4): one line on how long it is kept, the consent unticked; no line on outside AI.
+    assert 'name="consent" value="yes" required' in page and "文件和文字暂存最多 7 天，到期自动删除且不可恢复。" in page
+    assert "不会发给外部 AI" not in page
     assert f'maxlength="{MAX_TEXT_CHARS}"' in page and 'accept=".pdf,.docx"' in page
-    assert page.index('name="file"') < page.index('name="text"') < page.index('name="consent"')
+    # The way chosen comes first, then the file, the text and the consent (the order the server reads them in).
+    assert page.index('name="mode"') < page.index('name="file"') < page.index('name="text"') < page.index('name="consent"')
     assert '<script src="/static/leave_guard.js"></script>' in page and '<script src="/static/import.js"></script>' in page
 
 
@@ -1041,7 +1045,8 @@ def test_the_list_shows_each_import_with_its_deadline(app, browser_a, clock):
 def test_no_page_offers_what_is_not_built_yet(app, browser_a):
     import_id = import_id_from(send(browser_a, file=PDF_FILE))
     page = browser_a.get(f"/imports/{import_id}").text
-    posts = re.findall(r'<form method="post" action="([^"]+)"', page)
+    # (The shell's own language switch is on every page since the UI bilingual batch.)
+    posts = list(dict.fromkeys(action for action in re.findall(r'<form method="post" action="([^"]+)"', page) if action != "/language"))
 
     # Since U2-B2a the page offers asking for candidates, since U2-B3a saving the import as a draft.
     assert posts == ["/logout", f"/imports/{import_id}/structure", f"/imports/{import_id}/save"]

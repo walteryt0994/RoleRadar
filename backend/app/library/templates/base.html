@@ -1,87 +1,145 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="{{ html_lang() }}" data-ui-text="{{ ui_text()|tojson|forceescape }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}经历库{% endblock %} · RoleRadar 本地开发版</title>
+  <title>{% block title %}{{ t("nav.experiences") }}{% endblock %} · {{ t("app.title_suffix") }}</title>
   <link rel="stylesheet" href="/static/library.css">
   <script src="/static/motion.js"></script>
   <script src="/static/menu.js" defer></script>
 </head>
 <body>
+  {#- Where the page belongs: one area of the side bar and one of its parts (plan 2). Pages set area and section;
+      the older names of a few parts are read as their new places. -#}
   {% set section = section|default("library") %}
   {% set area = area|default("profile") %}
+  {% if section == "trash" %}{% set area = "data" %}{% endif %}
+  {% if section == "job_records" %}{% set section = "my_jobs" %}{% endif %}
+  {% if area == "jobs" and section not in ("discover", "my_jobs", "history") %}{% set section = "my_jobs" %}{% endif %}
   {% import "_icons.html" as i %}
   <div class="backdrop" aria-hidden="true"><div class="backdrop-layer" data-parallax></div></div>
-  <a class="skip-link" href="#main" data-skip-leave-guard>跳到正文</a>
-  <div class="dev-banner">本地开发模式：只用合成资料。这里的“进入”不是真实登录，请不要填写真实个人信息。</div>
-  {% if clock_note %}
-  <div class="dev-banner clock">{{ clock_note }}</div>
+  <a class="skip-link" href="#main" data-skip-leave-guard>{{ t("app.skip_to_main") }}</a>
+  {#- What this local build is, said on every page: at the top of the page column, beside the side bar. -#}
+  {% macro dev_banners() -%}
+  <div class="dev-banner">{{ t("app.dev_banner") }}</div>
+  {% if clock_days %}
+  <div class="dev-banner clock">{{ t("app.clock_note", days=clock_days) }}</div>
   {% endif %}
-  {% if simulation_note %}
-  <div class="dev-banner clock">{{ simulation_note }}</div>
+  {% if simulation_seconds %}
+  <div class="dev-banner clock">{{ t("app.simulation_note", seconds=simulation_seconds) }}</div>
   {% endif %}
-  <header class="topbar">
-    <a class="brand" href="/experiences"><span class="brand-mark">{{ i.icon("radar") }}</span>RoleRadar</a>
+  {%- endmacro %}
+
+  {#- The first-level places, drawn twice from one list: in the side bar (wide screens) and in the menu (narrow ones).
+      Only one of the two is ever displayed. -#}
+  {% macro primary_links() -%}
+  <a class="nav-item" href="/workspace"{% if area == "workspace" %} aria-current="page"{% endif %}>{{ i.icon("house") }}<span>{{ t("nav.workspace") }}</span></a>
+  <a class="nav-item" href="/experiences"{% if area == "profile" %} aria-current="true"{% endif %}>{{ i.icon("user") }}<span>{{ t("nav.profile") }}</span></a>
+  <a class="nav-item" href="/directions"{% if area == "directions" %} aria-current="true"{% endif %}>{{ i.icon("compass") }}<span>{{ t("nav.directions") }}</span></a>
+  <a class="nav-item" href="/discover"{% if area == "jobs" %} aria-current="true"{% endif %}>{{ i.icon("briefcase") }}<span>{{ t("nav.jobs") }}</span></a>
+  {%- endmacro %}
+  {% macro data_link() -%}
+  <a class="nav-item" href="/data"{% if area == "data" %} aria-current="true"{% endif %}>{{ i.icon("database") }}<span>{{ t("nav.data") }}</span></a>
+  {%- endmacro %}
+  {% macro language_form(label_id) -%}
+  <form method="post" action="/language" class="language-form" data-language-form aria-labelledby="{{ label_id }}">
+    <p class="menu-label" id="{{ label_id }}">{{ t("lang.menu") }}</p>
+    <input type="hidden" name="next" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
+    {% for code in LANGUAGES %}
+    <button type="submit" name="lang" value="{{ code }}" lang="{{ code }}" class="menu-choice"{% if code == html_lang() %} aria-pressed="true"{% else %} aria-pressed="false"{% endif %}>{{ LANGUAGE_NAMES[code] }}</button>
+    {% endfor %}
+  </form>
+  {%- endmacro %}
+  {% macro logout_form() -%}
+  <form method="post" action="/logout" class="inline" data-logout>
+    <input type="hidden" name="csrf_token" value="{{ user.csrf_token }}">
+    <button type="submit" class="menu-choice">{{ t("app.logout") }}</button>
+  </form>
+  {%- endmacro %}
+
+  <div class="shell{% if user %} has-sidebar{% endif %}">
     {% if user %}
-    <nav class="nav" aria-label="主要导航">
-      <a href="/experiences"{% if area == "profile" %} aria-current="true"{% endif %}>我的资料</a>
-      <a href="/directions"{% if area == "directions" %} aria-current="true"{% endif %}>方向探索</a>
-      <a href="/job-analysis"{% if area == "jobs" %} aria-current="true"{% endif %}>岗位机会</a>
-    </nav>
-    <div class="who">
-      <span>当前：{{ user.label }}</span>
-      <form method="post" action="/logout" class="inline" data-logout>
-        <input type="hidden" name="csrf_token" value="{{ user.csrf_token }}">
-        <button type="submit" class="link-button">退出</button>
-      </form>
+    <aside class="sidebar" aria-label="{{ t('app.main_navigation') }}">
+      <a class="brand" href="/workspace"><span class="brand-mark">{{ i.icon("radar") }}</span>RoleRadar</a>
+      <nav class="primary-nav" aria-label="{{ t('app.main_navigation') }}">
+        {{ primary_links() }}
+      </nav>
+      <div class="sidebar-foot">
+        <nav class="primary-nav" aria-label="{{ t('nav.data') }}">
+          {{ data_link() }}
+        </nav>
+        <details class="user-menu" data-menu>
+          <summary aria-label="{{ t('app.user_menu') }}{{ t('common.colon') }}{{ user.label }}">{{ i.icon("user") }}<span class="user-name">{{ user.label }}</span><span class="chevron">{{ i.icon("chevron-down") }}</span></summary>
+          <div class="menu-panel">
+            {{ language_form("lang-label-side") }}
+            {{ logout_form() }}
+          </div>
+        </details>
+      </div>
+    </aside>
+    <header class="mobilebar">
+      <a class="brand" href="/workspace"><span class="brand-mark">{{ i.icon("radar") }}</span>RoleRadar</a>
+      <details class="site-menu" data-menu>
+        <summary>{{ i.icon("menu") }}<span>{{ t("app.menu") }}</span></summary>
+        <div class="menu-panel">
+          <nav class="primary-nav" aria-label="{{ t('app.main_navigation') }}">
+            {{ primary_links() }}
+            {{ data_link() }}
+          </nav>
+          <p class="menu-user">{{ t("app.signed_in_as", user=user.label) }}</p>
+          {{ language_form("lang-label-menu") }}
+          {{ logout_form() }}
+        </div>
+      </details>
+    </header>
+    {% else %}
+    {{ dev_banners() }}
+    <header class="loginbar">
+      <span class="brand"><span class="brand-mark">{{ i.icon("radar") }}</span>RoleRadar</span>
+      <details class="user-menu login-language" data-menu>
+        <summary>{{ t("lang.menu") }}<span class="chevron">{{ i.icon("chevron-down") }}</span></summary>
+        <div class="menu-panel">{{ language_form("lang-label-login") }}</div>
+      </details>
+    </header>
+    {% endif %}
+
+    <div class="content">
+      {% if user %}{{ dev_banners() }}{% endif %}
+      {% if user and area == "profile" %}
+      <nav class="tabs" aria-label="{{ t('app.section_navigation', area=t('nav.profile')) }}">
+        <a href="/experiences"{% if section == "library" %} aria-current="page"{% endif %}>{{ t("nav.experiences") }}</a>
+        <a href="/basic-profile"{% if section == "profile" %} aria-current="page"{% endif %}>{{ t("nav.basic_profile") }}</a>
+        <a href="/job-preferences"{% if section == "preferences" %} aria-current="page"{% endif %}>{{ t("nav.preferences") }}</a>
+        <a href="/imports"{% if section == "imports" %} aria-current="page"{% endif %}>{{ t("nav.imports") }}</a>
+      </nav>
+      {% elif user and area == "directions" %}
+      <nav class="tabs" aria-label="{{ t('app.section_navigation', area=t('nav.directions')) }}">
+        <a href="/directions"{% if section != "records" %} aria-current="page"{% endif %}>{{ t("nav.explore") }}</a>
+        <a href="/directions/records"{% if section == "records" %} aria-current="page"{% endif %}>{{ t("nav.exploration_history") }}</a>
+      </nav>
+      {% elif user and area == "jobs" %}
+      <nav class="tabs" aria-label="{{ t('app.section_navigation', area=t('nav.jobs')) }}">
+        <a href="/discover"{% if section == "discover" %} aria-current="page"{% endif %}>{{ t("nav.discover") }}</a>
+        <a href="/job-records"{% if section == "my_jobs" %} aria-current="page"{% endif %}>{{ t("nav.my_jobs") }}</a>
+        <a href="/job-records/history"{% if section == "history" %} aria-current="page"{% endif %}>{{ t("nav.job_history") }}</a>
+      </nav>
+      {% elif user and area == "data" %}
+      <nav class="tabs" aria-label="{{ t('app.section_navigation', area=t('nav.data')) }}">
+        <a href="/data"{% if section == "overview" %} aria-current="page"{% endif %}>{{ t("nav.data_overview") }}</a>
+        <a href="/data/trash"{% if section == "trash" %} aria-current="page"{% endif %}>{{ t("nav.trash") }}</a>
+        <a href="/data/export"{% if section == "export" %} aria-current="page"{% endif %}>{{ t("nav.export") }}</a>
+      </nav>
+      {% endif %}
+      {% block layout %}
+      <main id="main" class="page" tabindex="-1"{% block main_attrs %}{% endblock %}>
+        {% if notice %}
+        <p class="notice" role="status">{{ notice }}</p>
+        {% endif %}
+        {% block content %}{% endblock %}
+      </main>
+      {% endblock %}
     </div>
-    {% endif %}
-  </header>
-  {% if user and area == "jobs" %}
-  {# The parts of 岗位机会 that exist; later parts get no entry until they do. #}
-  <div class="subbar">
-    <nav class="subnav" aria-label="岗位机会">
-      <a href="/job-analysis"{% if section not in ("discover", "job_records") %} aria-current="page"{% endif %}>岗位分析</a>
-      <a href="/discover"{% if section == "discover" %} aria-current="page"{% endif %}>找岗位</a>
-      <a href="/job-records"{% if section == "job_records" %} aria-current="page"{% endif %}>岗位记录</a>
-    </nav>
   </div>
-  {% elif user and area == "directions" %}
-  {# The parts of 方向探索 (U3-C3a): a new exploration, and what the user kept. #}
-  <div class="subbar">
-    <nav class="subnav" aria-label="方向探索">
-      <a href="/directions"{% if section != "records" %} aria-current="page"{% endif %}>探索方向</a>
-      <a href="/directions/records"{% if section == "records" %} aria-current="page"{% endif %}>探索记录</a>
-    </nav>
-  </div>
-  {% elif user %}
-  {# The parts of 我的资料. The recycle bin and the export are kept in a native
-     disclosure, which opens by click, touch or keyboard, also without JavaScript. #}
-  <div class="subbar">
-    <nav class="subnav" aria-label="我的资料">
-      <a href="/experiences"{% if section == "library" %} aria-current="page"{% endif %}>经历库</a>
-      <a href="/basic-profile"{% if section == "profile" %} aria-current="page"{% endif %}>基本资料</a>
-      <a href="/job-preferences"{% if section == "preferences" %} aria-current="page"{% endif %}>求职偏好</a>
-      <a href="/imports"{% if section == "imports" %} aria-current="page"{% endif %}>导入简历</a>
-    </nav>
-    <details class="manage" data-menu>
-      <summary{% if section == "trash" %} class="is-current"{% endif %}>资料管理<span class="chevron">{{ i.icon("chevron-right") }}</span></summary>
-      <ul class="manage-menu">
-        <li><a href="/experiences?tab=trash"{% if section == "trash" %} aria-current="page"{% endif %}>回收站</a></li>
-        <li><a href="/export/all.zip" download>导出全部资料</a></li>
-      </ul>
-    </details>
-  </div>
-  {% endif %}
-  {% block layout %}
-  <main id="main" class="page" tabindex="-1"{% block main_attrs %}{% endblock %}>
-    {% if notice %}
-    <p class="notice" role="status">{{ notice }}</p>
-    {% endif %}
-    {% block content %}{% endblock %}
-  </main>
-  {% endblock %}
   {% block scripts %}{% endblock %}
 </body>
 </html>

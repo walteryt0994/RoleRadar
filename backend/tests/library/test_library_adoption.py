@@ -33,7 +33,7 @@ from app.library.models import (
 from app.library.resume_rules import structure
 from app.library.service import current_document
 from job_helpers import InlineExecutor, RecordingProvider, confirmed, review, start, task_of, use_provider
-from library_helpers import Browser, form_for, forms_in
+from library_helpers import item_id_from, Browser, form_for, forms_in
 from test_library_candidates import CANARY, ask, library_rows, one, owner_id, paste, rows, rt
 
 # --- helpers ------------------------------------------------------------------
@@ -134,7 +134,13 @@ def work_record(browser, **content) -> str:
         "actions": "整理周报",
         "private_note": "私有备注-合成",
     }
-    item_id = browser.create(**{**fields, **content})
+    # A record of before the UI bilingual batch, in the older split fields: saved by a form without the experience
+    # details (plan 5.2), as an older page sent it.
+    form = browser.form("/experiences/new", "/experiences")
+    older = {name: value for name, value in form.fields.items() if name != "body"}
+    response = browser.post("/experiences", {**older, **fields, **content})
+    assert response.status_code == 303, response.text
+    item_id = item_id_from(response.headers["location"])
     assert browser.submit(f"/experiences/{item_id}", f"/experiences/{item_id}/confirm").status_code == 303
     assert browser.upload(item_id).status_code == 303
 
@@ -158,7 +164,9 @@ def test_a_candidate_becomes_a_new_draft_only_when_chosen(app, browser_a):
     browser_a.submit(edit, edit, role="数据分析实习生（暑期）")
     review_page = browser_a.get(f"/imports/{import_id}/review").text
 
-    assert f'href="{adopt_url(import_id, work.id)}">加入…</a>' in review_page
+    # An experience is added from beside it (owner redesign, plan 3.4, image 11): as a new one, here, or added to one
+    # the user has (none yet); its choice page stays, and nothing is written until a way is chosen.
+    assert f'action="{adopt_url(import_id, work.id)}/new"' in review_page and "新建一条实习/工作/兼职经历" in review_page
     assert f'href="{adopt_url(import_id, one(app, import_id, "skills").id)}">保存为自述技能…</a>' in review_page
     assert adopt_url(import_id, one(app, import_id, "intention").id) not in review_page
     page = browser_a.get(adopt_url(import_id, work.id)).text
@@ -177,6 +185,8 @@ def test_a_candidate_becomes_a_new_draft_only_when_chosen(app, browser_a):
         "actions": "参与搭建销售看板，团队共 4 人\n负责每周的数据清洗\n没有使用 Docker，部署由同事完成",
         "outcome": "",
         "reflection": "",
+        # The experience details field is there, empty: an adoption writes the older fields it names (plan 5.2).
+        "body": "",
     }
     assert [kind for _, kind, *_ in versions(app, made.id)] == ["initial"]
     assert actions_of(app, made.id) == ["created", "adopted_from_import"]
@@ -237,6 +247,7 @@ def test_supplementing_writes_only_the_chosen_fields_and_keeps_the_rest(app, bro
         "actions": "整理周报\n参与搭建销售看板，团队共 4 人\n负责每周的数据清洗\n没有使用 Docker，部署由同事完成",
         "outcome": "",
         "reflection": "",
+        "body": "",
     }
     # The note, the attachment and the history stay; the confirmation no longer stands for the new content.
     assert new.private_note == "私有备注-合成" and new.state == "draft"
@@ -442,7 +453,8 @@ def test_profiles_saved_before_the_new_field_stay_as_they_were(app, browser_a):
     page = browser_a.get("/basic-profile").text
     unchanged = save_profile(browser_a)
 
-    assert "自述技能" in page and "未填写" in page
+    # The reading page shows what is filled in since the UI bilingual batch (P08); the form names every field.
+    assert "自述技能" in browser_a.get("/basic-profile/edit").text
     assert unchanged.headers["location"] == "/basic-profile?notice=profile_unchanged"
     assert (item(app, old.id).revision, versions(app, old.id)) == before
     assert "skills" not in item(app, old.id).content
@@ -763,10 +775,11 @@ def test_provenance_is_a_note_in_the_records_history_without_any_words(app, brow
     write_fields(browser_a, import_id, work.id, target, period="fill")
     adopt_new(browser_a, import_id, project.id)
     (made,) = items(app, "project")
-    history = browser_a.get(f"/experiences/{made.id}/history").text
+    # The activity is its own tab of the history (owner redesign, plan 3.1).
+    history = browser_a.get(f"/experiences/{made.id}/history?tab=events").text
 
     assert "从一次简历导入加入（内容未经核实）" in history
-    assert "用一次简历导入的内容补充了所选栏目（未经核实）" in browser_a.get(f"/experiences/{target}/history").text
+    assert "用一次简历导入的内容补充了所选栏目（未经核实）" in browser_a.get(f"/experiences/{target}/history?tab=events").text
     with rt(app).database.transaction() as db:
         events = list(db.scalars(select(AuditEvent).where(AuditEvent.action.like("%from_import"))))
     assert {(event.item_id, event.object_id) for event in events} == {(target, target), (made.id, made.id)}

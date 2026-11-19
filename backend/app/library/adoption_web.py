@@ -39,10 +39,12 @@ from app.library.adoption import (
     experience_target,
     field_rows,
     into_profile,
+    narrative_in_body,
     supplement,
 )
 from app.library.candidates import CANDIDATE_FIELDS, KIND_LABELS, SKILLS, current_values
-from app.library.content import EXPERIENCE_CATEGORIES, PROFILE, display_title
+from app.library.content import EXPERIENCE_CATEGORIES, PROFILE, display_title, split_fields_in
+from app.library.presentation import label_of
 from app.library.errors import ContentError, NotFound, StorageError
 from app.library.identity import CurrentUser
 from app.library.imports_web import BASE, _labels, gone_page
@@ -50,25 +52,23 @@ from app.library.models import CandidateState
 from app.library.review import compare, open_candidate
 from app.library.service import current_document, list_experiences
 from app.library.web import _expected_revision, checked_form, current_user, message_page, render, runtime, see_other
+from app.i18n import MessageMap, lazy, t
 
 CHOICE_PREFIX = "choice-"
 NEW_PROFILE = "none"
-ACTION_LABELS = {KEEP: "保持不变", FILL: "填入", REPLACE: "换成导入的内容", APPEND: "追加到已有内容后面"}
+ACTION_LABELS = MessageMap({KEEP: "imp.adopt.1", FILL: "imp.adopt.2", REPLACE: "imp.adopt.3", APPEND: "imp.adopt.4"})
 SAVE_FAILED = (
-    "没有写入：写入数据库时出错，这次什么都没有改动，已有资料保持原样。"
-    "你的选择还在下面；可以稍后再提交一次，重试时仍会检查这条候选和要写入的资料是否已被改过。"
+    lazy("imp.adopt.5")
 )
-CHANGED = {
-    "candidate": "没有写入：这条候选在你打开这个页面之后改过（可能是在另一个标签页）。下面是它现在的内容，请核对后再决定。",
+CHANGED = MessageMap({
+    "candidate": "imp.adopt.6",
     "target": (
-        "没有写入：要写入的资料在你打开这个页面之后改过（可能是在另一个标签页）。为了不覆盖，这次什么都没有写入。"
-        "下面是它现在的内容，你刚才的选择还在（已经不适用的除外），请核对后再提交。"
+        "imp.adopt.7"
     ),
     "profile": (
-        "没有写入：你打开这个页面之后，当时的基本资料已经删除，或者删除后又新建了一份。为了不写进另一份资料，这次什么都没有写入。"
-        "下面按现在的情况重新列出，你刚才的选择还在（已经不适用的除外），请核对后再提交。"
+        "imp.adopt.8"
     ),
-}
+})
 
 logger = logging.getLogger("roleradar.library")
 router = APIRouter()
@@ -84,8 +84,8 @@ def _review(import_id: str, candidate_id: str, notice: str) -> Response:
 
 def _refused(request: Request, user: CurrentUser, import_id: str, candidate_id: str, reason: str) -> Response:
     messages = {
-        LEFT_OUT: ("这条已标为不加入", "标为不加入的条目不能加入。需要的话，先在核对页把它恢复为待核对。"),
-        "kind": ("这条不能这样加入", "这类条目不能这样加入。当时的求职意向只供参考，不会写进求职偏好。"),
+        LEFT_OUT: (t("imp.adopt.9"), t("imp.adopt.10")),
+        "kind": (t("imp.adopt.11"), t("imp.adopt.12")),
     }
     title, message = messages.get(reason, messages["kind"])
 
@@ -95,7 +95,7 @@ def _refused(request: Request, user: CurrentUser, import_id: str, candidate_id: 
         message=message,
         status_code=409,
         user=user,
-        links=[(f"{BASE}/{import_id}/review#c-{candidate_id}", "回到核对页")],
+        links=[(f"{BASE}/{import_id}/review#c-{candidate_id}", t("imp.adopt.13"))],
     )
 
 
@@ -190,7 +190,7 @@ def adopt_new(
         if isinstance(problem, AdoptionConflict):
             error, status_code = CHANGED["candidate"], 409
         elif isinstance(problem, ContentError):
-            error, status_code = f"没有加入：{problem.message} 可以先修改这条候选。", 422
+            error, status_code = t("imp.adopt.14", p0=problem.message), 422
         else:
             error, status_code = SAVE_FAILED, 500
 
@@ -260,6 +260,14 @@ def fields_page(
     }
     # Kept choices other than "keep as it is" were sent but not written: the page guards them from the start.
     unsaved = any(action != KEEP for action in kept.values())
+    # An experience written in its experience details that still keeps text in older split fields: shown beside the
+    # experience details row as left unchanged (owner redesign revision R2).
+    content = item.content if item is not None else {}
+    kept_split = (
+        [(label_of(candidate.kind, name), content[name]) for name in split_fields_in(content, candidate.kind)]
+        if narrative_in_body(candidate.kind, content)
+        else []
+    )
 
     return render(
         request,
@@ -275,6 +283,7 @@ def fields_page(
             "target_title": display_title(item.content, item.category) if item is not None else None,
             "expected_target": str(revision) if revision is not None else NEW_PROFILE,
             "rows": rows,
+            "kept_split": kept_split,
             "choices": kept,
             "unsaved_input": unsaved,
             "ACTION_LABELS": ACTION_LABELS,
@@ -292,11 +301,11 @@ def fields_page(
 def _target_gone(request: Request, user: CurrentUser, import_id: str, candidate_id: str) -> Response:
     return message_page(
         request,
-        title="要写入的资料已经不在了",
-        message="选择的经历已经删除、移到回收站，或者不属于这一类，这次什么都没有写入。可以回到这条候选重新选择。",
+        title=t("imp.adopt.15"),
+        message=t("imp.adopt.16"),
         status_code=409,
         user=user,
-        links=[(f"{BASE}/{import_id}/candidates/{candidate_id}/adopt", "重新选择"), (f"{BASE}/{import_id}/review#c-{candidate_id}", "回到核对页")],
+        links=[(f"{BASE}/{import_id}/candidates/{candidate_id}/adopt", t("imp.adopt.17")), (f"{BASE}/{import_id}/review#c-{candidate_id}", t("imp.adopt.13"))],
     )
 
 
@@ -337,7 +346,7 @@ def adopt_fields(
         complete = numeric
 
     if not complete:
-        return message_page(request, title="请求无效", message="这个表单缺少必要的信息，没有写入。", status_code=400, user=user)
+        return message_page(request, title=t("imp.adopt.18"), message=t("imp.adopt.19"), status_code=400, user=user)
 
     try:
         if target == "profile":
@@ -355,26 +364,26 @@ def adopt_fields(
     except NotAdoptable as refused:
         if refused.reason == BAD_CHOICE:
             return message_page(
-                request, title="请求无效", message="提交的选择不是这个页面给出的选项，什么都没有写入。", status_code=400, user=user,
+                request, title=t("imp.adopt.18"), message=t("imp.adopt.20"), status_code=400, user=user,
             )
 
         return _refused(request, user, import_id, candidate_id, refused.reason)
     except NothingChosen:
         return fields_page(
             request, user, import_id, candidate_id, target, choices=choices, status_code=422,
-            error="还没有选择要写入的栏目，所以什么都没有写入。不需要这一条的话，可以回到核对页选择“不加入”。",
+            error=t("imp.adopt.21"),
         )
     except NoChange:
         return fields_page(
             request, user, import_id, candidate_id, target, choices=choices, status_code=409,
-            error="选中的栏目写入后和已有内容完全相同，所以什么都没有写入。",
+            error=t("imp.adopt.22"),
         )
     except AdoptionConflict as conflict:
         return fields_page(request, user, import_id, candidate_id, target, choices=choices, status_code=409, error=CHANGED[conflict.what])
     except ContentError as problem:
         return fields_page(
             request, user, import_id, candidate_id, target, choices=choices, status_code=422,
-            error=f"没有写入：{problem.message}", field_errors=problem.field_errors,
+            error=t("imp.adopt.23", p0=problem.message), field_errors=problem.field_errors,
         )
     except StorageError as problem:
         logger.error("adopting a candidate failed (%s)", type(problem.__cause__).__name__)

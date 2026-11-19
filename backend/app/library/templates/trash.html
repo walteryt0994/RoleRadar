@@ -1,0 +1,224 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% import "_icons.html" as i %}
+{% set area = "data" %}
+{% set section = "trash" %}
+{% block title %}{{ t("nav.trash") }}{% endblock %}
+{% block layout %}
+<main id="main" class="data-page" tabindex="-1">
+  {% if notice %}
+  <p class="notice" role="status">{{ notice }}</p>
+  {% endif %}
+  <header class="page-head">
+    <h1>{{ t("nav.trash") }}</h1>
+    <p class="lede">{{ t("trash.lede", days=RESTORE_DAYS) }}</p>
+  </header>
+  {#- Restoring from here comes back here, saying it was restored (the row is gone; nothing else says so). -#}
+  {% set restore_next = "/data/trash?notice=restored" %}
+  {% if trash.items %}
+  <section class="bin-group" aria-labelledby="bin-library">
+    <h2 id="bin-library">{{ t("trash.group_library") }}</h2>
+    <ul class="bin-rows">
+      <li class="bin-head" aria-hidden="true"><span>{{ t("trash.col_item") }}</span><span>{{ t("trash.col_deleted") }}</span><span>{{ t("trash.col_left") }}</span><span>{{ t("trash.col_actions") }}</span></li>
+      {% for item in trash.items %}
+      <li class="bin-row">
+        <div class="bin-title"><strong>{{ display_title(item.content, item.category) }}</strong>
+        {% if item.category not in DOCUMENT_KINDS %}
+        <span class="trash-category">{{ CATEGORY_LABELS[item.category] }}</span>
+        {% endif %}
+        {% if trash.attachments_with.get(item.id) %}
+        <span class="trash-category">{{ t("trash.with_attachments", n=trash.attachments_with[item.id]) }}</span>
+        {% endif %}
+        {% if trash.explorations_with.get(item.id) %}
+        <span class="trash-category">{{ t("trash.with_explorations", n=trash.explorations_with[item.id]) }}</span>
+        {% endif %}
+        {% if trash.analyses_with.get(item.id) %}
+        <span class="trash-category">{{ t("trash.with_analyses", n=trash.analyses_with[item.id]) }}</span>
+        {% endif %}
+        </div>
+        <span class="bin-when"><span class="bin-label">{{ t("trash.col_deleted") }}</span>{{ item.deleted_at|localtime }}</span>
+        <span class="bin-left"><span class="bin-label">{{ t("trash.col_left") }}</span>{{ format_remaining(item.purge_after, now) }}<span class="muted small">{{ t("trash.restore_before", until=item.purge_after|localtime) }}</span></span>
+        <div class="row-actions bin-actions">
+          <form method="post" action="/experiences/{{ item.id }}/restore" class="inline">
+            {{ m.csrf() }}
+            <input type="hidden" name="expected_revision" value="{{ item.revision }}">
+            <button type="submit" class="secondary small">{{ t("common.restore") }}</button>
+          </form>
+          {% call m.more_menu() %}<a class="menu-link danger-link" href="/experiences/{{ item.id }}/purge">{{ t("lib.purge_ellipsis") }}</a>{% endcall %}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% elif not drafts and not directions and not jobs %}
+  {# A truly empty bin (owner redesign, plan 8.3): an icon and one sentence; nothing to do here. #}
+  <div class="empty-panel">
+    <p class="empty-icon">{{ i.icon("rotate-ccw-clock") }}</p>
+    <p class="empty-sentence">{{ t("trash.empty") }}</p>
+  </div>
+  {% endif %}
+  {% if drafts %}
+  <section class="bin-group" aria-labelledby="bin-drafts">
+    <h2 id="bin-drafts">{{ t("trash.group_drafts") }}</h2>
+    <ul class="bin-rows">
+      <li class="bin-head" aria-hidden="true"><span>{{ t("trash.col_item") }}</span><span>{{ t("trash.col_deleted") }}</span><span>{{ t("trash.col_left") }}</span><span>{{ t("trash.col_actions") }}</span></li>
+      {% for row, draft in drafts %}
+      <li class="bin-row">
+        <div class="bin-title"><strong>{{ row.filename or t("trash.pasted_text") }}</strong>
+        <span class="trash-category">{{ t("trash.kind_draft") }}</span>
+        </div>
+        <span class="bin-when"><span class="bin-label">{{ t("trash.col_deleted") }}</span>{{ draft.deleted_at|localtime }}</span>
+        <span class="bin-left"><span class="bin-label">{{ t("trash.col_left") }}</span>{{ format_remaining(draft.purge_after, now) }}<span class="muted small">{{ t("trash.restore_before", until=draft.purge_after|localtime) }}</span></span>
+        <div class="row-actions bin-actions">
+          <form method="post" action="/imports/{{ row.id }}/restore" class="inline">
+            {{ m.csrf() }}
+            <input type="hidden" name="expected_revision" value="{{ row.revision }}">
+            <button type="submit" class="secondary small">{{ t("common.restore") }}</button>
+          </form>
+          {% call m.more_menu() %}<a class="menu-link danger-link" href="/imports/{{ row.id }}/purge">{{ t("lib.purge_ellipsis") }}</a>{% endcall %}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+  {% if directions %}
+  <section class="bin-group" aria-labelledby="bin-directions">
+    <h2 id="bin-directions">{{ t("trash.group_directions") }}</h2>
+    <ul class="bin-rows">
+      <li class="bin-head" aria-hidden="true"><span>{{ t("trash.col_item") }}</span><span>{{ t("trash.col_deleted") }}</span><span>{{ t("trash.col_left") }}</span><span>{{ t("trash.col_actions") }}</span></li>
+      {% for exploration in directions.explorations %}
+      <li class="bin-row">
+        <div class="bin-title"><strong>{{ list_join(exploration.content.directions|map(attribute="name")) }}</strong>
+        <span class="trash-category">{{ t("trash.kind_exploration") }}</span>
+        </div>
+        <span class="bin-when"><span class="bin-label">{{ t("trash.col_deleted") }}</span>{{ exploration.deleted_at|localtime }}</span>
+        <span class="bin-left"><span class="bin-label">{{ t("trash.col_left") }}</span>{{ format_remaining(exploration.purge_after, now) }}<span class="muted small">{{ t("trash.restore_before", until=exploration.purge_after|localtime) }}</span></span>
+        <div class="row-actions bin-actions">
+          <form method="post" action="/directions/explorations/{{ exploration.id }}/restore" class="inline">
+            {{ m.csrf() }}
+            <input type="hidden" name="expected_revision" value="{{ exploration.revision }}">
+            <input type="hidden" name="next" value="{{ restore_next }}">
+            <button type="submit" class="secondary small">{{ t("common.restore") }}</button>
+          </form>
+          {% call m.more_menu() %}<a class="menu-link danger-link" href="/directions/explorations/{{ exploration.id }}/purge">{{ t("lib.purge_ellipsis") }}</a>{% endcall %}
+        </div>
+      </li>
+      {% endfor %}
+      {% for decision in directions.decisions %}
+      <li class="bin-row">
+        <div class="bin-title"><strong>{{ decision.name }}</strong>
+        <span class="trash-category">{{ t("trash.kind_decision", state=word("decision_state", decision.state)) }}</span>
+        </div>
+        <span class="bin-when"><span class="bin-label">{{ t("trash.col_deleted") }}</span>{{ decision.deleted_at|localtime }}</span>
+        <span class="bin-left"><span class="bin-label">{{ t("trash.col_left") }}</span>{{ format_remaining(decision.purge_after, now) }}<span class="muted small">{{ t("trash.restore_before", until=decision.purge_after|localtime) }}</span></span>
+        <div class="row-actions bin-actions">
+          <form method="post" action="/directions/decisions/{{ decision.id }}/restore" class="inline">
+            {{ m.csrf() }}
+            <input type="hidden" name="expected_revision" value="{{ decision.revision }}">
+            <input type="hidden" name="next" value="{{ restore_next }}">
+            <button type="submit" class="secondary small">{{ t("common.restore") }}</button>
+          </form>
+          {% call m.more_menu() %}<a class="menu-link danger-link" href="/directions/decisions/{{ decision.id }}/purge">{{ t("lib.purge_ellipsis") }}</a>{% endcall %}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+  {% if jobs %}
+  <section class="bin-group" aria-labelledby="bin-jobs">
+    <h2 id="bin-jobs">{{ t("trash.group_jobs") }}</h2>
+    <ul class="bin-rows">
+      <li class="bin-head" aria-hidden="true"><span>{{ t("trash.col_item") }}</span><span>{{ t("trash.col_deleted") }}</span><span>{{ t("trash.col_left") }}</span><span>{{ t("trash.col_actions") }}</span></li>
+      {% for record in jobs.postings %}
+      <li class="bin-row">
+        <div class="bin-title"><strong>{{ record.facts.title }}</strong>
+        <span class="trash-category">{{ t("trash.kind_job", company=record.facts.company) }}</span>
+        </div>
+        <span class="bin-when"><span class="bin-label">{{ t("trash.col_deleted") }}</span>{{ record.deleted_at|localtime }}</span>
+        <span class="bin-left"><span class="bin-label">{{ t("trash.col_left") }}</span>{{ format_remaining(record.purge_after, now) }}<span class="muted small">{{ t("trash.restore_before", until=record.purge_after|localtime) }}</span></span>
+        <div class="row-actions bin-actions">
+          <form method="post" action="/job-records/postings/{{ record.id }}/restore" class="inline">
+            {{ m.csrf() }}
+            <input type="hidden" name="expected_revision" value="{{ record.revision }}">
+            <input type="hidden" name="next" value="{{ restore_next }}">
+            <button type="submit" class="secondary small">{{ t("common.restore") }}</button>
+          </form>
+          {% call m.more_menu() %}<a class="menu-link danger-link" href="/job-records/postings/{{ record.id }}/purge">{{ t("lib.purge_ellipsis") }}</a>{% endcall %}
+        </div>
+      </li>
+      {% endfor %}
+      {% for record in jobs.searches %}
+      <li class="bin-row">
+        <div class="bin-title"><strong>{{ list_join(record.summary.scope.targets) or t("trash.no_target") }}</strong>
+        <span class="trash-category">{{ t("ws.kind_search") }}</span>
+        </div>
+        <span class="bin-when"><span class="bin-label">{{ t("trash.col_deleted") }}</span>{{ record.deleted_at|localtime }}</span>
+        <span class="bin-left"><span class="bin-label">{{ t("trash.col_left") }}</span>{{ format_remaining(record.purge_after, now) }}<span class="muted small">{{ t("trash.restore_before", until=record.purge_after|localtime) }}</span></span>
+        <div class="row-actions bin-actions">
+          <form method="post" action="/job-records/searches/{{ record.id }}/restore" class="inline">
+            {{ m.csrf() }}
+            <input type="hidden" name="expected_revision" value="{{ record.revision }}">
+            <input type="hidden" name="next" value="{{ restore_next }}">
+            <button type="submit" class="secondary small">{{ t("common.restore") }}</button>
+          </form>
+          {% call m.more_menu() %}<a class="menu-link danger-link" href="/job-records/searches/{{ record.id }}/purge">{{ t("lib.purge_ellipsis") }}</a>{% endcall %}
+        </div>
+      </li>
+      {% endfor %}
+      {% for record in jobs.analyses %}
+      <li class="bin-row">
+        <div class="bin-title"><strong>{{ record.facts.title }}</strong>
+        <span class="trash-category">{{ t("trash.kind_analysis", company=record.facts.company) }}</span>
+        </div>
+        <span class="bin-when"><span class="bin-label">{{ t("trash.col_deleted") }}</span>{{ record.deleted_at|localtime }}</span>
+        <span class="bin-left"><span class="bin-label">{{ t("trash.col_left") }}</span>{{ format_remaining(record.purge_after, now) }}<span class="muted small">{{ t("trash.restore_before", until=record.purge_after|localtime) }}</span></span>
+        <div class="row-actions bin-actions">
+          <form method="post" action="/job-records/analyses/{{ record.id }}/restore" class="inline">
+            {{ m.csrf() }}
+            <input type="hidden" name="expected_revision" value="{{ record.revision }}">
+            <input type="hidden" name="next" value="{{ restore_next }}">
+            <button type="submit" class="secondary small">{{ t("common.restore") }}</button>
+          </form>
+          {% call m.more_menu() %}<a class="menu-link danger-link" href="/job-records/analyses/{{ record.id }}/purge">{{ t("lib.purge_ellipsis") }}</a>{% endcall %}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+  {% if trash.waiting_cleanups or drafts_waiting or directions.waiting_cleanups or jobs.waiting_cleanups %}
+  <h2>{{ t("trash.waiting") }}</h2>
+  <ul class="status-list">
+    {% for job in trash.waiting_cleanups %}
+    <li>{{ t("trash.waiting_item", what=CLEANUP_NOUNS[job.category], why=(t("trash.you_asked_at", at=job.due_at|localtime) if job.reason == "user_request" else t("trash.expired_at", at=job.due_at|localtime))) }}{% if job.status == "failed" %}{{ t("trash.retrying", n=job.attempts) }}{% endif %}{{ t("common.sentence_end") }}</li>
+    {% endfor %}
+    {% for job in directions.waiting_cleanups %}
+    <li>{{ t("trash.waiting_item", what=(t("trash.one_exploration") if job.target_type == "direction_exploration" else t("trash.one_decision")), why=(t("trash.you_asked_at", at=job.due_at|localtime) if job.reason == "user_request" else t("trash.expired_at", at=job.due_at|localtime))) }}{% if job.status == "failed" %}{{ t("trash.retrying", n=job.attempts) }}{% endif %}{{ t("common.sentence_end") }}</li>
+    {% endfor %}
+    {% if drafts_waiting %}
+    <li>{{ t("trash.drafts_waiting", n=drafts_waiting) }}</li>
+    {% endif %}
+    {% for job in jobs.waiting_cleanups %}
+    <li>{{ t("trash.waiting_item_jobs", what=(t("trash.one_job") if job.target_type == "job_posting" else (t("trash.one_analysis") if job.target_type == "job_analysis" else t("trash.one_search"))), why=(t("trash.you_asked_at", at=job.due_at|localtime) if job.reason == "user_request" else t("trash.expired_at", at=job.due_at|localtime))) }}{% if job.status == "failed" %}{{ t("trash.retrying", n=job.attempts) }}{% endif %}{{ t("common.sentence_end") }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if trash.finished_cleanups or directions.finished_cleanups or jobs.finished_cleanups %}
+  <h2>{{ t("trash.finished") }}</h2>
+  <ul class="status-list">
+    {% for job in jobs.finished_cleanups %}
+    <li>{{ t("trash.finished_item", what=(t("trash.one_job") if job.target_type == "job_posting" else (t("trash.one_analysis") if job.target_type == "job_analysis" else t("trash.one_search"))), why=(t("trash.by_your_request") if job.reason == "user_request" else t("trash.past_deadline")), at=job.completed_at|localtime) }}</li>
+    {% endfor %}
+    {% for job in directions.finished_cleanups %}
+    <li>{{ t("trash.finished_item", what=(t("trash.one_exploration") if job.target_type == "direction_exploration" else t("trash.one_decision")), why=(t("trash.by_your_request") if job.reason == "user_request" else t("trash.past_deadline")), at=job.completed_at|localtime) }}</li>
+    {% endfor %}
+    {% for job in trash.finished_cleanups %}
+    <li>{{ t("trash.finished_record", what=CLEANUP_NOUNS[job.category], why=(t("trash.by_your_request") if job.reason == "user_request" else t("trash.past_deadline")), at=job.completed_at|localtime) }}</li>
+    {% endfor %}
+  </ul>
+  <p class="muted small">{{ t("trash.cleanup_scope") }}</p>
+  {% endif %}
+</main>
+{% endblock %}

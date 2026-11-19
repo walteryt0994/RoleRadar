@@ -88,6 +88,7 @@ from app.library.resume_reader import (
 from app.library.service import new_id, record_event
 from app.library.structuring_runs import StructuringRuns
 from app.library.upload import MULTIPART_OVERHEAD, UNEXPECTED_PART, UploadForm
+from app.i18n import lazy, t
 
 IMPORT_WINDOW = timedelta(days=7)
 MAX_OPEN_IMPORTS = 5
@@ -122,26 +123,25 @@ IMPORT_PDF = FileType(
 )
 IMPORT_DOCX = FileType(
     DOCX_MEDIA,
-    "Word（.docx）",
+    lazy("imp.io.1"),
     b"PK\x03\x04",
     frozenset({DOCX_MEDIA, "application/octet-stream", "application/zip", "application/x-zip-compressed"}),
 )
 IMPORT_FILE_TYPES = {".pdf": IMPORT_PDF, ".docx": IMPORT_DOCX}
 SOURCES = {IMPORT_PDF.media_type: ImportSource.PDF, IMPORT_DOCX.media_type: ImportSource.DOCX}
 
-CHOOSE_AGAIN = "请重新选择文件（浏览器不会自动保留刚才选择的文件），或者改为粘贴文字。"
-NO_NAME = "这个文件没有可用的文件名，没有读取。" + CHOOSE_AGAIN
-UNSUPPORTED = "只能导入文字可读的 PDF 或 Word（.docx）文件，这个文件没有读取。" + CHOOSE_AGAIN
-OLD_WORD = "旧版 Word（.doc）文件不能直接读取。可以在 Word 里另存为 .docx 或 PDF 再导入，或者粘贴文字。"
+CHOOSE_AGAIN = lazy("imp.io.2")
+NO_NAME = lazy("imp.io.3") + CHOOSE_AGAIN
+UNSUPPORTED = lazy("imp.io.4") + CHOOSE_AGAIN
+OLD_WORD = lazy("imp.io.5")
 LOCKED_WORD = (
-    "这个 Word 文件设置了打开密码，或者其实是旧版 .doc 格式，无法读取。"
-    "可以去掉密码后另存为 .docx 再导入，或者粘贴文字。"
+    lazy("imp.io.6")
 )
-TOO_LARGE = "文件超过 10 MB 的上限，没有读取。可以改为粘贴需要的文字。"
-TEXT_TOO_LONG = f"粘贴的文字超过 {MAX_TEXT_CHARS // 10000} 万字的上限，没有暂存。可以只粘贴需要的部分。"
-NO_CONSENT = "请先勾选同意暂存。这次没有读取，也没有保存任何内容。"
-BOTH = "文件和粘贴的文字只能二选一，这次没有读取。粘贴的文字还在下面；如果要用文件，请清空文字后重新选择文件。"
-NOTHING = "请选择一个文件，或者粘贴简历文字。"
+TOO_LARGE = lazy("imp.io.7")
+TEXT_TOO_LONG = lazy("imp.io.8", p0=MAX_TEXT_CHARS // 10000)
+NO_CONSENT = lazy("imp.io.9")
+BOTH = lazy("imp.io.10")
+NOTHING = lazy("imp.io.11")
 
 
 class Stored(StrEnum):
@@ -232,6 +232,8 @@ IMPORT_FORM = UploadForm(
     fields={
         "csrf_token": (200, UNEXPECTED_PART),
         "upload_key": (200, UNEXPECTED_PART),
+        # Which of the two ways the page was switched to (owner redesign, plan 3.4): "file" or "text".
+        "mode": (20, UNEXPECTED_PART),
         "consent": (20, UNEXPECTED_PART),
         "text": (MAX_TEXT_BYTES, TEXT_TOO_LONG),
     },
@@ -1209,15 +1211,15 @@ def locator(segment: dict) -> str:
     kind = segment["kind"]
 
     if kind == "page":
-        return f"第 {segment['number']} 页"
+        return t("loc.page", n=segment["number"])
 
     if kind == "paragraph":
-        return f"第 {segment['number']} 段"
+        return t("loc.paragraph", n=segment["number"])
 
     if kind == "table":
-        return f"表格 {segment['number']}"
+        return t("loc.table", n=segment["number"])
 
-    return "粘贴的文字"
+    return t("loc.pasted")
 
 
 def segment_text(segment: dict) -> str:
@@ -1237,9 +1239,9 @@ def import_text(row: ResumeImport) -> str:
 
     for segment in row.segments or []:
         if segment["kind"] == "page" and segment.get("unreadable"):
-            parts.append(f"=== {locator(segment)}（无法读取） ===")
+            parts.append(t("imp.io.12", p0=locator(segment)))
         elif segment["kind"] == "page" and not segment["text"].strip():
-            parts.append(f"=== {locator(segment)}（没有读到文字） ===")
+            parts.append(t("imp.io.13", p0=locator(segment)))
         elif segment["kind"] in ("page", "table"):
             parts.append(f"=== {locator(segment)} ===\n{segment_text(segment)}")
         else:

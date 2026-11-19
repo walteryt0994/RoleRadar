@@ -33,6 +33,8 @@ from typing import Protocol, runtime_checkable
 
 # Access is defined with the contracts, since a confirmation names it (SourceGrant); it is used from here too.
 from app.discovery.contracts import Access, CheckAnswer, EvidenceLevel, Posting, PostingDetail, PostingRef, SourceGrant
+from app.i18n import t
+from app.library.job_words import REPLAY_MARK, SOURCE_NAMES, source_label  # noqa: F401  (re-exported)
 
 
 class Permission(StrEnum):
@@ -134,8 +136,9 @@ class HeldBack(SourceAnomaly):
     asked of the source in the same search; unlike one, it is never told as an answer of the source."""
 
 
-# What a page says of a request kept back, when its kind has no fixed words of its own.
-NOT_SENT = "发送前停下，没有发出请求"
+# What a page says of a request kept back, when its kind has no fixed words of its own: a key, said in the language
+# of the text it goes into (the request's, or a search's own while it runs; Codex review F3).
+NOT_SENT = "disc.src.not_sent"
 
 
 def failure_text(error: SourceError) -> str:
@@ -146,15 +149,15 @@ def failure_text(error: SourceError) -> str:
         return str(error)
 
     if isinstance(error, HeldBack):
-        return NOT_SENT
+        return t(NOT_SENT)
 
     if isinstance(error, SourceTimeout):
-        return "来源没有在时限内回答"
+        return t("disc.src.timeout")
 
     if isinstance(error, SourceAnomaly):
-        return "来源返回了不符合要求的内容"
+        return t("disc.src.anomaly")
 
-    return "请求没有成功，没有收到回答"
+    return t("disc.src.failed")
 
 
 class Listing(Protocol):
@@ -235,16 +238,16 @@ class Register:
         entry = self._entries.get(source_id)
 
         if entry is None:
-            return "来源没有登记"
+            return t("disc.src.not_registered")
 
         if entry.permission is Permission.PROHIBITED:
-            return f"{entry.name}禁止调用"
+            return t("disc.src.prohibited", name=entry.name)
 
         if entry.permission is not Permission.VERIFIED:
-            return f"{entry.name}未核实，不能调用"
+            return t("disc.src.unverified", name=entry.name)
 
         if source_id not in self._adapters:
-            return f"{entry.name}没有可用的读取方式"
+            return t("disc.src.no_reader", name=entry.name)
 
         return None
 

@@ -97,28 +97,33 @@ def test_my_data_has_three_parts_and_keeps_the_bin_and_the_export_in_a_disclosur
 
     for path in pages:
         page = browser_a.get(path).text
-        top = region(page, '<nav class="nav"', "</nav>")
-        parts = region(page, '<nav class="subnav"', "</nav>")
-        menu = region(page, '<details class="manage" data-menu>', "</details>")
+        top = region(page, '<nav class="primary-nav"', "</nav>")
 
-        assert re.findall(r">([^<>]+)</a>", top) == ["我的资料", "方向探索", "岗位机会"], path
-        assert '<a href="/experiences" aria-current="true">我的资料</a>' in top, path
-        assert re.findall(r'href="([^"]+)"', parts) == ["/experiences", "/basic-profile", "/job-preferences", "/imports"], path
-        assert re.findall(r">([^<>]+)</a>", parts) == ["经历库", "基本资料", "求职偏好", "导入简历"], path
-        # A native disclosure: findable and usable by keyboard and touch, also without JavaScript.
-        assert "<summary" in menu and ">资料管理<" in menu, path
-        assert '<a href="/experiences?tab=trash"' in menu, path
-        # The export is still a real download, offered once on every page.
-        assert '<a href="/export/all.zip" download>导出全部资料</a>' in menu, path
-        assert page.count('href="/export/all.zip"') == 1, path
-        # Who is signed in, and logging out, stay outside the menu.
-        assert "data-logout" not in menu and "当前：" not in menu, path
+        # UI bilingual batch (plan 2): the first-level places, the profile's own parts beside its pages, and 数据管理
+        # (with the bin and the export) in the side bar's foot, reachable from every page.
+        assert re.findall(r"<span>([^<]+)</span></a>", top) == ["工作台", "我的资料", "方向探索", "岗位机会"], path
+        if "tab=trash" not in path:
+            # (The bin is 数据管理's: there, that place is marked instead.)
+            assert re.search(r'href="/experiences" aria-current="true">.*?<span>我的资料</span>', top), path
+        assert 'href="/data"' in page, path
+
+        if "tab=trash" not in path:
+            parts = region(page, '<nav class="tabs"', "</nav>")
+            assert re.findall(r'href="([^"]+)"', parts) == ["/experiences", "/basic-profile", "/job-preferences", "/imports"], path
+            assert re.findall(r">([^<>]+)</a>", parts) == ["经历库", "基本资料", "求职偏好", "导入简历"], path
+
         assert "本地开发模式：只用合成资料" in page, path
         # Later modules get no entry, not even a placeholder.
         assert not any(name in page for name in FUTURE_MODULES), path
 
+    data = browser_a.get("/data").text
+    assert 'href="/data/trash"' in data and 'href="/data/export"' in data
+    # The export is built first and its result shown before any download (plan 5.6); the direct link still works.
+    assert 'action="/data/export/build"' in browser_a.get("/data/export").text
+
     # Signed out, there is nothing of anyone's data to navigate.
-    assert "subnav" not in Browser(app).get("/login").text
+    login = Browser(app).get("/login").text
+    assert 'class="tabs"' not in login and 'class="primary-nav"' not in login
 
 
 def test_the_bin_and_the_export_still_work_from_the_menu(browser_a):
@@ -146,20 +151,21 @@ def test_the_overview_lists_every_category_with_its_real_state(browser_a):
     ).status_code == 303
     page = browser_a.get("/experiences").text
     main = main_of(page)
-    rows = dict(zip(re.findall(r'class="overview-item" href="/experiences/([0-9a-f-]{36})"', main), texts(main, "overview-item")))
+    # The list beside one record (owner redesign, plan 3.1); the state chips count what the list holds.
+    rows = dict(zip(re.findall(r'class="md-item" href="/experiences/([0-9a-f-]{36})"', main), texts(main, "md-item")))
 
     assert '<aside class="library"' not in page
-    assert texts(main, "overview-count") == ["共 6 条"]
+    assert re.search(r'全部<span class="chip-count">6</span>', main)
     assert set(rows) == set(ids.values())
 
     for category, item_id in ids.items():
         assert CATEGORY_LABELS[category] in rows[item_id], category
 
     assert "已确认" in rows[ids["education"]]
-    assert "已修改，待核对" in rows[ids["work"]]
+    assert "修改后待核对" in rows[ids["work"]]
     assert "待核对" in rows[ids["project"]] and "已确认" not in rows[ids["project"]]
-    # A record opens only when chosen: nothing of one is shown on the overview.
-    assert 'class="record-head"' not in page
+    # One record is open beside the list, never more.
+    assert page.count('class="record-head"') == 1
 
 
 def test_the_overview_shows_the_filtered_list_and_tells_the_counts_apart(browser_a):
@@ -170,15 +176,15 @@ def test_the_overview_shows_the_filtered_list_and_tells_the_counts_apart(browser
     words_only = browser_a.get("/experiences?q=数据").text
     nothing = browser_a.get("/experiences?q=不存在的词").text
 
-    assert texts(main_of(filtered), "overview-count") == ["找到 1 条，共 3 条"]
-    assert re.findall(r'class="overview-item" href="([^"]+)"', filtered) == [
+    assert re.search(r'全部<span class="chip-count">1</span>', main_of(filtered))
+    assert re.findall(r'class="md-item" href="([^"]+)"', filtered) == [
         f"/experiences/{data_project}?category=project&amp;q=%E6%95%B0%E6%8D%AE"
     ]
     assert 'value="数据"' in filtered and '<option value="project" selected>' in filtered
-    assert texts(main_of(words_only), "overview-count") == ["找到 2 条，共 3 条"]
-    assert set(re.findall(r'class="overview-item" href="/experiences/([0-9a-f-]{36})', words_only)) == {data_project, data_work}
+    assert re.search(r'全部<span class="chip-count">2</span>', main_of(words_only))
+    assert set(re.findall(r'class="md-item" href="/experiences/([0-9a-f-]{36})', words_only)) == {data_project, data_work}
     # Records but no match: said as such, with a way back to everything; not an empty library.
-    assert "没有符合条件的记录" in nothing and "overview-item" not in nothing
+    assert "没有符合条件的记录" in nothing and "md-item" not in nothing
     assert '<a class="library-clear" href="/experiences">清空筛选</a>' in nothing
     assert "先记下一段经历" not in nothing
 
@@ -195,7 +201,9 @@ def test_names_in_the_overview_are_kept_safe_and_private_notes_stay_out(browser_
     # The whole title is there; only the screen shortens it.
     assert long_title in page
     assert "<script>alert" not in page and "<img src=x" not in page
-    assert "&lt;script&gt;alert(&#34;t&#34;)&lt;/script&gt;" in page and "&lt;img src=x onerror=alert(1)&gt;" in page
+    assert "&lt;script&gt;alert(&#34;t&#34;)&lt;/script&gt;" in page
+    # The record's own text, on its page beside the list, is as safe.
+    assert "&lt;img src=x onerror=alert(1)&gt;" in browser_a.get(f"/experiences/{hostile}").text
     assert f'href="/experiences/{untitled}"' in page and f'href="/experiences/{hostile}"' in page
     assert SENTINEL not in page
     assert "没有符合条件的记录" in browser_a.get("/experiences", params={"q": SENTINEL}).text
@@ -207,8 +215,8 @@ def test_each_user_sees_only_their_own_overview(browser_a, browser_b):
     browser_b.create(title="B 的合成经历", actions="z")
     a_page, b_page = browser_a.get("/experiences").text, browser_b.get("/experiences").text
 
-    assert texts(main_of(a_page), "overview-count") == ["共 2 条"]
-    assert texts(main_of(b_page), "overview-count") == ["共 1 条"]
+    assert re.search(r'全部<span class="chip-count">2</span>', main_of(a_page))
+    assert re.search(r'全部<span class="chip-count">1</span>', main_of(b_page))
     assert "B 的合成经历" not in a_page and "A 的合成经历" not in b_page
 
 
@@ -217,8 +225,8 @@ def test_an_empty_library_invites_the_first_record_once(browser_a):
     main = main_of(page)
 
     assert "先记下一段经历" in main
-    assert re.findall(r'href="([^"]+)"', main) == ["/experiences/new"]
-    assert "overview-count" not in main and "没有符合条件的记录" not in main
+    assert re.findall(r'href="([^"]+)"', main) == ["/experiences/new", "/imports"]
+    assert "chip-count" not in main and "没有符合条件的记录" not in main
 
 
 def test_an_unreadable_list_is_said_to_be_unreadable_not_empty(browser_a, monkeypatch):
@@ -242,11 +250,9 @@ def test_an_unreadable_list_is_said_to_be_unreadable_not_empty(browser_a, monkey
 def test_a_record_opened_from_the_overview_leads_back_to_it_with_its_filter(browser_a):
     item_id = create(browser_a, "project", title="数据项目", actions="清洗数据")
     page = browser_a.get(f"/experiences/{item_id}?category=project&q=数据").text
-    aside = region(page, '<aside class="library"', "</aside>")
 
-    assert '<a class="library-back" href="/experiences?category=project&amp;q=%E6%95%B0%E6%8D%AE">' in aside
-    # The record pages keep their own list on the left, filtered the same way.
-    assert f'href="/experiences/{item_id}?category=project&amp;q=%E6%95%B0%E6%8D%AE" aria-current="page"' in aside
+    # One column since the UI bilingual batch (plan 3): the way back keeps the filter the record was opened from.
+    assert '<a class="library-back" href="/experiences?category=project&amp;q=%E6%95%B0%E6%8D%AE">' in page
 
 
 def test_new_records_of_every_category_can_be_started_from_a_filtered_overview(browser_a):

@@ -515,9 +515,9 @@ def checked_through_the_tools(database, owners, clock, scenario):
     ("scenario", "answered", "statuses", "state_starts"),
     [
         # The case Codex found: closed at its last answer, then no answer; never kept as open.
-        ("closed_then_unanswered", CheckStatus.CLOSED, ["unanswered", "closed"], "状态待确认：最近一次核对"),
-        ("open_then_unanswered", CheckStatus.OPEN, ["unanswered", "open"], "状态待确认：最近一次核对"),
-        ("never_answered", None, ["unanswered"], "状态待确认：最近一次核对"),
+        ("closed_then_unanswered", CheckStatus.CLOSED, ["unanswered", "closed"], "岗位状态待确认：最近一次核对"),
+        ("open_then_unanswered", CheckStatus.OPEN, ["unanswered", "open"], "岗位状态待确认：最近一次核对"),
+        ("never_answered", None, ["unanswered"], "岗位状态待确认：最近一次核对"),
         ("never_checked", None, [], "没有来源核对记录"),
     ],
 )

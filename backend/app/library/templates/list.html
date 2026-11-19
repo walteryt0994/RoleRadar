@@ -1,234 +1,33 @@
 {% extends "workspace.html" %}
 {% import "_macros.html" as m with context %}
 {% import "_icons.html" as i %}
-{% set section = "trash" if tab == "trash" else "library" %}
-{% block title %}{% if tab == "trash" %}回收站{% else %}经历库{% endif %}{% endblock %}
+{% import "_experience_md.html" as x with context %}
+{% set section = "library" %}
+{% set md = True %}
+{% block title %}{{ t("nav.experiences") }}{% endblock %}
 {% block content %}
-{% if tab == "current" %}
-{# The overview: the experiences the address's filter finds (sidebar_items,
-   not the unfiltered whole), each opening its own page with the filter kept.
-   A list that cannot be read says so, and is never shown as an empty library. #}
+{# The library (P01, owner redesign image 04): the experiences the address's filter finds (sidebar_items, not the
+   unfiltered whole), the first of them open beside the list. A list that cannot be read says so, never shown as an
+   empty library. #}
 {% if sidebar_items is none %}
-<header class="overview-head">
-  <h1>经历库</h1>
-  <a class="button primary" href="{{ m.new_record_href() }}">{{ i.icon("plus") }}记录经历</a>
-</header>
+{{ x.head() }}
 {{ m.library_filter() }}
-<p class="overview-unavailable" role="status">经历列表暂时无法显示，请稍后<a href="/experiences{{ filter_suffix }}">重新加载</a>。</p>
+<p class="overview-unavailable" role="status">{{ t("lib.list_unavailable_reload_before") }}<a href="/experiences{{ filter_suffix }}">{{ t("lib.reload") }}</a>{{ t("lib.list_unavailable_reload_after") }}</p>
 {% elif sidebar_total %}
-<header class="overview-head" data-reveal>
-  <h1>经历库</h1>
-  <p class="overview-count">{% if filter_category or filter_query %}找到 {{ sidebar_items|length }} 条，共 {{ sidebar_total }} 条{% else %}共 {{ sidebar_total }} 条{% endif %}</p>
-  <a class="button primary" href="{{ m.new_record_href() }}">{{ i.icon("plus") }}记录经历</a>
-</header>
-{{ m.library_filter() }}
-{% if sidebar_items %}
-<ul class="overview-list" data-reveal>
-  {% for entry in sidebar_items %}
-  <li>
-    <a class="overview-item" href="/experiences/{{ entry.id }}{{ filter_suffix }}">
-      <span class="overview-main">
-        <span class="overview-title">{{ display_title(entry.content, entry.category) }}</span>
-        {% set summary = summary_line(entry.content, entry.category) %}
-        {% if summary %}
-        <span class="overview-summary">{{ summary }}</span>
-        {% endif %}
-      </span>
-      <span class="overview-meta"><span>{{ CATEGORY_LABELS[entry.category] }}</span>{{ m.state_badge(entry) }}</span>
-    </a>
-  </li>
-  {% endfor %}
-</ul>
+{{ x.head() }}
+{{ x.filters() }}
+{{ x.area() }}
 {% else %}
-<p class="overview-empty" role="status">没有符合条件的记录。</p>
-{% endif %}
-{% else %}
-<header class="pane-head" data-reveal>
-  <h1>先记下一段经历</h1>
-  <p class="lede">不用写成简历，也不用一次写完。</p>
+<header class="page-head">
+  <h1>{{ t("nav.experiences") }}</h1>
 </header>
-<div class="actions" data-reveal>
-  <a class="button primary" href="/experiences/new">{{ i.icon("plus") }}记录第一段经历</a>
+<div class="empty-panel">
+  <h2>{{ t("lib.first_heading") }}</h2>
+  <div class="actions">
+    <a class="button primary" href="/experiences/new">{{ i.icon("plus") }}{{ t("lib.add_first") }}</a>
+    <a class="button secondary" href="/imports">{{ i.icon("upload") }}{{ t("nav.imports") }}</a>
+  </div>
 </div>
 {% endif %}
-{% else %}
-<header class="pane-head" data-reveal>
-  <h1>回收站</h1>
-  <p class="lede">回收站里的内容已停止使用，不能编辑、确认或查看历史。删除后 {{ RESTORE_DAYS }} 天内可以恢复；导出全部时会单独列出。</p>
-</header>
-{% if trash.items %}
-<ul class="item-list" data-reveal>
-  {% for item in trash.items %}
-  <li>
-    <strong>{{ display_title(item.content, item.category) }}</strong>
-    {% if item.category not in DOCUMENT_KINDS %}
-    <span class="trash-category">{{ CATEGORY_LABELS[item.category] }}</span>
-    {% endif %}
-    {% if trash.attachments_with.get(item.id) %}
-    <span class="trash-category">连同 {{ trash.attachments_with[item.id] }} 个附件</span>
-    {% endif %}
-    {% if trash.explorations_with.get(item.id) %}
-    <span class="trash-category">连同 {{ trash.explorations_with[item.id] }} 次方向探索</span>
-    {% endif %}
-    {% if trash.analyses_with.get(item.id) %}
-    <span class="trash-category">连同 {{ trash.analyses_with[item.id] }} 份岗位分析</span>
-    {% endif %}
-    <span class="muted small">删除于 {{ item.deleted_at|localtime }}；在 {{ item.purge_after|localtime }} 之前可以恢复（{{ format_remaining(item.purge_after, now) }}）</span>
-    <div class="row-actions">
-      <form method="post" action="/experiences/{{ item.id }}/restore" class="inline">
-        {{ m.csrf() }}
-        <input type="hidden" name="expected_revision" value="{{ item.revision }}">
-        <button type="submit">恢复</button>
-      </form>
-      <a class="danger-link" href="/experiences/{{ item.id }}/purge">永久删除…</a>
-    </div>
-  </li>
-  {% endfor %}
-</ul>
-{% elif not drafts and not directions and not jobs %}
-<p class="empty-state">回收站里没有可以恢复的内容。</p>
-{% endif %}
-{% if drafts %}
-<h2>删除的导入草稿</h2>
-<ul class="item-list">
-  {% for row, draft in drafts %}
-  <li>
-    <strong>{{ row.filename or "粘贴的文字" }}</strong>
-    <span class="trash-category">导入草稿</span>
-    <span class="muted small">删除于 {{ draft.deleted_at|localtime }}；在 {{ draft.purge_after|localtime }} 之前可以恢复（{{ format_remaining(draft.purge_after, now) }}）</span>
-    <div class="row-actions">
-      <form method="post" action="/imports/{{ row.id }}/restore" class="inline">
-        {{ m.csrf() }}
-        <input type="hidden" name="expected_revision" value="{{ row.revision }}">
-        <button type="submit">恢复</button>
-      </form>
-      <a class="danger-link" href="/imports/{{ row.id }}/purge">永久删除…</a>
-    </div>
-  </li>
-  {% endfor %}
-</ul>
-{% endif %}
-{% if directions %}
-<h2>删除的方向探索和决定</h2>
-<ul class="item-list">
-  {% for exploration in directions.explorations %}
-  <li>
-    <strong>{{ exploration.content.directions|map(attribute="name")|join("、") }}</strong>
-    <span class="trash-category">方向探索</span>
-    <span class="muted small">删除于 {{ exploration.deleted_at|localtime }}；在 {{ exploration.purge_after|localtime }} 之前可以恢复（{{ format_remaining(exploration.purge_after, now) }}）</span>
-    <div class="row-actions">
-      <form method="post" action="/directions/explorations/{{ exploration.id }}/restore" class="inline">
-        {{ m.csrf() }}
-        <input type="hidden" name="expected_revision" value="{{ exploration.revision }}">
-        <input type="hidden" name="next" value="/experiences?tab=trash">
-        <button type="submit">恢复</button>
-      </form>
-      <a class="danger-link" href="/directions/explorations/{{ exploration.id }}/purge">永久删除…</a>
-    </div>
-  </li>
-  {% endfor %}
-  {% for decision in directions.decisions %}
-  <li>
-    <strong>{{ decision.name }}</strong>
-    <span class="trash-category">方向决定：{{ {"keep": "保留", "defer": "暂缓", "exclude": "排除"}[decision.state] }}</span>
-    <span class="muted small">删除于 {{ decision.deleted_at|localtime }}；在 {{ decision.purge_after|localtime }} 之前可以恢复（{{ format_remaining(decision.purge_after, now) }}）</span>
-    <div class="row-actions">
-      <form method="post" action="/directions/decisions/{{ decision.id }}/restore" class="inline">
-        {{ m.csrf() }}
-        <input type="hidden" name="expected_revision" value="{{ decision.revision }}">
-        <input type="hidden" name="next" value="/experiences?tab=trash">
-        <button type="submit">恢复</button>
-      </form>
-      <a class="danger-link" href="/directions/decisions/{{ decision.id }}/purge">永久删除…</a>
-    </div>
-  </li>
-  {% endfor %}
-</ul>
-{% endif %}
-{% if jobs %}
-<h2>删除的岗位记录</h2>
-<ul class="item-list">
-  {% for record in jobs.postings %}
-  <li>
-    <strong>{{ record.facts.title }}</strong>
-    <span class="trash-category">岗位记录（{{ record.facts.company }}）</span>
-    <span class="muted small">删除于 {{ record.deleted_at|localtime }}；在 {{ record.purge_after|localtime }} 之前可以恢复（{{ format_remaining(record.purge_after, now) }}）</span>
-    <div class="row-actions">
-      <form method="post" action="/job-records/postings/{{ record.id }}/restore" class="inline">
-        {{ m.csrf() }}
-        <input type="hidden" name="expected_revision" value="{{ record.revision }}">
-        <input type="hidden" name="next" value="/experiences?tab=trash">
-        <button type="submit">恢复</button>
-      </form>
-      <a class="danger-link" href="/job-records/postings/{{ record.id }}/purge">永久删除…</a>
-    </div>
-  </li>
-  {% endfor %}
-  {% for record in jobs.searches %}
-  <li>
-    <strong>{{ record.summary.scope.targets|join("、") or "没有填写岗位名称" }}</strong>
-    <span class="trash-category">查找摘要</span>
-    <span class="muted small">删除于 {{ record.deleted_at|localtime }}；在 {{ record.purge_after|localtime }} 之前可以恢复（{{ format_remaining(record.purge_after, now) }}）</span>
-    <div class="row-actions">
-      <form method="post" action="/job-records/searches/{{ record.id }}/restore" class="inline">
-        {{ m.csrf() }}
-        <input type="hidden" name="expected_revision" value="{{ record.revision }}">
-        <input type="hidden" name="next" value="/experiences?tab=trash">
-        <button type="submit">恢复</button>
-      </form>
-      <a class="danger-link" href="/job-records/searches/{{ record.id }}/purge">永久删除…</a>
-    </div>
-  </li>
-  {% endfor %}
-  {% for record in jobs.analyses %}
-  <li>
-    <strong>{{ record.facts.title }}</strong>
-    <span class="trash-category">岗位分析（{{ record.facts.company }}）</span>
-    <span class="muted small">删除于 {{ record.deleted_at|localtime }}；在 {{ record.purge_after|localtime }} 之前可以恢复（{{ format_remaining(record.purge_after, now) }}）</span>
-    <div class="row-actions">
-      <form method="post" action="/job-records/analyses/{{ record.id }}/restore" class="inline">
-        {{ m.csrf() }}
-        <input type="hidden" name="expected_revision" value="{{ record.revision }}">
-        <input type="hidden" name="next" value="/experiences?tab=trash">
-        <button type="submit">恢复</button>
-      </form>
-      <a class="danger-link" href="/job-records/analyses/{{ record.id }}/purge">永久删除…</a>
-    </div>
-  </li>
-  {% endfor %}
-</ul>
-{% endif %}
-{% if trash.waiting_cleanups or drafts_waiting or directions.waiting_cleanups or jobs.waiting_cleanups %}
-<h2>等待清理</h2>
-<ul class="status-list">
-  {% for job in trash.waiting_cleanups %}
-  <li>{{ CLEANUP_NOUNS[job.category] }}：{% if job.reason == "user_request" %}你已于 {{ job.due_at|localtime }} 申请永久删除{% else %}已于 {{ job.due_at|localtime }} 超过恢复期限{% endif %}。内容已经不能访问或恢复，正在等待清理{% if job.status == "failed" %}；上次清理失败（已尝试 {{ job.attempts }} 次），系统会自动重试{% endif %}。</li>
-  {% endfor %}
-  {% for job in directions.waiting_cleanups %}
-  <li>{% if job.target_type == "direction_exploration" %}一次方向探索{% else %}一条方向决定{% endif %}：{% if job.reason == "user_request" %}你已于 {{ job.due_at|localtime }} 申请永久删除{% else %}已于 {{ job.due_at|localtime }} 超过恢复期限{% endif %}。内容已经不能访问或恢复，正在等待清理{% if job.status == "failed" %}；上次清理失败（已尝试 {{ job.attempts }} 次），系统会自动重试{% endif %}。</li>
-  {% endfor %}
-  {% if drafts_waiting %}
-  <li>导入草稿：{{ drafts_waiting }} 份已经永久删除或超过恢复期限，内容已经不能访问或恢复，正在等待清理，系统会自动重试。</li>
-  {% endif %}
-  {% for job in jobs.waiting_cleanups %}
-  <li>{% if job.target_type == "job_posting" %}一条岗位记录{% elif job.target_type == "job_analysis" %}一份岗位分析{% else %}一份查找摘要{% endif %}：{% if job.reason == "user_request" %}你已于 {{ job.due_at|localtime }} 申请永久删除{% else %}已于 {{ job.due_at|localtime }} 超过恢复期限{% endif %}。内容已经不能访问、恢复或导出，正在等待清理{% if job.status == "failed" %}；上次清理失败（已尝试 {{ job.attempts }} 次），系统会自动重试{% endif %}。</li>
-  {% endfor %}
-</ul>
-{% endif %}
-{% if trash.finished_cleanups or directions.finished_cleanups or jobs.finished_cleanups %}
-<h2>最近完成的清理</h2>
-<ul class="status-list">
-  {% for job in jobs.finished_cleanups %}
-  <li>{% if job.target_type == "job_posting" %}一条岗位记录{% elif job.target_type == "job_analysis" %}一份岗位分析{% else %}一份查找摘要{% endif %}（{% if job.reason == "user_request" %}你申请的永久删除{% else %}超过恢复期限{% endif %}）已于 {{ job.completed_at|localtime }} 清理完成，内容已经删除。</li>
-  {% endfor %}
-  {% for job in directions.finished_cleanups %}
-  <li>{% if job.target_type == "direction_exploration" %}一次方向探索{% else %}一条方向决定{% endif %}（{% if job.reason == "user_request" %}你申请的永久删除{% else %}超过恢复期限{% endif %}）已于 {{ job.completed_at|localtime }} 清理完成，内容已经删除。</li>
-  {% endfor %}
-  {% for job in trash.finished_cleanups %}
-  <li>{{ CLEANUP_NOUNS[job.category] }}（{% if job.reason == "user_request" %}你申请的永久删除{% else %}超过恢复期限{% endif %}）已于 {{ job.completed_at|localtime }} 清理完成：它的内容、全部历史版本，以及附件文件（如有），都已经删除。</li>
-  {% endfor %}
-</ul>
-<p class="muted small">“清理完成”指经历库数据库里的记录和附件目录里的文件已经删除。已经下载的导出文件，以及电脑备份等经历库之外的副本，不在清理范围内。</p>
-{% endif %}
-{% endif %}
 {% endblock %}
+{% block scripts %}<script src="/static/upload.js"></script>{% endblock %}

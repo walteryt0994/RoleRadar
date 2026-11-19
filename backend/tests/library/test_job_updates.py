@@ -181,7 +181,7 @@ def test_what_settles_nothing_is_to_be_confirmed_and_the_last_success_keeps_its_
     assert (latest.status, latest.reason, finished.reading.calls, len(board.calls)) == (status, reason, calls, calls)
     # To be confirmed now, with the time of the last success kept as it was; never closed, never open.
     assert summary.attempted.id == latest.id and summary.succeeded.id == first.id and first.checked_at == succeeded_at
-    assert text.startswith(f"状态待确认：最近一次核对（{iso(clock.now())}）") and f"上次成功核对是 {iso(succeeded_at)}" in text
+    assert text.startswith(f"岗位状态待确认：最近一次核对（{iso(clock.now())}）") and f"最近成功核对：{iso(succeeded_at)}" in text
     assert "明确关闭" not in text.split("上次成功核对")[0]
 
 
@@ -225,7 +225,7 @@ def test_a_searchs_old_checks_merge_without_being_upgraded(database, owners, clo
 
     # A search's "closed" kept no evidence and an old unknown is no success: to be confirmed, never a confirmed close.
     assert old.succeeded is None and old.answered is old.attempted and old.attempted.status == "closed"
-    assert old_text.startswith("状态待确认：") and "不算确认关闭" in old_text and "还没有成功核对过" in old_text
+    assert old_text.startswith("岗位状态待确认：") and "不算确认关闭" in old_text and "还没有成功核对过" in old_text
 
     board = Board()
     run(database, owner, record_id, board, clock)
@@ -235,7 +235,7 @@ def test_a_searchs_old_checks_merge_without_being_upgraded(database, owners, clo
     run(database, owner, record_id, board, clock)
     text = summary_text(summarize(all_checks(database, record_id)), iso)
 
-    assert text.startswith(f"状态待确认：最近一次核对（{iso(clock.now())}）没有得到回答") and f"上次成功核对是 {iso(opened)}" in text
+    assert text.startswith(f"岗位状态待确认：最近一次核对（{iso(clock.now())}）没有得到回答") and f"最近成功核对：{iso(opened)}" in text
 
 
 def test_an_old_open_answer_stays_the_last_success_when_a_new_check_fails(database, owners, clock):
@@ -250,7 +250,7 @@ def test_an_old_open_answer_stays_the_last_success_when_a_new_check_fails(databa
     summary = summarize(all_checks(database, record_id))
 
     assert isinstance(summary.succeeded, JobPostingCheck) and summary.succeeded.checked_at == answered
-    assert f"上次成功核对是 {iso(answered)}，核对时仍公开发布" in summary_text(summary, iso)
+    assert f"最近成功核对：{iso(answered)}，核对时仍公开发布" in summary_text(summary, iso)
 
 
 # --- what changed, and the text ---------------------------------------------------------------------------------------------
@@ -443,7 +443,7 @@ def test_the_export_says_each_check_and_the_status_now(database, owners, clock):
 
     assert [(check["trigger"], check["status"]) for check in entry["rechecks"]] == [("apply", "open"), ("recheck", "unanswered")]
     assert entry["rechecks"][1]["unanswered_at"] and entry["rechecks"][1]["source_answered_at"] is None
-    assert entry["check_state"].startswith("状态待确认：最近一次核对") and "上次成功核对是" in entry["check_state"]
+    assert entry["check_state"].startswith("岗位状态待确认：最近一次核对") and "最近成功核对：" in entry["check_state"]
     assert "申请前核对（来源回答" in readable and "再核对一次（尝试核对" in readable and "共 2 条核对记录" in readable
 
 
@@ -604,7 +604,7 @@ def test_the_deadline_of_the_read_and_the_check_is_said_alike_in_status_facts_ch
         # Two answers that differ: to be confirmed, both said, no date taken for the deadline, no close.
         assert check.reason == "deadline_conflict" and check.evidence is None
         assert change["after"] == {"read": answers["read"], "check": answers["check"]}
-        assert text.startswith("状态待确认") and "截止日期不一致" in text and "已过" not in text
+        assert text.startswith("岗位状态待确认") and "截止日期不一致" in text and "已过" not in text
     else:
         assert change["after"] == settled and text.startswith("核对时仍公开发布")
 

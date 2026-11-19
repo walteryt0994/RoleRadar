@@ -1,30 +1,42 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
+{% import "_icons.html" as i %}
 {% set document = item.category in DOCUMENT_KINDS %}
-{% set noun = KIND_NOUNS[item.category] if document else "这条经历" %}
-{% block title %}保存没有生效{% endblock %}
+{% set noun = KIND_NOUNS[item.category] if document else t("lib.this_experience") %}
+{% block title %}{{ t("conflict.title") }}{% endblock %}
 {% block content %}
-<h1>保存没有生效：{{ noun }}已经有更新的保存</h1>
-<p class="error" role="alert">你打开编辑页之后，{{ noun }}又被保存或改变了状态（可能是在另一个标签页）。为了不覆盖较新的内容，这次保存没有写入。</p>
-<p>下面对照列出你这次提交的内容和当前已保存的内容，有差异的栏目已经标出。请你决定：</p>
+{#- 保存冲突 (owner redesign, plan 8.3, image 18): said at once, with what the user typed kept below and the two ways on;
+    nothing newer is overwritten unless the user saves theirs again. -#}
+<div class="state-card" role="alert">
+  <p class="state-icon">{{ i.icon("triangle-alert") }}</p>
+  <div class="state-body">
+    <h1>{{ t("conflict.heading", noun=noun) }}</h1>
+    <p>{{ t("conflict.explain", noun=noun) }}</p>
+    <div class="actions">
+      <a class="button secondary" href="{{ record_page(item) }}" data-skip-leave-guard>{{ t("conflict.view_latest") }}</a>
+      <a class="button primary" href="#conflict-form">{{ t("conflict.back_to_edit") }}</a>
+    </div>
+  </div>
+</div>
+<p>{{ t("conflict.decide") }}</p>
 <ul>
-  <li>用你的版本保存：在页面下方核对后提交，会以当前最新的保存为基础，换成你的内容；</li>
-  <li>或者<a href="{{ record_page(item) }}" data-skip-leave-guard>放弃你的修改，查看最新内容</a>。</li>
+  <li>{{ t("conflict.use_mine") }}</li>
+  <li>{{ t("conflict.or") }}<a href="{{ record_page(item) }}" data-skip-leave-guard>{{ t("conflict.discard_link") }}</a>{{ t("common.sentence_end") }}</li>
 </ul>
 <div class="compare">
   {% for field in fields %}
   {% set differs = mine[field.name] != theirs[field.name] %}
   <div class="compare-row{% if differs %} differs{% endif %}">
-    <h3>{{ field.label }}{% if differs %} <span class="badge diff">有差异</span>{% endif %}</h3>
+    <h3>{{ label_of(item.category, field.name) }}{% if differs %} <span class="badge diff">{{ t("conflict.differs") }}</span>{% endif %}</h3>
     <div class="compare-cols">
-      <div><span class="muted small">你这次提交的</span><p class="text">{{ mine[field.name] or NOT_FILLED }}</p></div>
-      <div><span class="muted small">当前已保存的</span><p class="text">{{ theirs[field.name] or NOT_FILLED }}</p></div>
+      <div><span class="muted small">{{ t("conflict.mine") }}</span><p class="text">{{ mine[field.name] or NOT_FILLED }}</p></div>
+      <div><span class="muted small">{{ t("conflict.theirs") }}</span><p class="text">{{ theirs[field.name] or NOT_FILLED }}</p></div>
     </div>
   </div>
   {% endfor %}
 </div>
-<h2>用我的版本保存</h2>
-<form method="post" action="{{ action }}" data-leave-guard data-initially-dirty>
+<h2>{{ t("conflict.save_mine_heading") }}</h2>
+<form method="post" action="{{ action }}" id="conflict-form" data-leave-guard data-initially-dirty>
   <input type="hidden" name="csrf_token" value="{{ user.csrf_token }}">
   <input type="hidden" name="expected_revision" value="{{ item.revision }}">
   <input type="hidden" name="next" value="">
@@ -32,7 +44,7 @@
   {% for field in fields %}
   {% set field_id = "c-note" if field.name == NOTE_FIELD.name else "c-" ~ field.name %}
   <div class="field">
-    <label for="{{ field_id }}">{{ field.label }}</label>
+    <label for="{{ field_id }}">{{ label_of(item.category, field.name) }}</label>
     {% if field.multiline %}
     <textarea id="{{ field_id }}" name="{{ field.name }}" rows="3" maxlength="{{ field.max_length }}">{{ mine[field.name] }}</textarea>
     {% else %}
@@ -42,10 +54,10 @@
   {% endfor %}
   <p class="dirty-status" id="dirty-status" aria-live="polite"></p>
   <div class="form-actions">
-    <button type="submit" data-save-button>我已核对差异，用我的版本保存</button>
-    <a href="{{ record_page(item) }}" data-skip-leave-guard>放弃我的修改</a>
+    <button type="submit" data-save-button>{{ t("conflict.save_mine") }}</button>
+    <a href="{{ record_page(item) }}" data-skip-leave-guard>{{ t("conflict.discard_mine") }}</a>
   </div>
 </form>
-{{ m.leave_dialog("保存" if document else "保存草稿") }}
+{{ m.leave_dialog(t("doc.save") if document else t("common.save_draft")) }}
 {% endblock %}
 {% block scripts %}<script src="/static/leave_guard.js"></script>{% endblock %}

@@ -1092,6 +1092,8 @@ def test_a_complete_result_is_saved_only_through_the_c1_entries_and_as_it_was(da
         "notice_version": NOTICE_VERSION,
         "input_fingerprint": outcome.task_fingerprint,
         "generated_at": clock.now(),
+        # UI bilingual batch (plan 6.3): the result language it was made in is kept with it.
+        "result_language": "zh-CN",
     }
     assert {(ref.kind, ref.item_id) for ref in trusted.sources} == {
         (SourceKind.EXPERIENCE, material.project[0]),

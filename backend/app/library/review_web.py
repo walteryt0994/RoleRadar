@@ -33,12 +33,13 @@ from app.library.candidates import (
     parse_edits,
     where,
 )
-from app.library.content import PROFILE, display_title
+from app.library.content import EXPERIENCE_CATEGORIES, PROFILE, display_title
 from app.library.errors import ContentError, NotFound, StorageError
 from app.library.identity import CurrentUser
 from app.library.imports import draft_of, locator, open_import
 from app.library.imports_web import BASE, _labels, gone_page
 from app.library.models import CandidateState, ImportCandidate, StructuringState
+from app.library.service import list_experiences
 from app.library.review import (
     ACTION_LABELS,
     CONFLICTING,
@@ -81,47 +82,48 @@ from app.library.web import (
     runtime,
     see_other,
 )
+from app.i18n import MessageMap, is_english, lazy, list_join, t
+from app.library.presentation import label_of
 
-NOTICES = {
-    "structured": "已整理出待核对的条目。它们还没有加入经历库。",
-    "already_structured": "这次导入已经整理过，这次没有重新整理；你的修改和选择都还在。",
-    "structuring_running": "正在整理，请稍后刷新。",
-    "structuring_dropped": "这次整理的结果没有保存：同一时间另有一次整理。下面是现在的状态。",
-    "structuring_started": "已开始外部整理。请求交给服务之前还会再核对一次；进度显示在下面。",
-    "structuring_cancelled": "已取消，之后不会再发出请求。已经交给外部服务的请求无法撤回，它的回答会被丢弃；有没有发出，以下面的说明为准。",
-    "structuring_too_late": "来不及取消：外部服务的回答已经回来，正在核对和保存。下面是现在的状态。",
-    "structuring_interrupted": "这次整理不是在当前运行的应用里开始的（应用可能重启过），已标为中断，它的结果不会保存。",
-    "structuring_not_running": "这次整理已经不在进行，没有取消任何东西。下面是现在的状态。",
-    "candidate_saved": "已保存你的修改。它只暂存在这次导入里，没有加入经历库。",
-    "candidate_unchanged": "内容没有变化，什么都没有保存。",
-    "candidate_excluded": "已标为不加入，可以随时恢复。",
-    "candidate_restored": "已恢复为待核对。",
-    "candidate_already": "这条已经是这个状态，没有重复更改。",
-    "adopted": "已加入。这条卡片上写着它写进了哪里、写入了哪些栏目；其余条目可以继续核对。",
-    "adopted_already": "这条之前已经加入过，这次没有再写入。",
-}
+NOTICES = MessageMap({
+    "structured": "imp.review.1",
+    "already_structured": "imp.review.2",
+    "structuring_running": "imp.review.3",
+    "structuring_dropped": "imp.review.4",
+    "structuring_started": "imp.review.5",
+    "structuring_cancelled": "imp.review.6",
+    "structuring_too_late": "imp.review.7",
+    "structuring_interrupted": "imp.review.8",
+    "structuring_not_running": "imp.review.9",
+    "candidate_saved": "imp.review.10",
+    "candidate_unchanged": "imp.review.11",
+    "candidate_excluded": "imp.review.12",
+    "candidate_restored": "imp.review.13",
+    "candidate_already": "imp.review.14",
+    "adopted": "imp.review.15",
+    "adopted_already": "imp.review.16",
+})
 ASKED_NOTICES = {
     Asked.STORED: "structured",
     Asked.ALREADY: "already_structured",
     Asked.RUNNING: "structuring_running",
     Asked.DROPPED: "structuring_dropped",
 }
-COMPARISON_LABELS = {NEW: "新增", DUPLICATE: "疑似重复", CONFLICTING: "可能冲突"}
-PROFILE_COMPARISON_LABELS = {
-    NEW: "还没有基本资料",
-    DUPLICATE: "与现有基本资料一致或可补充",
-    CONFLICTING: "与现有基本资料有不同",
-}
-FIELD_STATE_LABELS = {
-    SAME: "相同",
-    CONTAINED: "这里的每一行都是已有内容中的一整行",
-    FILLS: "已有记录这一栏是空的",
-    DIFFERS: "不同",
-}
+COMPARISON_LABELS = MessageMap({NEW: "imp.review.17", DUPLICATE: "imp.review.18", CONFLICTING: "imp.review.19"})
+PROFILE_COMPARISON_LABELS = MessageMap({
+    NEW: "imp.review.20",
+    DUPLICATE: "imp.review.21",
+    CONFLICTING: "imp.review.22",
+})
+FIELD_STATE_LABELS = MessageMap({
+    SAME: "imp.review.23",
+    CONTAINED: "imp.review.24",
+    FILLS: "imp.review.25",
+    DIFFERS: "imp.review.26",
+})
 LEFT_OUT = 409
 SAVE_FAILED = (
-    "没有保存：写入数据库时出错，这次的修改没有生效，已保存的内容保持原样。"
-    "你刚才填写的内容还在下面；可以稍后再点“保存修改”重试，重试时仍会检查这条是否已被改过、标为不加入或到期。"
+    lazy("imp.review.27")
 )
 
 logger = logging.getLogger("roleradar.library")
@@ -181,7 +183,7 @@ def candidate_view(
         fields.append(
             FieldView(
                 name=entry.name,
-                label=entry.label,
+                label=label_of(candidate.kind, entry.name),
                 value=values[entry.name],
                 found=found,
                 edited=entry.name in edits,
@@ -212,7 +214,9 @@ def candidate_view(
     )
 
 
+# How a place with one line reads in each language (candidates.where): "<place>第 N 行" or "<place>, line N".
 LINE = re.compile(r"(.*)第 (\d+) 行")
+LINE_EN = re.compile(r"(.*), line (\d+)")
 
 
 def places_text(places: list[str]) -> str:
@@ -223,8 +227,10 @@ def places_text(places: list[str]) -> str:
     """
     groups: list[tuple[str, list[str]]] = []
 
+    pattern = LINE_EN if is_english() else LINE
+
     for place in dict.fromkeys(places):
-        match = LINE.fullmatch(place)
+        match = pattern.fullmatch(place)
 
         if match and groups and groups[-1][0] == match.group(1) and groups[-1][1]:
             groups[-1][1].append(match.group(2))
@@ -233,9 +239,14 @@ def places_text(places: list[str]) -> str:
         else:
             groups.append((place, []))
 
-    apart = "；" if any(place.endswith(UNSURE) for place in places) else "、"
+    apart = t("imp.review.28") if any(place.endswith(t("loc.unsure")) for place in places) else t("imp.review.29")
 
-    return apart.join(f"{prefix}第 {'、'.join(lines)} 行" if lines else prefix for prefix, lines in groups)
+    return apart.join(
+        (t("loc.grouped_lines", place=prefix, lines=list_join(lines)) if len(lines) > 1 else t("loc.grouped_line", place=prefix, lines=lines[0]))
+        if lines
+        else prefix
+        for prefix, lines in groups
+    )
 
 
 def _title(kind: str, values: dict[str, str]) -> str:
@@ -258,10 +269,10 @@ def _problem_lines(structuring, segments: list) -> list[str]:
     lines = []
 
     for problem in structuring.problems or []:
-        places = "、".join(locator(segments[number - 1]) for number in problem["segments"] if number <= len(segments))
-        kind = f"（{KIND_LABELS[problem['kind']]}）" if problem["kind"] else ""
-        place = f"，出自{places}" if places else ""
-        lines.append(f"第 {problem['position']} 条{kind}{place}：{PROBLEM_TEXTS.get(problem['reason'], '没有通过核对')}。")
+        places = t("imp.review.29").join(locator(segments[number - 1]) for number in problem["segments"] if number <= len(segments))
+        kind = t("imp.review.31", p0=KIND_LABELS[problem['kind']]) if problem["kind"] else ""
+        place = t("imp.review.32", p0=places) if places else ""
+        lines.append(t("imp.review.33", p0=problem['position'], p1=kind, p2=place, p3=PROBLEM_TEXTS.get(problem['reason'], '没有通过核对')))
 
     return lines
 
@@ -281,11 +292,11 @@ def structure(import_id: str, request: Request, user: CurrentUser = Depends(curr
     if asked == Asked.NOT_READ:
         return message_page(
             request,
-            title="没有整理",
-            message="这次导入还没有读到文字，没有可以整理的内容。",
+            title=t("imp.review.34"),
+            message=t("imp.review.35"),
             status_code=409,
             user=user,
-            links=[(f"{BASE}/{import_id}", "回到这次导入")],
+            links=[(f"{BASE}/{import_id}", t("imp.review.36"))],
         )
 
     if asked == Asked.DROPPED:
@@ -317,6 +328,10 @@ def review_page(import_id: str, request: Request, notice: str = "", user: Curren
             candidates = candidates_of(db, user.id, row.id)
             comparisons = compare(db, user.id, candidates)
             adoptions = adoption_views(db, user.id, candidates)
+            # 补充到已有经历 (owner redesign, plan 3.4, image 11): the user's experiences of each kind a candidate here
+            # is, to choose one beside the candidate; the field-by-field choice follows on its own page, as before.
+            kinds = {candidate.kind for candidate in candidates if candidate.kind in EXPERIENCE_CATEGORIES}
+            targets = {kind: list_experiences(db, user.id, category=kind) for kind in kinds}
     except NotFound:
         return gone_page(request, user)
 
@@ -347,7 +362,7 @@ def review_page(import_id: str, request: Request, notice: str = "", user: Curren
             "section": "imports",
             "row": row,
             "draft": draft,
-            "name": row.filename or "粘贴的文字",
+            "name": row.filename or t("imp.review.37"),
             "structuring": structuring,
             "structured_by": structurer_label(structuring.structurer),
             "live_structured": is_live(structuring.structurer),
@@ -364,6 +379,10 @@ def review_page(import_id: str, request: Request, notice: str = "", user: Curren
             "problems": _problem_lines(structuring, segments),
             "groups": [group for group in groups if group[0] not in REFERENCE_KINDS],
             "references": [group for group in groups if group[0] in REFERENCE_KINDS],
+            "targets": targets,
+            "EXPERIENCE_CATEGORIES": EXPERIENCE_CATEGORIES,
+            "KIND_LABELS": KIND_LABELS,
+            "display_title": display_title,
             "counts": {
                 "total": len(views),
                 "pending": sum(1 for view in views if view.state == CandidateState.PENDING),
@@ -379,7 +398,7 @@ def review_page(import_id: str, request: Request, notice: str = "", user: Curren
             "PROFILE_COMPARISON_LABELS": PROFILE_COMPARISON_LABELS,
             "FIELD_STATE_LABELS": FIELD_STATE_LABELS,
             "CANDIDATE_FIELD_LABELS": {
-                kind: {entry.name: entry.label for entry in fields} for kind, fields in CANDIDATE_FIELDS.items()
+                kind: {entry.name: label_of(kind, entry.name) for entry in fields} for kind, fields in CANDIDATE_FIELDS.items()
             },
             "CANDIDATE_STATE_LABELS": STATE_LABELS,
             **_labels(),
@@ -416,7 +435,7 @@ def edit_page(
             "section": "imports",
             "row": row,
             "draft": draft,
-            "name": row.filename or "粘贴的文字",
+            "name": row.filename or t("imp.review.37"),
             "candidate": view,
             "kind_label": KIND_LABELS[candidate.kind],
             "fields": CANDIDATE_FIELDS[candidate.kind],
@@ -445,11 +464,11 @@ def _left_out_page(
     request: Request, user: CurrentUser, import_id: str, candidate_id: str, state: str = CandidateState.EXCLUDED
 ) -> Response:
     if state == CandidateState.ADOPTED:
-        title = "这条已经加入"
-        message = "已经加入的条目不能再修改、标为不加入或恢复；要改内容，请到它写进的那条经历或基本资料里修改。"
+        title = t("imp.review.38")
+        message = t("imp.review.39")
     else:
-        title = "这条已标为不加入"
-        message = "标为不加入的条目不能修改。需要的话，先在核对页把它恢复为待核对。"
+        title = t("imp.review.40")
+        message = t("imp.review.41")
 
     return message_page(
         request,
@@ -457,7 +476,7 @@ def _left_out_page(
         message=message,
         status_code=LEFT_OUT,
         user=user,
-        links=[(f"{BASE}/{import_id}/review#c-{candidate_id}", "回到核对页")],
+        links=[(f"{BASE}/{import_id}/review#c-{candidate_id}", t("imp.review.42"))],
     )
 
 
@@ -516,9 +535,7 @@ def candidate_save(
             request, user, row, candidate, draft=draft, values=values, revision=conflict.candidate.revision,
             saved=conflict.candidate.values, status_code=409,
             error=(
-                "没有保存：这条在你打开这个页面之后被改过（可能是在另一个标签页）。"
-                "输入框里是你刚才填写的内容，还没有保存；和现在已保存的内容不同的栏目下面标出了已保存的内容。"
-                "核对后再保存一次，会用你的内容替换。"
+                t("imp.review.43")
             ),
         )
     except NotEditable as refused:
@@ -557,11 +574,11 @@ def _change_state(request: Request, user: CurrentUser, form: dict, import_id: st
     except CandidateConflict:
         return message_page(
             request,
-            title="没有更改",
-            message="这条在你打开页面之后被改过（可能是在另一个标签页）。为了不覆盖，这次没有更改。请回到核对页看看现在的内容。",
+            title=t("imp.review.44"),
+            message=t("imp.review.45"),
             status_code=409,
             user=user,
-            links=[(f"{BASE}/{import_id}/review#c-{candidate_id}", "回到核对页")],
+            links=[(f"{BASE}/{import_id}/review#c-{candidate_id}", t("imp.review.42"))],
         )
 
     if not changed:
@@ -616,20 +633,20 @@ def download_candidates(import_id: str, request: Request, user: CurrentUser = De
     if record is None:
         return message_page(
             request,
-            title="还没有整理",
-            message="这次导入还没有整理出候选，没有可下载的内容。",
+            title=t("imp.review.46"),
+            message=t("imp.review.47"),
             status_code=409,
             user=user,
-            links=[(f"{BASE}/{import_id}", "回到这次导入")],
+            links=[(f"{BASE}/{import_id}", t("imp.review.36"))],
         )
 
-    stem = (row.filename or "粘贴的文字").rsplit(".", 1)[0] or "导入"
+    stem = (row.filename or t("imp.review.37")).rsplit(".", 1)[0] or t("imp.review.48")
 
     return Response(
-        json.dumps(record, ensure_ascii=False, indent=2).encode("utf-8"),
+        json.dumps(record, ensure_ascii=False, indent=2, default=str).encode("utf-8"),
         media_type="application/json; charset=utf-8",
         headers={
-            "Content-Disposition": content_disposition(f"{stem}（待核对的候选）.json"),
+            "Content-Disposition": content_disposition(t("imp.review.49", p0=stem)),
             "Content-Security-Policy": DOWNLOAD_POLICY,
         },
     )

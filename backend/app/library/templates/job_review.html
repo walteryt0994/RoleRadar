@@ -1,49 +1,41 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
+{% import "_icons.html" as i %}
 {% set area = "jobs" %}
-{% block title %}核对发送内容{% endblock %}
+{% block title %}{{ t("job.job_review.1") }}{% endblock %}
 {% block layout %}
 <main id="main" class="job-page job-reading" tabindex="-1">
   {% if notice %}
   <p class="notice" role="status">{{ notice }}</p>
   {% endif %}
-  <header class="job-head">
-    <h1>核对发送内容</h1>
+  {#- 确认分析内容 (owner redesign, plan 6.2, image 02): only what this analysis uses, as folds (the experiences chosen
+      with each field ticked to send, the posting, the preferences), the real service that receives it, the result
+      language; then 返回修改 and 确认并开始分析. What is never sent and how long the result lasts stay, folded. The
+      checks of what may leave (sensitive fields stopped, the approval and budget of a real service) are unchanged. -#}
+  <div class="confirm-card">
+  <header class="confirm-head">
+    <h1>{{ t("job.job_review.1") }}</h1>
+    <a class="icon-button" href="/job-analysis?from={{ task.id }}" aria-label="{{ t('job.job_review.40') }}">{{ i.icon("x") }}</a>
   </header>
   {% if error %}
   <p class="error" role="alert">{{ error }}</p>
   {% endif %}
-  <form method="post" action="/job-analysis/tasks/{{ task.id }}/confirm" class="review">
+  <form method="post" action="/job-analysis/tasks/{{ task.id }}/confirm" class="review confirm-form">
     {{ m.csrf() }}
     <input type="hidden" name="fingerprint" value="{{ task.fingerprint }}">
-    <section class="review-section"{% if not error %} data-reveal{% endif %} aria-labelledby="who-title">
-      <h2 id="who-title">交给谁，怎样处理</h2>
-      <dl class="facts">
-        {% if service.live %}
-        <div><dt>接收方</dt><dd>真实的外部 AI 服务：{{ service.provider }} 的 {{ service.model }}，经 {{ service.endpoint }} 发送。</dd></div>
-        <div><dt>处理说明</dt><dd>{% for line in service.notice %}<p>{{ line }}</p>{% endfor %}</dd></div>
-        <div><dt>本批批准</dt><dd>{% if service.paused %}已暂停：{{ service.paused }}。{% else %}{{ service.approval }}：还剩 {{ service.requests_left }} 次请求。{% endif %}应用内预算 ${{ service.usd_budget }}，还剩约 ${{ service.usd_left }}（按用量核算 ${{ service.usd_settled }}、预留占用 ${{ service.usd_reserved }}、费用待核实 ${{ service.usd_unknown }}）。<br>这是每次发送前的预算检查，不是服务商账单的硬上限；正在进行的请求可能超出预留，以服务商账单为准。</dd></div>
-        {% else %}
-        <div><dt>接收方</dt><dd>本机模拟服务：RoleRadar 内置的固定规则，不是 AI。在这台电脑上运行，不联网，不保存请求。</dd></div>
-        {% endif %}
-        <div><dt>用途</dt><dd>只用于对照这一份岗位描述分析所选经历{% if plan.sent_preferences %}和求职偏好{% endif %}。</dd></div>
-        <div><dt>步骤</dt><dd>确认后连续进行两步：先解析岗位描述，再对照分析。中途不再逐步询问，随时可以取消。</dd></div>
-        <div><dt>结果</dt><dd>只临时显示 {{ TASK_TTL_MINUTES }} 分钟，服务重启后也会清除；不会存进经历库，不会投递，也不会发给任何人。</dd></div>
-      </dl>
-    </section>
 
-    <section class="review-section"{% if not error %} data-reveal{% endif %} aria-labelledby="sources-title">
-      <h2 id="sources-title">会发送的经历</h2>
-      <p class="hint">勾选的栏目会原样发送。去掉勾选后点“更新核对”。</p>
+    <details class="fold confirm-fold" open>
+      {{ m.fold_summary(t("jobx.chosen_experiences"), badge=t("jobx.picked_count", n=plan.sources|length)) }}
+      <p class="hint">{{ t("job.job_review.21") }}</p>
       {% for source in plan.sources %}
       <fieldset class="review-source">
-        <legend>{{ source.title }}</legend>
-        <p class="review-meta"><span>{{ CATEGORY_LABELS[source.entry.category] }}</span><span>确认版 {{ source.entry.version_number }}</span></p>
+        <legend><span class="step-number" aria-hidden="true">{{ loop.index }}</span>{{ source.title }}</legend>
+        <p class="review-meta"><span>{{ CATEGORY_LABELS[source.entry.category] }}</span><span>{{ t("job.job_review.22", p0=(source.entry.version_number)) }}</span></p>
         {% for field in source.fields %}
         {% if field.status == BLOCKED %}
         <div class="review-field is-blocked">
           <p class="review-label">{{ field.label }}</p>
-          <p class="review-note">不会发送：含有疑似{{ found_labels(field.blocked) }}。需要使用这一栏时，请修改这段经历并重新确认。</p>
+          <p class="review-note">{{ t("job.job_review.23", p0=(found_labels(field.blocked))) }}</p>
         </div>
         {% else %}
         <div class="review-field">
@@ -54,61 +46,73 @@
         {% endfor %}
       </fieldset>
       {% endfor %}
-    </section>
+    </details>
 
-    <section class="review-section"{% if not error %} data-reveal{% endif %} aria-labelledby="posting-title">
-      <h2 id="posting-title">会发送的岗位描述</h2>
+    <details class="fold confirm-fold">
+      {{ m.fold_summary(t("job.job_supply.17"), badge=t("jobx.chars", n=plan.posting|length)) }}
       {% if plan.posting_hidden %}
-      <p class="hint">其中的{{ found_labels(plan.posting_hidden) }}已换成“［已隐去…］”，下面就是会发送的文字。</p>
+      <p class="hint">{{ t("job.job_review.25", p0=(found_labels(plan.posting_hidden))) }}</p>
       {% endif %}
       <div class="review-posting text">{{ plan.posting }}</div>
-    </section>
+    </details>
 
-    <section class="review-section"{% if not error %} data-reveal{% endif %} aria-labelledby="preferences-title">
-      <h2 id="preferences-title">求职偏好</h2>
+    <details class="fold confirm-fold"{% if plan.use_preferences and plan.preferences %} open{% endif %}>
+      {{ m.fold_summary(t("job.job_review.26"), badge=(t("jobx.not_used") if not (plan.use_preferences and plan.preferences) else t("jobx.used_count", n=plan.sent_preferences|length))) }}
       {% if not plan.use_preferences %}
-      <p>本次不参考求职偏好。</p>
+      <p>{{ t("job.job_review.27") }}</p>
       {% elif not plan.preferences %}
-      <p>你还没有保存求职偏好，本次不参考偏好。</p>
+      <p>{{ t("job.job_review.28") }}</p>
       {% else %}
-      <p class="hint">勾选的偏好会发送，用来和岗位描述对照；它们只是意愿，不会当成硬性筛选，也不影响技能覆盖。</p>
+      <p class="hint">{{ t("job.job_review.29") }}</p>
       {% for item in plan.preferences %}
       {% if item.status == BLOCKED %}
       <div class="review-field is-blocked">
-        <p class="review-label">{{ item.topic }}{% if item.stance %}：{{ item.stance }}{% endif %}</p>
-        <p class="review-note">不会发送：含有疑似{{ found_labels(item.blocked) }}。</p>
+        <p class="review-label">{% set named = preference_parts(item.field) %}{{ named[0] }}{% if named[1] %}{{ t("job.job_review.30", p0=named[1]) }}{% endif %}</p>
+        <p class="review-note">{{ t("job.job_review.31", p0=(found_labels(item.blocked))) }}</p>
       </div>
       {% else %}
       <div class="review-field">
-        <label class="check review-label"><input type="checkbox" name="send" value="{{ PREFERENCES_KEY }}:{{ item.field }}"{% if item.status == SEND %} checked{% endif %}>{{ item.topic }}{% if item.stance %}：{{ item.stance }}{% endif %}</label>
+        <label class="check review-label"><input type="checkbox" name="send" value="{{ PREFERENCES_KEY }}:{{ item.field }}"{% if item.status == SEND %} checked{% endif %}>{% set named = preference_parts(item.field) %}{{ named[0] }}{% if named[1] %}{{ t("job.job_review.30", p0=named[1]) }}{% endif %}</label>
         <p class="text review-text{% if item.status == LEFT_OUT %} is-left-out{% endif %}">{{ item.text }}</p>
       </div>
       {% endif %}
       {% endfor %}
       {% endif %}
-    </section>
+    </details>
 
-    <section class="review-section"{% if not error %} data-reveal{% endif %} aria-labelledby="kept-title">
-      <h2 id="kept-title">不会发送</h2>
-      <ul class="points">
-        <li>基本资料：姓名、电话、邮箱、所在城市</li>
-        <li>私有备注和附件</li>
-        <li>没有选择的经历，以及上面没有勾选或被拦下的栏目</li>
-        <li>以前的分析结果</li>
-      </ul>
-      <p class="hint">自动检查只认得出常见写法的邮箱、电话、证件号、地址和“保密”一类字样，可能漏掉别的敏感内容，也可能误拦。确认前请自己再看一遍上面的文字。</p>
-    </section>
+    <dl class="facts compact-facts confirm-facts">
+      {% if service.live %}
+      <div><dt>{{ t("job.job_review.3") }}</dt><dd>{{ t("job.job_review.4", p0=(service.provider), p1=(service.model), p2=(service.endpoint)) }}</dd></div>
+      <div><dt>{{ t("job.job_review.5") }}</dt><dd>{% for line in service.notice %}<p>{{ line }}</p>{% endfor %}</dd></div>
+      <div><dt>{{ t("job.job_review.6") }}</dt><dd>{% if service.paused %}{{ t("job.job_review.7", p0=(service.paused)) }}{% else %}{{ t("job.job_review.8", p0=(service.approval), p1=(service.requests_left)) }}{% endif %}{{ t("job.job_review.9", p0=(service.usd_budget), p1=(service.usd_left), p2=(service.usd_settled), p3=(service.usd_reserved), p4=(service.usd_unknown)) }}<br>{{ t("job.job_review.10") }}</dd></div>
+      {% else %}
+      <div><dt>{{ t("job.job_review.3") }}</dt><dd>{{ t("job.job_review.11") }}</dd></div>
+      {% endif %}
+      <div><dt>{{ t("task.result_language") }}</dt><dd><span lang="{{ task.request.result_language }}">{{ LANGUAGE_NAMES[task.request.result_language] }}</span> <span class="hint">{{ t("task.result_language_frozen") }}</span></dd></div>
+    </dl>
+
+    <details class="fold confirm-fold">
+      {{ m.fold_summary(t("jobx.how_handled")) }}
+      <dl class="facts compact-facts">
+        <div><dt>{{ t("job.job_review.12") }}</dt><dd>{{ t("job.job_review.13") }}{% if plan.sent_preferences %}{{ t("job.job_review.14") }}{% endif %}{{ t("job.job_review.15") }}</dd></div>
+        <div><dt>{{ t("job.job_review.16") }}</dt><dd>{{ t("job.job_review.17") }}</dd></div>
+        <div><dt>{{ t("job.job_review.18") }}</dt><dd>{{ t("job.job_review.19", p0=(TASK_TTL_MINUTES)) }}</dd></div>
+        <div><dt>{{ t("job.job_review.32") }}</dt><dd>{{ list_join([t("job.job_review.33"), t("job.job_review.34"), t("job.job_review.35"), t("job.job_review.36")], "clauses") }}</dd></div>
+      </dl>
+      <p class="hint">{{ t("job.job_review.37") }}</p>
+    </details>
 
     {% if service.refusal %}
     <p class="warning" role="status">{{ service.refusal }}</p>
     {% endif %}
-    <div class="form-actions review-actions">
+    <div class="form-actions review-actions confirm-actions">
+      <a class="button secondary" href="/job-analysis?from={{ task.id }}">{{ t("job.job_review.40") }}</a>
+      <button type="submit" name="action" value="update" class="secondary">{{ t("job.job_review.39") }}</button>
       {% if not service.refusal %}
-      <button type="submit" name="action" value="start" class="primary">确认并开始分析</button>
+      <button type="submit" name="action" value="start" class="primary">{{ t("job.job_review.38") }}</button>
       {% endif %}
-      <button type="submit" name="action" value="update" class="secondary">更新核对</button>
-      <a href="/job-analysis?from={{ task.id }}">返回修改</a>
     </div>
   </form>
+  </div>
 </main>
 {% endblock %}

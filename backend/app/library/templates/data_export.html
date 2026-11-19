@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% set area = "data" %}
+{% set section = "export" %}
+{% block title %}{{ t("nav.export") }}{% endblock %}
+{# 导出资料 (UI bilingual batch, plan 5.6): building comes first; the result says what is in it before any download. #}
+{% block layout %}
+<main id="main" class="data-page" tabindex="-1">
+  {% if notice %}
+  <p class="notice" role="status">{{ notice }}</p>
+  {% endif %}
+  <header class="page-head">
+    <h1>{{ t("nav.export") }}</h1>
+  </header>
+  <section class="data-group home-panel" aria-labelledby="export-what">
+    <h2 id="export-what">{{ t("data.export.what") }}</h2>
+    <ul class="points">
+      <li>{{ t("data.export.has_library") }}</li>
+      <li>{{ t("data.export.has_bin") }}</li>
+      <li>{{ t("data.export.has_records") }}</li>
+      <li>{{ t("data.export.language") }}</li>
+    </ul>
+    <form method="post" action="/data/export/build" class="inline">
+      {{ m.csrf() }}
+      <button type="submit" class="primary">{{ t("data.export.build") }}</button>
+    </form>
+    <p class="hint">{{ t("data.export.build_hint") }}</p>
+  </section>
+  <section class="data-group home-panel" aria-labelledby="export-share">
+    <h2 id="export-share">{{ t("data.export.share") }}</h2>
+    <p>{{ t("data.export.share_text") }}</p>
+  </section>
+</main>
+{% endblock %}

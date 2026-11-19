@@ -1,12 +1,23 @@
-"""Chinese labels and time formatting shared by the pages and the exports."""
+"""Labels and time formatting shared by the pages and the exports, in the page's language (app.i18n).
+
+Stored codes (categories, field names, version kinds, event actions) never change with the language; only the words
+shown for them do. The user's own words are never passed through here.
+"""
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from app import i18n
+from app.i18n import MessageMap, t
 from app.library.content import (
     ACTIVITY,
     AWARD,
+    BODY,
+    BODY_SOURCES,
     CATEGORY_FIELDS,
     EDUCATION,
+    MAIN_FIELDS,
+    MORE_FIELDS,
+    NOTE_FIELD,
     OTHER,
     PREFERENCES,
     PROFILE,
@@ -17,33 +28,41 @@ from app.library.content import (
 from app.library.models import ItemState, VersionKind
 from app.library.projection import NOT_ESTABLISHED
 
-# How the fields of each category are grouped on the form. Every field is in
-# exactly one group (a test checks this), so the layout cannot drop one; the
-# private note is always shown on its own. A group without a name is shown
-# without a heading, where one would only repeat its single field's label.
+# How the fields of each category are grouped where a whole record is listed (a history version, a comparison).
+# Every field is in exactly one group (a test checks this), so no page can drop one; the private note is always
+# shown on its own. A group without a name is shown without a heading. The names are message keys.
 CATEGORY_GROUP_NAMES = {
     PROJECT: (
-        ("基本信息", ("title", "context", "role", "period")),
-        ("过程与收获", ("actions", "outcome", "reflection")),
-        ("相关资料", ("links",)),
+        ("group.basic", ("title", "context", "role", "period")),
+        ("group.body", ("body",)),
+        ("group.process", ("actions", "outcome", "reflection")),
+        ("group.related", ("links",)),
     ),
     EDUCATION: (
-        ("学校与专业", ("school", "major", "stage", "graduation")),
+        ("group.school", ("school", "major", "stage", "graduation")),
+        ("group.body", ("body",)),
         (None, ("notes",)),
     ),
     WORK: (
-        ("基本信息", ("organization", "role", "period")),
-        ("过程与收获", ("actions", "outcome", "reflection")),
+        ("group.basic", ("organization", "role", "period")),
+        ("group.body", ("body",)),
+        ("group.process", ("actions", "outcome", "reflection")),
     ),
     ACTIVITY: (
-        ("基本信息", ("name", "context", "period")),
-        ("参与与收获", ("actions", "reflection")),
+        ("group.basic", ("name", "context", "period")),
+        ("group.body", ("body",)),
+        ("group.participation", ("actions", "reflection")),
     ),
     AWARD: (
-        ("基本信息", ("name", "issuer", "period")),
+        ("group.basic", ("name", "issuer", "period")),
+        ("group.body", ("body",)),
         (None, ("notes",)),
     ),
-    OTHER: ((None, ("title", "period", "notes")),),
+    OTHER: (
+        (None, ("title", "period")),
+        ("group.body", ("body",)),
+        (None, ("notes",)),
+    ),
     PROFILE: ((None, ("name", "phone", "email", "city", "links", "skills")),),
 }
 CATEGORY_GROUPS = {
@@ -53,21 +72,20 @@ CATEGORY_GROUPS = {
     )
     for category, groups in CATEGORY_GROUP_NAMES.items()
 }
-# The project groups, as U1-A named them.
+# The project groups.
 FIELD_GROUP_NAMES = CATEGORY_GROUP_NAMES[PROJECT]
 FIELD_GROUPS = CATEGORY_GROUPS[PROJECT]
-# Form groups that stay folded while they are empty. The folded title and
-# its arrow say enough; the field inside carries its own hint.
-FOLDED_GROUPS = ("相关资料",)
+# Groups that stay folded while they are empty.
+FOLDED_GROUPS = ("group.related",)
 
 
 @dataclass(frozen=True)
 class Reading:
     """How the reading page of a category lays out its fields.
 
-    The title, a line of context under it and short facts (meta) head the
-    page; highlight gets the neutral outcome block; sections follow as text
-    with a quiet heading; folds open on demand.
+    The title, a line of context under it and short facts (meta) head the page; the experience details follow as
+    the user wrote them; the older split fields a record may still hold are shown under their own names (plan 5.2),
+    and the rest folds into 补充信息. labels are message keys for the names the reading page gives fields.
     """
 
     title: str
@@ -85,77 +103,45 @@ class Reading:
         return tuple(name for name in names if name)
 
 
-# The reading page reads as a record rather than a form: for a project, what
-# came out of the work first, then the user's own part. Education, awards
-# and others have no "contribution", so they get none.
+# The names the reading page gives the older split fields of a project: what came out first, then the user's part.
 READING_LABELS = {
-    "outcome": "结果与产出",
-    "actions": "我的贡献",
-    "reflection": "收获与反思",
-    "links": "相关资料",
+    "outcome": "reading.outcome",
+    "actions": "reading.actions",
+    "reflection": "reading.reflection",
+    "links": "reading.links",
 }
 READINGS = {
-    PROJECT: Reading("title", "context", ("role", "period"), "outcome", ("actions",), ("reflection", "links"), READING_LABELS),
-    EDUCATION: Reading("school", None, ("major", "stage", "graduation"), None, ("notes",), (), {"notes": "补充说明"}),
+    PROJECT: Reading("title", "context", ("role", "period"), BODY, ("outcome", "actions"), ("reflection", "links"), READING_LABELS),
+    EDUCATION: Reading("school", None, ("major", "stage", "graduation"), BODY, ("notes",), (), {}),
     WORK: Reading(
-        "organization", None, ("role", "period"), "outcome", ("actions",), ("reflection",),
-        {"outcome": "结果与产出", "actions": "做过的事", "reflection": "收获与反思"},
+        "organization", None, ("role", "period"), BODY, ("outcome", "actions"), ("reflection",),
+        {"outcome": "reading.outcome", "actions": "reading.work_actions", "reflection": "reading.reflection"},
     ),
-    ACTIVITY: Reading("name", "context", ("period",), None, ("actions",), ("reflection",), {"actions": "参与内容", "reflection": "收获"}),
-    AWARD: Reading("name", None, ("issuer", "period"), None, ("notes",), (), {"notes": "相关说明"}),
-    OTHER: Reading("title", None, ("period",), None, ("notes",), (), {"notes": "补充"}),
+    ACTIVITY: Reading("name", "context", ("period",), BODY, ("actions",), ("reflection",), {}),
+    AWARD: Reading("name", None, ("issuer", "period"), BODY, ("notes",), (), {}),
+    OTHER: Reading("title", None, ("period",), BODY, ("notes",), (), {}),
 }
 READING_ORDER = READINGS[PROJECT].order
 # The first of these that is filled in sums up a titled record in the list.
 SUMMARY_FIELDS = {
-    PROJECT: ("actions", "outcome", "context"),
-    EDUCATION: ("major", "stage", "graduation"),
-    WORK: ("role", "actions", "outcome"),
-    ACTIVITY: ("actions", "context"),
-    AWARD: ("issuer", "notes"),
-    OTHER: ("notes",),
+    PROJECT: (BODY, "actions", "outcome", "context"),
+    EDUCATION: ("major", "stage", "graduation", BODY),
+    WORK: ("role", BODY, "actions", "outcome"),
+    ACTIVITY: (BODY, "actions", "context"),
+    AWARD: ("issuer", BODY, "notes"),
+    OTHER: (BODY, "notes"),
 }
-NEW_HEADINGS = {
-    PROJECT: "记录一段项目/作品",
-    EDUCATION: "记录一段教育经历",
-    WORK: "记录一段实习、工作或兼职",
-    ACTIVITY: "记录一项课程或实践活动",
-    AWARD: "记录一项证书或奖项",
-    OTHER: "记录一段其他经历",
-}
-EDIT_HEADINGS = {
-    PROJECT: "编辑项目/作品",
-    EDUCATION: "编辑教育经历",
-    WORK: "编辑实习、工作或兼职",
-    ACTIVITY: "编辑课程或实践活动",
-    AWARD: "编辑证书或奖项",
-    OTHER: "编辑其他经历",
-}
-# "Deleting <this>" and "<this> has been cleaned up" on the confirmation and
-# recycle-bin pages.
-KIND_NOUNS = {
-    PROJECT: "这条项目经历",
-    EDUCATION: "这条教育经历",
-    WORK: "这段实习、工作或兼职经历",
-    ACTIVITY: "这项课程或实践活动",
-    AWARD: "这项证书或奖项",
-    OTHER: "这条其他经历",
-    PROFILE: "你的基本资料",
-    PREFERENCES: "你的求职偏好",
-}
-CLEANUP_NOUNS = {
-    PROJECT: "一条项目经历",
-    EDUCATION: "一条教育经历",
-    WORK: "一段实习、工作或兼职经历",
-    ACTIVITY: "一项课程或实践活动",
-    AWARD: "一项证书或奖项",
-    OTHER: "一条其他经历",
-    PROFILE: "一份基本资料",
-    PREFERENCES: "一份求职偏好",
-}
+NEW_HEADINGS = MessageMap({category: f"heading.new.{category}" for category in CATEGORY_GROUP_NAMES if category != PROFILE})
+EDIT_HEADINGS = MessageMap({category: f"heading.edit.{category}" for category in CATEGORY_GROUP_NAMES if category != PROFILE})
+# "Deleting <this>" and "<this> has been cleaned up" on the confirmation and recycle-bin pages.
+KIND_NOUNS = MessageMap({kind: f"noun.this.{kind}" for kind in (PROJECT, EDUCATION, WORK, ACTIVITY, AWARD, OTHER, PROFILE, PREFERENCES)})
+CLEANUP_NOUNS = MessageMap({kind: f"noun.one.{kind}" for kind in (PROJECT, EDUCATION, WORK, ACTIVITY, AWARD, OTHER, PROFILE, PREFERENCES)})
 # Where the profile and the preferences are read; experiences have their own page each.
 # (Not "/profile": the legacy app had an API there, and this app mounts none of its paths.)
 DOCUMENT_PAGES = {PROFILE: "/basic-profile", PREFERENCES: "/job-preferences"}
+# The categories' names on pages, in the page's language (content.CATEGORY_LABELS keeps the stored Chinese names
+# that exports' data and model requests use).
+CATEGORY_NAMES = MessageMap({kind: f"category.{kind}" for kind in (PROJECT, EDUCATION, WORK, ACTIVITY, AWARD, OTHER, PROFILE, PREFERENCES)})
 
 
 def record_page(item) -> str:
@@ -169,26 +155,19 @@ def section_of(item) -> str:
 
 
 def format_local(value: datetime | None) -> str:
-    """An exact instant in this computer's local time, with its UTC offset."""
-    if value is None:
-        return "—"
-
-    local = value.astimezone()
-    offset = local.strftime("%z")
-
-    return f"{local:%Y-%m-%d %H:%M:%S}（UTC{offset[:3]}:{offset[3:]}）"
+    """An exact instant in this computer's local time, with its UTC offset (written in the page's language)."""
+    return i18n.format_local(value)
 
 
 def format_short(value: datetime) -> str:
     """Local date and minute, short enough for the record list."""
-    return f"{value.astimezone():%Y-%m-%d %H:%M}"
+    return i18n.format_short(value)
 
 
 def summary_line(content: dict, category: str = PROJECT) -> str:
     """A first line of what was done, shown under a titled record in the list.
 
-    Untitled records already show their first words as the title, so they
-    get no summary.
+    Untitled records already show their first words as the title, so they get no summary.
     """
     if not content.get(TITLE_FIELDS[category]):
         return ""
@@ -202,29 +181,131 @@ def summary_line(content: dict, category: str = PROJECT) -> str:
     return ""
 
 
+def label_of(category: str, name: str) -> str:
+    """A field's name on forms, in the page's language: the experience details, the private note, or the field."""
+    if name == BODY:
+        return t("field.body")
+
+    if name == NOTE_FIELD.name:
+        return t("field.note")
+
+    if category == PREFERENCES:
+        return preference_label(name)
+
+    key = f"field.{category}.{name}"
+
+    return t(key) if i18n.has(key) else name
+
+
+def hint_of(category: str, name: str) -> str:
+    """A field's hint on forms, in the page's language ("" when it has none)."""
+    if name == BODY:
+        return t("hint.body")
+
+    if name == NOTE_FIELD.name:
+        return t("hint.note")
+
+    if category == PREFERENCES:
+        key = f"hint.preferences.{name}"
+
+        return t(key) if i18n.has(key) else ""
+
+    key = f"hint.{category}.{name}"
+
+    return t(key) if i18n.has(key) else ""
+
+
+def preference_label(name: str) -> str:
+    """A preference field's name: its stance (理想 / 也可以接受 / 不能接受) or one of the two single ones."""
+    for stance in ("ideal", "ok", "no"):
+        if name.endswith(f"_{stance}"):
+            return t(f"pref.stance.{stance}")
+
+    key = f"field.preferences.{name}"
+
+    return t(key) if i18n.has(key) else name
+
+
+def preference_topic(name: str) -> str:
+    """A preference field as an analysis names it, in the page's language: its topic, and for a dimension its stance
+    in brackets ("目标城市（理想）" / "Target cities (Ideal)"); the two single fields by their own names."""
+    topic, stance = preference_parts(name)
+
+    return t("pref.topic_stance", topic=topic, stance=stance) if stance else topic
+
+
+def preference_parts(name: str) -> tuple[str, str | None]:
+    """A preference field's topic and, for a dimension, its stance, both in the page's language; a single field is
+    its own name with no stance. (The words an analysis prompt uses are its own and stay as they are.)"""
+    for stance in ("ideal", "ok", "no"):
+        suffix = f"_{stance}"
+
+        if name.endswith(suffix):
+            key = f"pref.group.{name[: -len(suffix)]}"
+
+            return (t(key) if i18n.has(key) else name), t(f"pref.stance.{stance}")
+
+    return preference_label(name), None
+
+
+def group_label(key: str | None) -> str:
+    return t(key) if key else ""
+
+
 def field_label(category: str, name: str) -> str:
-    """How the reading page names a field of this category."""
+    """How the reading page names a field of this category (in the page's language)."""
     reading = READINGS.get(category)
 
     if reading is not None and name in reading.labels:
-        return reading.labels[name]
+        return t(reading.labels[name])
 
-    return next(field.label for field in CATEGORY_FIELDS[category] if field.name == name)
+    return label_of(category, name)
+
+
+def shown_fields(content: dict, category: str) -> list[str]:
+    """The fields a whole record or version is read with (plan 5.2): every one but the experience details and the
+    older split fields, which show when they hold text (and the details also when nothing else holds any)."""
+    sources = BODY_SOURCES.get(category, ())
+    split_text = any(content.get(name) for name in sources)
+    names = []
+
+    for field in CATEGORY_FIELDS[category]:
+        if field.name in sources and not content.get(field.name):
+            continue
+
+        if field.name == BODY and not content.get(BODY) and split_text:
+            continue
+
+        names.append(field.name)
+
+    return names
 
 
 def unfilled_labels(content: dict, category: str = PROJECT) -> list[str]:
-    """The experience fields still empty, in reading order, named as the reading page names them."""
-    return [
-        field_label(category, name)
-        for name in READINGS[category].order
-        if not content.get(name)
-    ]
+    """The fields still empty that the reading page names, in reading order: the metadata, and the experience
+    details when no text of the record is there yet. The older split fields are never asked for (plan 5.2)."""
+    sources = BODY_SOURCES.get(category, ())
+    has_text = bool(content.get(BODY)) or any(content.get(name) for name in sources)
+    wanted = [*MAIN_FIELDS.get(category, ()), *MORE_FIELDS.get(category, ())]
+    labels = []
+
+    for name in READINGS[category].order:
+        if name in sources or content.get(name):
+            continue
+
+        if name == BODY:
+            if not has_text:
+                labels.append(field_label(category, name))
+        elif name in wanted:
+            labels.append(field_label(category, name))
+
+    return labels
 
 
 def format_size(size: int) -> str:
     """A file size as people read it; the limits on the pages use the same units (1 MB = 1024 KB)."""
     if size < 1024:
-        return f"{size} 字节"
+        return t("size.bytes", n=size)
 
     if size < 1024 * 1024:
         return f"{size / 1024:.1f} KB"
@@ -236,70 +317,72 @@ def format_remaining(deadline: datetime, now: datetime) -> str:
     left = deadline - now
 
     if left <= timedelta(0):
-        return "已到期"
+        return t("time.expired")
 
     days, seconds = left.days, left.seconds
     hours, minutes = seconds // 3600, (seconds % 3600) // 60
 
     if days:
-        return f"还剩 {days} 天 {hours} 小时"
+        return t("time.days_hours_left", days=days, hours=hours)
 
     if hours:
-        return f"还剩 {hours} 小时 {minutes} 分钟"
+        return t("time.hours_minutes_left", hours=hours, minutes=minutes)
 
-    return f"还剩 {max(minutes, 1)} 分钟"
+    return t("time.minutes_left", minutes=max(minutes, 1))
 
 
 def state_label(item) -> str:
     if item.state == ItemState.CONFIRMED:
-        return "已确认"
+        return t("state.confirmed")
 
     if item.last_confirmed_at is not None:
-        return "已修改，待核对"
+        return t("state.review_changes")
 
-    return "待核对"
+    return t("state.needs_review")
 
 
 def version_label(version) -> str:
     if version.kind == VersionKind.INITIAL:
-        return "初始版"
+        return t("version.initial")
 
     if version.kind == VersionKind.SAVED:
-        return f"第 {version.number} 次保存"
+        return t("version.saved", n=version.number)
 
-    return f"确认版 {version.number}"
+    return t("version.confirmed", n=version.number)
 
 
-EVENT_LABELS = {
-    "created": "第一次保存（形成初始版）",
-    "saved": "保存修改",
-    "confirmed": "确认属实（形成确认版）",
-    "deleted": "移到回收站",
-    "restored": "从回收站恢复",
-    "purge_requested": "申请永久删除",
-    "purge_completed": "清理完成",
-    "version_deleted": "删除一个历史版本",
-    "version_restored": "恢复一个历史版本",
-    "version_purge_requested": "申请永久删除一个历史版本",
-    "attachment_added": "添加一个附件",
-    "attachment_deleted": "删除一个附件",
-    "attachment_restored": "恢复一个附件",
-    "attachment_purge_requested": "申请永久删除一个附件",
-    # Written at the user's choice from a resume import (U2-B2b): an event, never the words.
-    "adopted_from_import": "从一次简历导入加入（内容未经核实）",
-    "supplemented_from_import": "用一次简历导入的内容补充了所选栏目（未经核实）",
-}
+EVENT_LABELS = MessageMap(
+    {
+        action: f"event.{action}"
+        for action in (
+            "created",
+            "saved",
+            "confirmed",
+            "deleted",
+            "restored",
+            "purge_requested",
+            "purge_completed",
+            "version_deleted",
+            "version_restored",
+            "version_purge_requested",
+            "attachment_added",
+            "attachment_deleted",
+            "attachment_restored",
+            "attachment_purge_requested",
+            # Written at the user's choice from a resume import (U2-B2b): an event, never the words.
+            "adopted_from_import",
+            "supplemented_from_import",
+        )
+    }
+)
 # What finished when a clean-up of something other than the record itself completed.
-PART_CLEANUP_LABELS = {
-    "experience_version": "一个历史版本已清理完成",
-    "attachment": "一个附件已清理完成（文件已删除）",
-}
+PART_CLEANUP_LABELS = MessageMap({"experience_version": "event.part.experience_version", "attachment": "event.part.attachment"})
 # The profile and preferences keep every save; their first save is not an "initial version".
-DOCUMENT_EVENT_LABELS = {**EVENT_LABELS, "created": "第一次保存"}
+DOCUMENT_EVENT_LABELS = EVENT_LABELS.merged({"created": "event.document_created"})
 
 
 # The modules a record's reference status covers, as the deletion pages name them.
-MODULE_LABELS = {"analysis": "岗位分析", "resume": "简历"}
+MODULE_LABELS = MessageMap({"analysis": "module.analysis", "resume": "module.resume"})
 
 
 def reference_note(references, *, purge: bool = False) -> str:
@@ -313,13 +396,12 @@ def reference_note(references, *, purge: bool = False) -> str:
     if references.status != NOT_ESTABLISHED:
         raise ValueError(f"no wording for the reference status {references.status!r}")
 
-    modules = "、".join(MODULE_LABELS[name] for name in references.modules)
+    modules = i18n.list_join(MODULE_LABELS[name] for name in references.modules)
 
     return (
         f"{direction_note(references, purge=purge)}"
         f"{analysis_note(references, purge=purge)}"
-        "没有保存的岗位分析结果只临时显示，不在这里列出；"
-        f"本经历库尚未建立与{modules}的关联，无法列出{modules}是否用过这些内容；这次删除只处理经历库里的内容。"
+        + t("refs.unsaved_and_unknown", modules=modules)
     )
 
 
@@ -335,14 +417,10 @@ def analysis_note(references, *, purge: bool = False, version: bool = False) -> 
     if not count:
         return ""
 
-    what = "这个版本" if version else "它"
-    note = (
-        f"有 {count} 份已保存的岗位分析以{what}为依据：默认不会一起删除，它们保留供回看，"
-        "并标出依据现在的状态，不会用于新的分析或找岗。"
-    )
+    note = t("refs.analyses_version" if version else "refs.analyses", n=count)
 
     if purge:
-        note += "这些分析里保存的引文和判断时读的上下文不会随之清除；需要的话，请另外删除那些分析。"
+        note += t("refs.analyses_purge")
 
     return note
 
@@ -354,20 +432,18 @@ def direction_note(references, *, purge: bool = False, version: bool = False) ->
     Purging the record does not remove the quotes a kept exploration holds, and the page says so. With
     none resting on it, nothing is said.
     """
-    what = "这个版本" if version else "它"
     explorations, decisions = len(references.explorations), len(references.decisions)
 
     if not explorations and not decisions:
         return ""
 
-    counted = [f"{explorations} 次已保存的方向探索"] * bool(explorations) + [f"{decisions} 条方向决定"] * bool(decisions)
-    note = (
-        f"有 {'、'.join(counted)}以{what}为依据：默认不会一起删除，它们保留供回看，"
-        "并标为“依据已删除”，不再用于新的分析或找岗。"
-    )
+    counted = [t("refs.count_explorations", n=explorations)] * bool(explorations) + [
+        t("refs.count_decisions", n=decisions)
+    ] * bool(decisions)
+    note = t("refs.directions_version" if version else "refs.directions", counted=i18n.list_join(counted))
 
     if purge and explorations:
-        note += "这些探索里保存的引文不会随之清除；需要的话，请另外删除那些探索。"
+        note += t("refs.directions_purge")
 
     return note
 

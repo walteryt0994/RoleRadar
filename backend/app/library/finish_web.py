@@ -52,50 +52,47 @@ from app.library.originals import (
 from app.library.review import ACTION_LABELS, adoption_views, candidates_of, structuring_of
 from app.library.review_web import candidate_view
 from app.library.web import _expected_revision, checked_form, current_user, message_page, render, runtime, see_other
+from app.i18n import MessageMap, lazy, t
 
 logger = logging.getLogger("roleradar.library")
 router = APIRouter()
 
-NO_ORIGINAL = "这次导入是粘贴的文字，没有原文件可以另存；需要的话，可以在导入页下载读到的文字。"
+NO_ORIGINAL = lazy("imp.finish.1")
 NOT_KEPT = {
-    KeptFile.ALREADY_THERE: (409, "这条经历已经有这份原文件（也可能在它的回收站里，或正在保存），没有再保存一份。"),
+    KeptFile.ALREADY_THERE: (409, lazy("imp.finish.2")),
     KeptFile.EARLIER_UNUSABLE: (
         409,
-        "这个页面之前另存的附件现在不可用（文件缺失、内容和保存时不一致，或无法读取），这次没有再保存。"
-        "下面已按现在的情况列出；可以选一条经历再存一份可用的。不可用的那份不会被自动删除或覆盖，需要时请你自己在经历里处理。",
+        lazy("imp.finish.3"),
     ),
     KeptFile.FULL: (
         409,
-        "这条经历的附件已满（回收站里还能恢复的附件也算在内），没有保存。可以选择其他经历；"
-        "或者先到这条经历里永久删除不需要的附件，或等它们过了恢复期限，再来另存。没有替你删除任何附件。",
+        lazy("imp.finish.4"),
     ),
-    KeptFile.TARGET_GONE: (409, "选择的经历已经不在了（删除了，或不是你的经历），没有保存。请重新选择。"),
+    KeptFile.TARGET_GONE: (409, lazy("imp.finish.5")),
     KeptFile.FORM_USED: (
         409,
-        "这个页面已经提交过另一次保存（可能是返回了旧页面），为了不重复保存，这次没有另存。请看下面的情况后重新选择。",
+        lazy("imp.finish.6"),
     ),
-    KeptFile.IN_PROGRESS: (409, "刚才的保存还在进行中，这次没有重复保存。稍后刷新页面查看结果。"),
+    KeptFile.IN_PROGRESS: (409, lazy("imp.finish.7")),
     KeptFile.SOURCE_CHANGED: (
         500,
-        "暂存的原文件现在找不到或无法读取，或者和读取时不一致，所以没有另存。导入保持原样。",
+        lazy("imp.finish.8"),
     ),
     KeptFile.FAILED: (
         500,
-        "另存没有完成：写入时出错，没有生成附件。导入和它的原文件保持原样，可以再试一次。",
+        lazy("imp.finish.9"),
     ),
 }
 KEEPING_CHANGED = (
-    "没有结束：原文件的另存情况在你打开这个页面之后变了（例如附件被删除、移到回收站，或文件现在不可用），"
-    "什么都没有清理。下面已按现在的情况重新说明，请再确认一次。"
+    lazy("imp.finish.10")
 )
-HEALTH_TEXTS = {
-    Health.MISSING: "文件找不到了",
-    Health.CHANGED: "文件内容和保存时不一致",
-    Health.UNREADABLE: "文件无法读取",
-}
+HEALTH_TEXTS = MessageMap({
+    Health.MISSING: "imp.finish.11",
+    Health.CHANGED: "imp.finish.12",
+    Health.UNREADABLE: "imp.finish.13",
+})
 FINISH_FAILED = (
-    "结束没有完成：写入数据库时出错，导入保持原样，什么都没有清理。已经另存的原文件附件（见下面“会留下”）"
-    "不受影响；可以再试一次，再试不会重复另存原文件。"
+    lazy("imp.finish.14")
 )
 
 
@@ -137,8 +134,8 @@ def keep_page(
 
     if original is None:
         return message_page(
-            request, title="没有原文件", message=NO_ORIGINAL, status_code=409, user=user,
-            links=[(f"{BASE}/{import_id}", "回到这次导入")],
+            request, title=t("imp.finish.15"), message=NO_ORIGINAL, status_code=409, user=user,
+            links=[(f"{BASE}/{import_id}", t("imp.finish.16"))],
         )
 
     copies = copies_of(rt.database, rt.files, user.id, original, rt.now)
@@ -195,7 +192,7 @@ def keep_file(
     next_page = form.get("next", "")
 
     if not target or not UPLOAD_KEY.fullmatch(upload_key):
-        return message_page(request, title="请求无效", message="这个表单缺少必要的信息，没有另存。", status_code=400, user=user)
+        return message_page(request, title=t("imp.finish.17"), message=t("imp.finish.18"), status_code=400, user=user)
 
     try:
         kept = keep_original(rt.database, rt.files, user.id, import_id, target, upload_key, rt.now)
@@ -203,8 +200,8 @@ def keep_file(
         return gone_page(request, user)
     except NoOriginal:
         return message_page(
-            request, title="没有原文件", message=NO_ORIGINAL, status_code=409, user=user,
-            links=[(f"{BASE}/{import_id}", "回到这次导入")],
+            request, title=t("imp.finish.15"), message=NO_ORIGINAL, status_code=409, user=user,
+            links=[(f"{BASE}/{import_id}", t("imp.finish.16"))],
         )
 
     if kept in (KeptFile.ADDED, KeptFile.ALREADY_ADDED):
@@ -215,11 +212,11 @@ def keep_file(
     if kept == KeptFile.SOURCE_GONE:
         return message_page(
             request,
-            title="没有另存",
-            message="这次导入在另存期间已经结束、到期或被删除，原文件没有另存，也没有生成附件。",
+            title=t("imp.finish.19"),
+            message=t("imp.finish.20"),
             status_code=409,
             user=user,
-            links=[(BASE, "回到导入简历")],
+            links=[(BASE, t("imp.finish.21"))],
         )
 
     status_code, message = NOT_KEPT[kept]
@@ -268,7 +265,7 @@ def finish_page(
             "section": "imports",
             "row": row,
             "draft": draft,
-            "name": row.filename or "粘贴的文字",
+            "name": row.filename or t("imp.finish.22"),
             "original": original,
             # Only copies in use whose files were just read as kept count as kept.
             "kept": [copy for copy in copies if copy.kept],
@@ -310,7 +307,7 @@ def finish_import(
     keeping = form.get("keeping", "")
 
     if ending not in ("discard", "bin") or not keeping:
-        return message_page(request, title="请求无效", message="这个表单缺少必要的信息，没有结束。", status_code=400, user=user)
+        return message_page(request, title=t("imp.finish.17"), message=t("imp.finish.23"), status_code=400, user=user)
 
     try:
         with rt.database.transaction() as db:
@@ -339,12 +336,12 @@ def finish_import(
         # Saved as a draft (in another tab) after this page was shown: ending it is another decision now.
         return finish_page(
             request, user, import_id, status_code=409,
-            error="这次导入在你打开这个页面之后被保存为草稿了（可能是在另一个标签页），这次没有结束。下面已按草稿重新说明。",
+            error=t("imp.finish.24"),
         )
     except ImportChanged:
         return finish_page(
             request, user, import_id, status_code=409,
-            error="这份草稿在你打开这个页面之后有了变化（可能是在另一个标签页），这次没有结束。请看下面的说明后再决定。",
+            error=t("imp.finish.25"),
         )
     except StorageError as error:
         # The ending's own transaction was rolled back (a clean-up failing after it comes back as PENDING).

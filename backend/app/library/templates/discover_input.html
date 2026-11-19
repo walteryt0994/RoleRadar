@@ -1,20 +1,35 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
+{% import "_icons.html" as i %}
 {% set area = "jobs" %}
 {% set section = "discover" %}
-{% block title %}找岗位{% endblock %}
+{% block title %}{{ t("jobx.title") }}{% endblock %}
+{#- 发现岗位 (owner redesign, plan 5.1, the discover image): what to look for on the left, the experiences to match on
+    the right, then 开始查找. The values chosen for each dimension are this search's scope and everything else is left
+    out of it; nothing chosen stays undecided and is asked for here, never widened. A city can be chosen from the
+    list of a country or region (which only narrows the choices) or typed. 开始查找 is one protected post: the server
+    checks and binds everything a review did, then starts, or returns here with what was entered. Without JavaScript
+    every chip is a checkbox and each dimension has one field to add a value. -#}
+{% macro chips(dimension, values) %}
+<ul class="chip-picks" data-chips="{{ dimension }}">
+  {% for value, chosen in values %}
+  <li><label class="pick-chip"><input type="checkbox" name="{{ dimension }}_pick" value="{{ value }}"{% if chosen %} checked{% endif %}><span>{{ i.icon("check") }}{{ type_label(value) if dimension == "job_type" else value }}</span></label></li>
+  {% endfor %}
+  <template data-chip-template><li><label class="pick-chip"><input type="checkbox" name="{{ dimension }}_pick" value="" checked><span>{{ i.icon("check") }}<span data-chip-text></span></span></label></li></template>
+</ul>
+{% endmacro %}
 {% block layout %}
 <main id="main" class="job-page" tabindex="-1">
   {% if notice %}
   <p class="notice" role="status">{{ notice }}</p>
   {% endif %}
-  <header class="job-head">
-    <h1>找岗位</h1>
-    <p class="job-mode">{{ PREVIEW }}</p>
+  <header class="page-head">
+    <h1>{{ t("jobx.title") }}</h1>
+    <div class="page-actions"><a class="button secondary" href="/job-records/supply">{{ i.icon("file-plus") }}{{ t("job.job_supply.1") }}</a></div>
+    <p class="state-line"><span class="job-mode">{{ PREVIEW }}</span></p>
   </header>
   {% if problems %}
   <div class="error" role="alert">
-    <p>还不能核对：</p>
     <ul class="points">
       {% for problem in problems %}
       <li>{{ problem }}</li>
@@ -23,125 +38,153 @@
   </div>
   {% endif %}
   {% if tracing %}
-  <p class="warning" role="status">环境里设置了可能打开 LangSmith 追踪的变量（{{ tracing|join("、") }}），查找不会开始。请去掉这些变量后重新启动本地网页。</p>
+  <p class="warning" role="status">{{ t("job.discover_input.3") }}{{ list_join(tracing) }}{{ t("job.discover_input.4") }}</p>
   {% endif %}
   {% if dropped %}
-  <p class="warning" role="status">之前选择的 {{ dropped }} 段经历已经修改、重新确认或删除，没有自动选上；请按当前内容重新选择。</p>
+  <p class="warning" role="status">{{ t("job.discover_input.5", p0=(dropped)) }}</p>
   {% endif %}
-  {# Nothing starts from this page: the next step only checks what was entered and shows the search to confirm. #}
-  <form method="post" action="/discover/review" class="job-columns" data-leave-guard{% if unsaved_input %} data-initially-dirty{% endif %}>
+  <form method="post" action="/discover/start" class="setup-panel" data-leave-guard data-discover-setup data-one-start{% if unsaved_input %} data-initially-dirty{% endif %}>
     {{ m.csrf() }}
-    <section{% if not problems %} data-reveal{% endif %} class="job-panel{% if where == 'scope' %} has-problem{% endif %}" aria-labelledby="want-title">
-      <h2 id="want-title">要找什么</h2>
-      <div class="field">
-        <label for="f-targets">岗位名称</label>
-        <span class="hint" id="h-targets">可以写几个，用顿号分开。</span>
-        <input type="text" id="f-targets" name="targets" value="{{ inputs.targets }}" maxlength="200" aria-describedby="h-targets">
-      </div>
-      {% for dimension, label, offer, given in dimensions %}
-      <fieldset class="dimension">
-        <legend>{{ label }}</legend>
-        {% if offer.values %}
-        <ul class="value-list">
-          {% for value in offer.values %}
-          <li><label class="check"><input type="checkbox" name="{{ dimension.value }}" value="{{ value }}"{% if value in given.ticked %} checked{% endif %}>{{ value }}{% if value in offer.ideal %}<span class="value-note">理想</span>{% endif %}</label></li>
-          {% endfor %}
-        </ul>
-        {% else %}
-        <p class="hint">求职偏好里没有填写。</p>
-        {% endif %}
-        {% if offer.excluded %}
-        <p class="hint">不能接受：{{ offer.excluded|join("、") }}。不会检索，也不能选。</p>
-        {% endif %}
-        {% if dimension.value == "direction" %}
-        {# U3-C3b: each kept direction is named by its decision and revision; its name is the library's, taken whole. #}
-        {% if kept_candidates %}
-        <p class="hint">保留的方向（来自探索记录，只用于这次查找，不改求职偏好）：</p>
-        <ul class="value-list">
-          {% for entry, chosen in kept_candidates %}
-          <li><label class="check"><input type="checkbox" name="kept" value="{{ entry.ref }}"{% if chosen %} checked{% endif %}>{{ entry.name }}<span class="value-note">保留</span></label></li>
-          {% endfor %}
-        </ul>
-        {% endif %}
-        {% for line in kept_lines %}
-        <p class="warning" role="status">{{ line }}</p>
-        {% endfor %}
-        <p class="hint"><a href="/directions">方向还不确定？先去探索方向</a></p>
-        {% endif %}
+    <input type="hidden" name="scope_v2" value="1">
+    <input type="hidden" name="start_key" value="{{ start_key }}">
+    <div class="setup-columns">
+      <section class="setup-part{% if where in ('scope', 'kept') %} has-problem{% endif %}" aria-labelledby="want-title">
+        <h2 id="want-title">{{ t("jobx.wanted") }}</h2>
         <div class="field">
-          <label for="f-{{ dimension.value }}-added">也查</label>
-          <input type="text" id="f-{{ dimension.value }}-added" name="{{ dimension.value }}_added" value="{{ given.added }}" maxlength="200" aria-describedby="h-added">
+          <label for="f-targets">{{ t("jobx.targets") }}</label>
+          <input type="text" id="f-targets" name="targets" value="{{ inputs.targets }}" maxlength="200">
         </div>
-        <fieldset class="choice-group">
-          <legend>所列以外的{{ label }}</legend>
-          <div class="choice-row">
-            <label class="check"><input type="radio" name="{{ dimension.value }}_others" value="{{ Others.INCLUDED.value }}"{% if given.others == Others.INCLUDED.value %} checked{% endif %}>本次不限</label>
-            <label class="check"><input type="radio" name="{{ dimension.value }}_others" value="{{ Others.EXCLUDED.value }}"{% if given.others == Others.EXCLUDED.value %} checked{% endif %}>只看所列的</label>
+        {% for dimension, label, offer, given in dimensions %}
+        <fieldset class="dimension-picks" data-dimension="{{ dimension.value }}">
+          <legend>{{ t("jobx.directions") if dimension.value == "direction" else (t("jobx.cities") if dimension.value == "city" else t("jobx.types")) }}</legend>
+          {% if dimension.value == "city" %}
+          <div class="city-picker" data-city-picker hidden>
+            <select aria-label="{{ t('prefs.country') }}" data-city-country>
+              {% for code, name_key, _ in CITY_CHOICES %}
+              <option value="{{ code }}">{{ t(name_key) }}</option>
+              {% endfor %}
+            </select>
+            <span class="city-search">
+              {{ i.icon("search") }}
+              <input type="search" aria-label="{{ t('jobx.search_city') }}" placeholder="{{ t('jobx.search_city') }}" data-city-search>
+            </span>
+            <button type="button" class="secondary" data-city-add>{{ i.icon("plus") }}{{ t("jobx.add_city") }}</button>
           </div>
+          {# A city the preferences cannot accept is never offered (the server refuses it as well). #}
+          <datalist id="discover-cities" data-city-options>
+            {% for code, _, cities in CITY_CHOICES %}{% for city in cities if city not in offer.excluded %}<option value="{{ city }}" data-country="{{ code }}"></option>{% endfor %}{% endfor %}
+          </datalist>
+          {% endif %}
+          {{ chips(dimension.value, picked[dimension.value]) }}
+          {% if dimension.value == "direction" and kept_candidates %}
+          {# U3-C3b: each kept direction is named by its decision and revision; its name is the library's, taken whole. #}
+          <ul class="chip-picks">
+            {% for entry, chosen in kept_candidates %}
+            <li><label class="pick-chip"><input type="checkbox" name="kept" value="{{ entry.ref }}"{% if chosen %} checked{% endif %}><span>{{ i.icon("check") }}{{ entry.name }}<span class="value-note">{{ t("job.discover_input.14") }}</span></span></label></li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+          {% if dimension.value != "job_type" %}
+          <div class="add-value" data-add-value>
+            <label class="visually-hidden" for="f-{{ dimension.value }}-new">{{ t("jobx.add_city") if dimension.value == "city" else t("jobx.add_direction") }}</label>
+            <input type="text" id="f-{{ dimension.value }}-new" name="{{ dimension.value }}_pick" value="" maxlength="200" placeholder="{{ t('jobx.add_city') if dimension.value == 'city' else t('jobx.add_direction') }}"{% if dimension.value == "city" %} list="discover-cities"{% endif %} data-add-input>
+            <button type="button" class="secondary" data-add-button hidden>{{ i.icon("plus") }}{{ t("jobx.add_city") if dimension.value == "city" else t("jobx.add_direction") }}</button>
+          </div>
+          {% endif %}
+          {% if offer.excluded %}
+          <p class="hint">{{ t("job.discover_input.11") }}{{ list_join(offer.excluded) }}{{ t("job.discover_input.12") }}</p>
+          {% endif %}
+          {% if dimension.value == "direction" %}
+          {% for line in kept_lines %}
+          <p class="warning" role="status">{{ line }}</p>
+          {% endfor %}
+          <p class="hint"><a href="/directions">{{ t("job.discover_input.15") }}</a></p>
+          {% endif %}
         </fieldset>
-      </fieldset>
-      {% endfor %}
-      <p class="hint" id="h-added">“也查”可以填几项，用顿号分开，每项最多 {{ VALUE_CHARS }} 字。“本次不限”仍然排除不能接受的；没有选择就不能开始。理想的排在前面，不用来过滤。</p>
-    </section>
-    <section{% if not problems %} data-reveal{% endif %} class="job-panel{% if where == 'sources' %} has-problem{% endif %}" aria-labelledby="pick-title">
-      <h2 id="pick-title">用哪些经历分析</h2>
-      {% if experiences %}
-      <p class="hint">可以不选：不选就只查找、读取和核对岗位，不做个性化分析。只能选已确认的经历，一次最多 {{ MAX_EXPERIENCES }} 段。</p>
-      <ul class="pick-list">
-        {% for entry in experiences %}
-        <li class="pick">
-          <div class="pick-choice">
-            <input type="checkbox" id="pick-{{ loop.index }}" name="source" value="{{ entry.item_id }}:{{ entry.version_id }}"{% if entry.item_id in ticked %} checked{% endif %}>
-            <label for="pick-{{ loop.index }}">
-              <span class="pick-title">{{ display_title(entry.content, entry.category) }}</span>
-              <span class="pick-meta"><span>{{ CATEGORY_LABELS[entry.category] }}</span><span>已确认，确认版 {{ entry.version_number }}</span></span>
-            </label>
-          </div>
-          <details class="fold pick-content">
-            {{ m.fold_summary("确认的内容") }}
-            <dl class="fields">
-              {% for field in CATEGORY_FIELDS[entry.category] %}
-              {% if entry.content.get(field.name) %}
-              <dt>{{ field_label(entry.category, field.name) }}</dt>
-              <dd><p class="text">{{ entry.content[field.name] }}</p></dd>
+        {% endfor %}
+      </section>
+      <section class="setup-part{% if where == 'sources' %} has-problem{% endif %}" aria-labelledby="pick-title">
+        <h2 id="pick-title">{{ t("jobx.match") }}</h2>
+        {% if experiences %}
+        <ul class="pick-list pick-cards">
+          {% for entry in experiences %}
+          <li class="pick">
+            <div class="pick-choice">
+              <input type="checkbox" id="pick-{{ loop.index }}" name="source" value="{{ entry.item_id }}:{{ entry.version_id }}"{% if entry.item_id in ticked %} checked{% endif %}>
+              <label for="pick-{{ loop.index }}">
+                <span class="pick-title">{{ display_title(entry.content, entry.category) }}</span>
+                <span class="pick-meta"><span>{{ CATEGORY_LABELS[entry.category] }}</span><span>{{ t("job.discover_input.23", p0=(entry.version_number)) }}</span></span>
+              </label>
+            </div>
+            {#- What of it is sent (owner review, plan 5.2): each field ticked to send, untick one to leave it out; one the
+                outbound review stops is never sent and says why. Nothing is sent by this page itself. -#}
+            {% set plan = plans[entry.item_id] %}
+            {% set sendable = plan.fields|rejectattr("status", "equalto", BLOCKED)|list %}
+            <details class="fold send-fields">
+              {{ m.fold_summary(t("jobx.send_fields"), badge=t("jobx.send_count", n=plan.fields|selectattr("status", "equalto", SEND)|list|length, d=plan.fields|length)) }}
+              <ul class="value-list">
+                {% for field in plan.fields %}
+                {% set key = entry.item_id ~ ":" ~ field.name %}
+                {% if field.status == BLOCKED %}
+                <li class="send-field is-blocked"><span class="review-label">{{ field.label }}</span><span class="hint">{{ t("job.discover_review.32", p0=(found_labels(field.blocked))) }}</span></li>
+                {% else %}
+                <li class="send-field"><input type="hidden" name="send_offered" value="{{ key }}"><label class="check"><input type="checkbox" name="send" value="{{ key }}"{% if field.status == SEND %} checked{% endif %}>{{ field.label }}</label></li>
+                {% endif %}
+                {% endfor %}
+              </ul>
+            </details>
+          </li>
+          {% endfor %}
+        </ul>
+        <input type="hidden" name="send_shown" value="1">
+        {% else %}
+        <p class="empty-state">{{ t("jobx.no_experiences") }}</p>
+        {% endif %}
+        {% if unconfirmed > 0 %}
+        <p class="hint">{{ t("job.discover_input.25", p0=(unconfirmed)) }}</p>
+        {% endif %}
+        <div class="job-option">
+          <label class="check"><input type="checkbox" name="use_preferences" value="yes"{% if inputs.use_preferences %} checked{% endif %}>{{ t("jobx.use_preferences") }}</label>
+          {% if pref_plans %}
+          <details class="fold send-fields">
+            {{ m.fold_summary(t("jobx.send_preferences"), badge=t("jobx.send_count", n=pref_plans|selectattr("status", "equalto", SEND)|list|length, d=pref_plans|length)) }}
+            <ul class="value-list">
+              {% for plan in pref_plans %}
+              {% set key = PREFERENCES_KEY ~ ":" ~ plan.field %}
+              {% set named = preference_parts(plan.field) %}
+              {% if plan.status == BLOCKED %}
+              <li class="send-field is-blocked"><span class="review-label">{{ named[0] }}{% if named[1] %}{{ t("job.discover_review.37", p0=named[1]) }}{% endif %}</span><span class="hint">{{ t("job.discover_review.32", p0=(found_labels(plan.blocked))) }}</span></li>
+              {% else %}
+              <li class="send-field"><input type="hidden" name="send_offered" value="{{ key }}"><label class="check"><input type="checkbox" name="send" value="{{ key }}"{% if plan.status == SEND %} checked{% endif %}>{{ named[0] }}{% if named[1] %}{{ t("job.discover_review.37", p0=named[1]) }}{% endif %}</label></li>
               {% endif %}
               {% endfor %}
-            </dl>
+            </ul>
           </details>
-        </li>
-        {% endfor %}
-      </ul>
-      {% else %}
-      <p class="empty-state">还没有已确认的经历：这次只能查找、读取和核对岗位，不做个性化分析。</p>
-      {% endif %}
-      {% if unconfirmed > 0 %}
-      <p class="hint">另有 {{ unconfirmed }} 段经历还没有确认，确认后才能用于分析。</p>
-      {% endif %}
-      <div class="job-option">
-        <label class="check"><input type="checkbox" name="use_preferences" value="yes"{% if inputs.use_preferences %} checked{% endif %}>分析时参考我的其他求职偏好</label>
-        <p class="hint">城市、求职类型和岗位方向按左边的范围核对，不随分析发送。{% if analysed_preferences %}其他偏好在核对时可以逐项去掉；{% else %}你还没有填写其他偏好；{% endif %}没有选择经历时不参考偏好。</p>
-      </div>
-      {% if SOURCE_SET.keep %}
-      <div class="job-option">
-        <label class="check"><input type="checkbox" name="track_recommendations" value="yes"{% if inputs.track %} checked{% endif %}>临时留存并跟踪这次的推荐</label>
-        <p class="hint">默认不勾，每次查找单独选择。勾选后，查找正常结束时，系统临时留存最多 3 条推荐的公开信息和核对结果 {{ KEEP_DAYS }} 天，到期自动删除；它们不是“我的岗位”。只在选了经历时有效；下一步的核对页会写明细节。</p>
-      </div>
-      {% endif %}
-      <div class="form-actions">
-        <button type="submit" class="primary">核对查找内容</button>
-      </div>
-      <p class="hint">下一步只列出这次查找会用到的内容，确认之前不会开始。</p>
-    </section>
+          {% endif %}
+        </div>
+        {% if SOURCE_SET.keep %}
+        <div class="job-option">
+          <label class="check"><input type="checkbox" name="track_recommendations" value="yes"{% if inputs.track %} checked{% endif %}>{{ t("jobx.track", days=KEEP_DAYS) }}</label>
+        </div>
+        {% endif %}
+      </section>
+    </div>
+    <div class="form-actions setup-actions">
+      {# Short, beside the button: where the postings come from (the page's banner says the rest). #}
+      <p class="hint setup-service">{{ t("jobx.service", service=SOURCE_SET.source_tag) }}</p>
+      <button type="submit" class="primary" data-start-button>{{ t("jobx.start") }}</button>
+    </div>
   </form>
   <dialog id="leave-dialog" aria-labelledby="leave-title">
-    <h2 id="leave-title">离开后，这里填写的内容不会保留</h2>
+    <h2 id="leave-title">{{ t("job.discover_input.35") }}</h2>
     <div class="dialog-actions">
-      <button type="button" data-leave-choice="stay" class="secondary">继续填写</button>
-      <button type="button" data-leave-choice="discard" class="danger">放弃并离开</button>
+      <button type="button" data-leave-choice="stay" class="secondary">{{ t("job.discover_input.36") }}</button>
+      <button type="button" data-leave-choice="discard" class="danger">{{ t("job.discover_input.37") }}</button>
     </div>
   </dialog>
 </main>
 {% endblock %}
 {% block scripts %}
+<script src="/static/discover.js"></script>
 <script src="/static/leave_guard.js"></script>
 {% endblock %}

@@ -18,6 +18,24 @@
 // taken from them.
 (function () {
   "use strict";
+  // The words of this page's language (the html element's data-ui-text, UI bilingual batch); the Chinese is a fallback.
+  var UI_TEXT = null;
+
+  function say(key, fallback, values) {
+    if (UI_TEXT === null) {
+      var root = document.documentElement;
+      try {
+        UI_TEXT = root && root.getAttribute ? JSON.parse(root.getAttribute("data-ui-text") || "{}") : {};
+      } catch (error) {
+        UI_TEXT = {};
+      }
+    }
+    var text = UI_TEXT[key] || fallback;
+    Object.keys(values || {}).forEach(function (name) {
+      text = text.split("{" + name + "}").join(values[name]);
+    });
+    return text;
+  }
 
   const page = document.querySelector("main[data-task-running]");
 
@@ -81,7 +99,7 @@
         if (Array.isArray(task.steps)) {
           showSteps(task.steps, task.status);
         } else {
-          status.textContent = "正在" + task.step + "。已交给服务的请求：" + task.sends + "。";
+          status.textContent = say("js.running", "正在{step}。已交给服务的请求：{sends}。", { step: task.step, sends: task.sends });
         }
 
         window.setTimeout(poll, POLL_MS);

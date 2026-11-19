@@ -1,39 +1,41 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
-{% block title %}补充岗位{% endblock %}
-{# 补充岗位 (U3-D4d): a link to a posting of a source the app may read now, or a posting's text pasted. A link is only
-   matched as text: the address is never opened. Nothing here saves, analyses or sends anything. #}
+{% block title %}{{ t("job.job_supply.1") }}{% endblock %}
+{#- 补充岗位 (U3-D4d; owner redesign, plan 6.1, the supply images): paste a link or paste the text, one way shown at a
+    time, each its own form with what was put into it, so only the way used is sent. A link is only matched as text
+    against the sources the app may read now: the address is never opened. Nothing here saves, analyses or sends
+    anything; the next page shows what would be saved. The long explanations named in the feedback are gone (plan 9). -#}
+{% set mode = "text" if (problems or pasted.title or pasted.company or pasted.text) else "link" %}
 {% block layout %}
 <main id="main" class="job-page job-reading" tabindex="-1">
   {% if notice %}
   <p class="notice" role="status">{{ notice }}</p>
   {% endif %}
-  <header class="job-head">
-    <h1>补充岗位</h1>
-    <p class="job-mode">补充你在别处看到的岗位。贴链接：只有属于已登记、现在允许读取的来源时，才由那个来源自己的接口读一次，你贴的网址本身不会被打开。读不了的，可以粘贴原文。先看一遍要保存的内容，你点“加入我的岗位”才会保存；分析要到岗位分析页确认以后才做。</p>
+  <header class="page-head">
+    <h1>{{ t("job.job_supply.1") }}</h1>
   </header>
+  <div class="mode-switch" role="radiogroup" aria-label="{{ t('jobx.supply_mode') }}" data-supply-switch hidden>
+    <label class="mode-option"><input type="radio" name="supply_mode" value="link"{% if mode == "link" %} checked{% endif %}><span>{{ t("jobx.supply_link_mode") }}</span></label>
+    <label class="mode-option"><input type="radio" name="supply_mode" value="text"{% if mode == "text" %} checked{% endif %}><span>{{ t("jobx.supply_text_mode") }}</span></label>
+  </div>
 
-  <section class="review-section" aria-labelledby="link-title">
-    <h2 id="link-title">贴链接</h2>
-    {% if link_problem %}
-    <p class="error" role="alert">{{ link_problem }}</p>
-    {% endif %}
+  <section class="supply-panel" aria-labelledby="link-title" data-supply-panel="link">
+    <h2 id="link-title" class="section-title">{{ t("jobx.supply_link_mode") }}</h2>
     <form method="post" action="/job-records/supply/link">
       {{ m.csrf() }}
       <div class="field{% if link_problem %} has-error{% endif %}">
-        <label for="f-link">岗位链接</label>
-        <span class="hint" id="h-link">{% if readable %}现在能读取的来源：{{ readable|join("、") }}。{% else %}这次运行没有能读取的来源，链接认不出时请粘贴原文。{% endif %}只比对链接的文字，不打开它。</span>
-        <input type="text" id="f-link" name="link" value="{{ link }}" maxlength="{{ MAX_LINK_CHARS }}" autocomplete="off" aria-describedby="h-link"{% if link_problem %} aria-invalid="true"{% endif %}>
+        <label for="f-link">{{ t("job.job_supply.4") }}</label>
+        <input type="text" id="f-link" name="link" value="{{ link }}" maxlength="{{ MAX_LINK_CHARS }}" autocomplete="off"{% if link_problem %} aria-invalid="true" aria-describedby="e-link"{% endif %}>
+        {% if link_problem %}<span class="field-error" id="e-link" role="alert">{{ link_problem }}</span>{% endif %}
       </div>
       <div class="form-actions">
-        <button type="submit" class="primary">认出并读取</button>
+        <button type="submit" class="primary">{{ t("jobx.read_job") }}</button>
       </div>
-      <p class="hint">读取只读这个岗位的公开信息：最多 3 次来源请求，每次最多 15 秒，不重试。不发送你的经历和偏好，不调用 AI。读到的结果只临时放 30 分钟。</p>
     </form>
   </section>
 
-  <section class="review-section" aria-labelledby="text-title">
-    <h2 id="text-title">贴原文</h2>
+  <section class="supply-panel" aria-labelledby="text-title" data-supply-panel="text">
+    <h2 id="text-title" class="section-title">{{ t("jobx.supply_text_mode") }}</h2>
     {% if problems %}
     <ul class="error" role="alert">
       {% for problem in problems %}
@@ -41,36 +43,32 @@
       {% endfor %}
     </ul>
     {% endif %}
-    <p class="hint">这样补充的岗位标“用户提供，系统未独立核验”：系统不打开你给的链接，也不向任何来源核实，所以不能持续核对它的招聘状态。</p>
     <form method="post" action="/job-records/supply/text">
       {{ m.csrf() }}
-      <div class="field">
-        <label for="f-title">职位名</label>
-        <input type="text" id="f-title" name="title" value="{{ pasted.title or '' }}" maxlength="{{ MAX_NAME_CHARS }}" autocomplete="off">
+      <div class="field-grid">
+        <div class="field">
+          <label for="f-title">{{ t("job.job_supply.13") }}</label>
+          <input type="text" id="f-title" name="title" value="{{ pasted.title or '' }}" maxlength="{{ MAX_NAME_CHARS }}" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="f-company">{{ t("job.job_supply.14") }}</label>
+          <input type="text" id="f-company" name="company" value="{{ pasted.company or '' }}" maxlength="{{ MAX_NAME_CHARS }}" autocomplete="off">
+        </div>
       </div>
       <div class="field">
-        <label for="f-company">公司</label>
-        <input type="text" id="f-company" name="company" value="{{ pasted.company or '' }}" maxlength="{{ MAX_NAME_CHARS }}" autocomplete="off">
+        <label for="f-text">{{ t("job.job_supply.17") }}</label>
+        <textarea id="f-text" name="text" rows="10" aria-describedby="h-text">{{ pasted.text or '' }}</textarea>
+        <span class="hint" id="h-text">{{ t("job.job_supply.18", p0=(MAX_TEXT_CHARS)) }}</span>
       </div>
       <div class="field">
-        <label for="f-source-link">原始链接（选填）</label>
-        <span class="hint" id="h-source-link">只作为出处的文字保存，不会打开。登录信息和明显是凭证的参数会去掉；保存前会给你看要保存的样子。</span>
-        <input type="text" id="f-source-link" name="link" value="{{ pasted.link or '' }}" maxlength="{{ MAX_LINK_CHARS }}" autocomplete="off" aria-describedby="h-source-link">
-      </div>
-      <div class="field">
-        <label for="f-text">岗位原文</label>
-        <span class="hint" id="h-text">最多 {{ MAX_TEXT_CHARS }} 字。</span>
-        <textarea id="f-text" name="text" rows="12" aria-describedby="h-text">{{ pasted.text or '' }}</textarea>
+        <label for="f-source-link">{{ t("job.job_supply.15") }}</label>
+        <input type="text" id="f-source-link" name="link" value="{{ pasted.link or '' }}" maxlength="{{ MAX_LINK_CHARS }}" autocomplete="off">
       </div>
       <div class="form-actions">
-        <button type="submit" class="primary">下一步：看要保存的内容</button>
+        <button type="submit" class="primary">{{ t("jobx.preview_job") }}</button>
       </div>
-      <p class="hint">下一步只给你看，不保存，也不发送。</p>
     </form>
   </section>
-
-  <div class="actions">
-    <a href="/job-records">返回岗位记录</a>
-  </div>
 </main>
 {% endblock %}
+{% block scripts %}<script src="/static/supply.js"></script>{% endblock %}

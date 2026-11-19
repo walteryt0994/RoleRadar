@@ -35,7 +35,18 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.library.candidates import CANDIDATE_FIELDS, SKILLS, current_values
-from app.library.content import CATEGORY_FIELDS, EXPERIENCE_CATEGORIES, NOTE_FIELD, PROFILE, parse_experience_form
+from app.library.presentation import label_of
+from app.library.content import (
+    BODY,
+    BODY_JOIN,
+    BODY_SOURCES,
+    CATEGORY_FIELDS,
+    EXPERIENCE_CATEGORIES,
+    NOTE_FIELD,
+    PROFILE,
+    parse_experience_form,
+    split_fields_in,
+)
 from app.library.db import Database
 from app.library.errors import NotFound
 from app.library.models import AdoptionAction, CandidateState, ExperienceItem, ImportAdoption, ImportCandidate
@@ -126,32 +137,73 @@ class FieldRow:
     state: str
     # What the page offers besides keeping the field as it is.
     actions: tuple[str, ...]
+    # The experience details (经历内容) row only: the candidate's split fields its imported text was joined from, in
+    # their stable order, so the page can say where it came from.
+    parts: tuple[str, ...] = ()
+
+
+def narrative_in_body(kind: str, content: dict) -> bool:
+    """Whether an experience's own words are in its one experience details field (经历内容, plan 5.2): when it has
+    that text, or when it has none of the older split fields' text either (a record with neither is written the new
+    way). A record kept in the older split fields alone is supplemented field by field, as before."""
+    return kind in EXPERIENCE_CATEGORIES and (bool(content.get(BODY)) or not split_fields_in(content, kind))
+
+
+def _actions(entry, state: str) -> tuple[str, ...]:
+    if state == FILLS:
+        return (FILL,)
+
+    if state == DIFFERS:
+        return (REPLACE, APPEND) if entry.multiline else (REPLACE,)
+
+    # The same, or already there line by line: nothing to write.
+    return ()
 
 
 def field_rows(kind: str, values: dict[str, str], content: dict) -> list[FieldRow]:
-    """The candidate's filled fields against the record's content, with what each allows."""
-    entries = {entry.name: entry for entry in CATEGORY_FIELDS[record_kind(kind)]}
+    """The candidate's filled fields against the record's content, with what each allows.
+
+    A candidate keeps the older split fields (CANDIDATE_FIELDS). Written into an experience whose own words are in its
+    experience details (owner redesign revision R2), its split fields are joined, in their stable order and each kept
+    whole, into one imported text set against that record's real experience details: kept, appended after them, or put
+    in their place, as the user chooses. Nothing is written into the older split fields of such a record, its text is
+    never split or merged by guess, and identical text is said to be the same. A record kept in the split fields alone
+    is supplemented field by field, as before.
+    """
+    record = record_kind(kind)
+    entries = {entry.name: entry for entry in CATEGORY_FIELDS[record]}
     rows = []
+    in_body = narrative_in_body(kind, content)
+    sources = BODY_SOURCES.get(kind, ()) if in_body else ()
 
-    for source, target in TARGETS[kind].items():
-        value = values.get(source, "")
+    for entry in CATEGORY_FIELDS[record]:
+        if in_body and entry.name == BODY:
+            parts = tuple(name for name in sources if values.get(name))
 
-        if not value:
+            if parts:
+                value = BODY_JOIN.join(values[name] for name in parts)
+                existing = content.get(BODY, "")
+                state = field_state(entry, value, existing)
+                rows.append(
+                    FieldRow(
+                        BODY, BODY, label_of(record, BODY), True, value, existing, state, _actions(entry, state),
+                        tuple(label_of(record, name) for name in parts),
+                    )
+                )
+
             continue
 
-        entry = entries[target]
-        existing = content.get(target, "")
-        state = field_state(entry, value, existing)
+        sources_here = [source for source, target in TARGETS[kind].items() if target == entry.name and source not in sources]
 
-        if state == FILLS:
-            actions = (FILL,)
-        elif state == DIFFERS:
-            actions = (REPLACE, APPEND) if entry.multiline else (REPLACE,)
-        else:
-            # The same, or already there line by line: nothing to write.
-            actions = ()
+        for source in sources_here:
+            value = values.get(source, "")
 
-        rows.append(FieldRow(source, target, entry.label, entry.multiline, value, existing, state, actions))
+            if not value:
+                continue
+
+            existing = content.get(entry.name, "")
+            state = field_state(entry, value, existing)
+            rows.append(FieldRow(source, entry.name, label_of(record, entry.name), entry.multiline, value, existing, state, _actions(entry, state)))
 
     return rows
 
@@ -163,9 +215,11 @@ def merged_content(kind: str, rows: list[FieldRow], choices: dict[str, str], con
     offer for that field, is refused (the page never sends it).
     """
     offered = {row.source: row for row in rows}
+    # An experience's joined experience details are offered under their own name (field_rows).
+    known = set(TARGETS[kind]) | ({BODY} if kind in EXPERIENCE_CATEGORIES else set())
 
     for source, action in choices.items():
-        if source not in TARGETS[kind] or action not in CHOICES:
+        if source not in known or action not in CHOICES:
             raise NotAdoptable(BAD_CHOICE)
 
         if action != KEEP and (source not in offered or action not in offered[source].actions):
@@ -179,7 +233,13 @@ def merged_content(kind: str, rows: list[FieldRow], choices: dict[str, str], con
         if action == KEEP:
             continue
 
-        merged[row.target] = f"{row.existing}\n{row.value}" if action == APPEND else row.value
+        if action == APPEND:
+            # Experience details take the imported text after a blank line, as the edit form joins them.
+            joint = BODY_JOIN if row.target == BODY else "\n"
+            merged[row.target] = f"{row.existing}{joint}{row.value}"
+        else:
+            merged[row.target] = row.value
+
         written.append(row.target)
 
     if not written:

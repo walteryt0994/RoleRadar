@@ -4,12 +4,15 @@
 {% block title %}{{ heading }}{% endblock %}
 {% block content %}
 {% set confirmed = item and item.state == "confirmed" %}
+{% set fields_by_name = {} %}
+{% for field in CATEGORY_FIELDS[category] %}{% set _ = fields_by_name.update({field.name: field}) %}{% endfor %}
+{% set split_text = split_fields_in(item.content, category) if item else () %}
 {# A page shown again after a failed save is read at once: nothing on it waits for an animation. #}
 <header class="pane-head"{% if not error %} data-reveal{% endif %}>
   <h1>{{ heading }}</h1>
   {% if not item_id %}
-  {# The kind of a new record; the list on the left keeps its own filter. #}
-  <nav class="kind-switch" aria-label="经历类别">
+  {# The kind of a new record; the list keeps its own filter. #}
+  <nav class="kind-switch" aria-label="{{ t('lib.kind') }}">
     {% for kind in EXPERIENCE_CATEGORIES %}
     {% if kind == category %}
     <span aria-current="page">{{ CATEGORY_LABELS[kind] }}</span>
@@ -18,13 +21,12 @@
     {% endif %}
     {% endfor %}
   </nav>
-  {% endif %}
-  {% if not confirmed %}
-  <p class="lede">保存后是“待核对”的草稿，不等于确认属实。</p>
+  {% else %}
+  <p class="kind-fixed">{{ t("lib.kind") }}{{ t("common.colon") }}{{ CATEGORY_LABELS[category] }}</p>
   {% endif %}
 </header>
 {% if confirmed %}
-<p class="warning">这条经历目前是“已确认”。保存修改后会变成“已修改，待核对”，需要你再次确认。</p>
+<p class="warning">{{ t("lib.edit_confirmed_warning") }}</p>
 {% endif %}
 {% if error %}
 <p class="error" role="alert">{{ error }}</p>
@@ -37,58 +39,65 @@
   {% endif %}
   <input type="hidden" name="next" value="{{ next_path }}">
   <input type="hidden" name="after_save" value="">
-  {% for group_label, fields in CATEGORY_GROUPS[category] %}
-  {% if group_label in FOLDED_GROUPS %}
-  {% set fold = namespace(open=False) %}
-  {% for field in fields %}
-  {% if values[field.name] or field_errors.get(field.name) %}
-  {% set fold.open = True %}
+  {# The name and the few facts beside it (P02), then the experience details as one text (plan 5.2). #}
+  <div class="field-grid main-fields"{% if not error %} data-reveal{% endif %}>
+    {% for name in MAIN_FIELDS[category] %}
+    {% if name == "period" %}
+    {{ m.month_picker(fields_by_name[name], values, field_errors.get(name), category) }}
+    {% else %}
+    {{ m.form_field(fields_by_name[name], values[name], field_errors.get(name), category=category) }}
+    {% endif %}
+    {% endfor %}
+  </div>
+  <div{% if not error %} data-reveal{% endif %}>
+    {{ m.form_field(fields_by_name[BODY], values[BODY], field_errors.get(BODY), category=category) }}
+  </div>
+  {% if split_text %}
+  {# A record written in the older split fields: its fields as they are, to read; the details above start from their
+     text in this order. Nothing changes until the user saves. #}
+  <details class="fold split-original"{% if not error %} data-reveal{% endif %}>
+    {{ m.fold_summary(t("lib.split_original")) }}
+    <p class="hint">{{ t("lib.split_original_hint") }}</p>
+    <dl class="fields">
+      {% for name in split_text %}
+      <dt>{{ label_of(category, name) }}</dt>
+      <dd><p class="text">{{ item.content[name] }}</p></dd>
+      {% endfor %}
+    </dl>
+  </details>
   {% endif %}
+  {% if MORE_FIELDS[category] %}
+  {% set fold = namespace(open=False) %}
+  {% for name in MORE_FIELDS[category] %}
+  {% if values[name] or field_errors.get(name) %}{% set fold.open = True %}{% endif %}
   {% endfor %}
   {# Folded while empty; open as soon as it holds something or an error. #}
   <details class="fold"{% if fold.open %} open{% endif %}{% if not error %} data-reveal{% endif %}>
-    {{ m.fold_summary(group_label) }}
-    {% for field in fields %}
-    {{ m.form_field(field, values[field.name], field_errors.get(field.name)) }}
+    {{ m.fold_summary(t("lib.more_details")) }}
+    {% for name in MORE_FIELDS[category] %}
+    {{ m.form_field(fields_by_name[name], values[name], field_errors.get(name), category=category) }}
     {% endfor %}
   </details>
-  {% elif group_label %}
-  <fieldset class="group"{% if not error %} data-reveal{% endif %}>
-    <legend>{{ group_label }}</legend>
-    <div{% if not fields|selectattr("multiline")|list %} class="field-grid"{% endif %}>
-      {% for field in fields %}
-      {{ m.form_field(field, values[field.name], field_errors.get(field.name)) }}
-      {% endfor %}
-    </div>
-  </fieldset>
-  {% else %}
-  {# A heading here would only repeat the label of the field below it. #}
-  <div class="group"{% if not error %} data-reveal{% endif %}>
-    {% for field in fields %}
-    {{ m.form_field(field, values[field.name], field_errors.get(field.name)) }}
-    {% endfor %}
-  </div>
   {% endif %}
-  {% endfor %}
   {% set note_error = field_errors.get(NOTE_FIELD.name) %}
   {# Private: folded unless it needs attention after a failed save. #}
   <details class="fold fold-private"{% if note_error or (error and values[NOTE_FIELD.name]) %} open{% endif %}{% if not error %} data-reveal{% endif %}>
-    {{ m.fold_summary(NOTE_FIELD.label, private=True) }}
+    {{ m.fold_summary(t("field.note"), private=True) }}
     <div class="field{% if note_error %} has-error{% endif %}">
-      <span class="hint" id="h-note">{{ NOTE_FIELD.hint }}。分享导出文件之前请先检查。</span>
-      <textarea id="f-note" name="{{ NOTE_FIELD.name }}" rows="3" maxlength="{{ NOTE_FIELD.max_length }}" aria-label="{{ NOTE_FIELD.label }}" aria-describedby="h-note{% if note_error %} e-note{% endif %}"{% if note_error %} aria-invalid="true"{% endif %}>{{ values[NOTE_FIELD.name] }}</textarea>
+      <span class="hint" id="h-note">{{ t("lib.note_hint_full") }}</span>
+      <textarea id="f-note" name="{{ NOTE_FIELD.name }}" rows="3" maxlength="{{ NOTE_FIELD.max_length }}" aria-label="{{ t('field.note') }}" aria-describedby="h-note{% if note_error %} e-note{% endif %}"{% if note_error %} aria-invalid="true"{% endif %}>{{ values[NOTE_FIELD.name] }}</textarea>
       {% if note_error %}
       <span class="field-error" id="e-note">{{ note_error }}</span>
       {% endif %}
     </div>
   </details>
-  <p class="muted small">直接关闭或刷新页面时，浏览器的提醒不一定出现，离开前请先保存草稿。</p>
+  <p class="muted small">{{ t("lib.browser_close_warning") }}</p>
   <div class="form-actions sticky">
-    <button type="submit" data-save-button>保存草稿</button>
-    <a href="{% if item_id %}/experiences/{{ item_id }}{% else %}/experiences{% endif %}">取消</a>
+    <a class="cancel-link" href="{% if item_id %}/experiences/{{ item_id }}{% else %}/experiences{% endif %}">{{ t("common.cancel") }}</a>
     <p class="dirty-status" id="dirty-status" aria-live="polite"></p>
+    <button type="submit" data-save-button>{{ t("common.save_draft") }}</button>
   </div>
 </form>
 {{ m.leave_dialog() }}
 {% endblock %}
-{% block scripts %}<script src="/static/leave_guard.js"></script>{% endblock %}
+{% block scripts %}<script src="/static/leave_guard.js"></script><script src="/static/months.js"></script>{% endblock %}

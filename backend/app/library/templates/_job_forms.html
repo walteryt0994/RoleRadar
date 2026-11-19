@@ -7,38 +7,41 @@
 {% endfor %}
 {% endmacro %}
 
-{# pasted: a posting the user pasted (U3-D4d), which nothing can check: its hints promise no check. #}
-{% macro decision_forms(action, hidden, current=None, pasted=False) %}
+{# pasted: a posting the user pasted (U3-D4d), which nothing can check: its hints promise no check. reasons_now and
+   note_now: what is saved now (owner review): the current decision's reasons are ticked and the note is filled in, so
+   saving a form never clears what it did not show. #}
+{% macro decision_forms(action, hidden, current=None, pasted=False, reasons_now=(), note_now="") %}
 {% for value, label, reasons in DECISIONS %}
 <details class="fold keep-choice"{% if current == value %} open{% endif %}>
-  {{ m.fold_summary(("改为" if current and current != value else "") ~ label ~ ("（现在的决定）" if current == value else "") ~ "…") }}
+  {{ m.fold_summary(t("job.decision.now" if current == value else ("job.decision.change_to" if current else "job.decision.choose"), label=label)) }}
   <form method="post" action="{{ action }}" class="keep-form">
     {{ m.csrf() }}
     {{ hidden_fields(hidden) }}
     <input type="hidden" name="decision" value="{{ value }}">
+    <input type="hidden" name="reasons_shown" value="1">
     {% if reasons %}
     <fieldset class="choice-group">
-      <legend>原因（选填，可多选）</legend>
+      <legend>{{ t("job._job_forms.1") }}</legend>
       <ul class="value-list">
         {% for code, words in reasons %}
-        <li><label class="check"><input type="checkbox" name="reason" value="{{ code }}">{{ words }}</label></li>
+        <li><label class="check"><input type="checkbox" name="reason" value="{{ code }}"{% if current == value and code in reasons_now %} checked{% endif %}>{{ words }}</label></li>
         {% endfor %}
       </ul>
     </fieldset>
     {% endif %}
     {% if value == "apply" %}
     {% if pasted %}
-    <p class="hint">只记下你的决定，不投递。这是你提供的原文，系统不能核对它；申请前请自己到原网站确认。</p>
+    <p class="hint">{{ t("job._job_forms.2") }}</p>
     {% else %}
-    <p class="hint">只记下你的决定，不投递，也不核对来源；申请前核对在岗位记录页上单独做。</p>
+    <p class="hint">{{ t("job._job_forms.3") }}</p>
     {% endif %}
     {% endif %}
     {% if value == "skip" and pasted %}
-    <p class="hint">这是你提供的原文，不来自任何来源：跳过只记下你的决定，不影响以后的查找。</p>
+    <p class="hint">{{ t("job._job_forms.4") }}</p>
     {% endif %}
     <div class="field">
-      <label for="note-{{ value }}">备注（选填，最多 {{ NOTE_CHARS }} 字，只存在你的岗位记录里）</label>
-      <textarea id="note-{{ value }}" name="note" rows="2" maxlength="{{ NOTE_CHARS }}"></textarea>
+      <label for="note-{{ value }}">{{ t("job._job_forms.5", p0=(NOTE_CHARS)) }}</label>
+      <textarea id="note-{{ value }}" name="note" rows="2" maxlength="{{ NOTE_CHARS }}">{{ note_now or "" }}</textarea>
     </div>
     <div class="form-actions">
       <button type="submit" class="secondary">{{ label }}</button>
@@ -48,14 +51,124 @@
 {% endfor %}
 {% endmacro %}
 
+{#- The four choices of a job in 我的岗位, shown at once (owner redesign, plan 6.1), with what goes with the decision
+    made right below them (owner review): its reasons and note, shown as saved and editable in place, and taking it
+    back, which says that its reasons and note go too. A choice button sends the decision alone: choosing the one
+    made changes nothing, choosing another keeps the note, and one that would leave reasons behind asks first
+    (records.decide). from_list: chosen from 我的岗位's list, which it comes back to. n tells two panels on one page
+    apart. -#}
+{% macro decision_panel(record, action, n="", from_list=False, pasted=False, level=2) %}
+<section class="decision-bar" aria-labelledby="decision-title{{ n }}">
+  <div class="decision-now">
+    <h{{ level }} id="decision-title{{ n }}">{{ t("jobx.my_decision") }}</h{{ level }}>
+    <span class="badge">{{ decision_label(record.decision) }}</span>
+  </div>
+  <form method="post" action="{{ action }}" class="decision-choices">
+    {{ m.csrf() }}
+    <input type="hidden" name="revision" value="{{ record.revision }}">
+    {% if from_list %}<input type="hidden" name="back" value="list">{% endif %}
+    {% for value, label, reasons in DECISIONS %}
+    <button type="submit" name="decision" value="{{ value }}" class="decision-button" aria-pressed="{{ 'true' if record.decision == value else 'false' }}" aria-describedby="decision-does{{ n }}">{{ m.decision_icon(value) }}{{ label }}</button>
+    {% endfor %}
+  </form>
+  {#- What a choice does, said once (it records the decision only): never a submission, a check or a search. -#}
+  <p class="hint decision-does" id="decision-does{{ n }}">{{ t("job._job_forms.2") if pasted else t("job._job_forms.3") }}</p>
+  {% if record.decision %}
+  <div class="decision-said">
+    {% if record.reasons %}<p class="hint">{{ t("job.job_record.68") }}{{ list_join(reason_labels(record.decision, record.reasons)) }}</p>{% endif %}
+    {% if record.note %}<p class="hint decision-note">{{ t("job.job_record.69", p0=(record.note)) }}</p>{% endif %}
+    {% if record.decision == "skip" %}<p class="hint">{{ t("job.job_record.64") if pasted else t("job.job_record.65") }}</p>{% endif %}
+    {% if record.decision == "apply" %}<p class="hint">{{ t("job.job_record.66") if pasted else t("job.job_record.67") }}</p>{% endif %}
+    {% for value, label, reasons in DECISIONS %}{% if value == record.decision %}
+    <details class="fold decision-edit">
+      {{ m.fold_summary(t("jobx.reasons_note")) }}
+      <form method="post" action="{{ action }}" class="keep-form">
+        {{ m.csrf() }}
+        <input type="hidden" name="revision" value="{{ record.revision }}">
+        <input type="hidden" name="decision" value="{{ value }}">
+        <input type="hidden" name="reasons_shown" value="1">
+        {% if from_list %}<input type="hidden" name="back" value="list">{% endif %}
+        {% if reasons %}
+        <fieldset class="choice-group">
+          <legend>{{ t("job._job_forms.1") }}</legend>
+          <ul class="value-list">
+            {% for code, words in reasons %}
+            <li><label class="check"><input type="checkbox" name="reason" value="{{ code }}"{% if code in record.reasons %} checked{% endif %}>{{ words }}</label></li>
+            {% endfor %}
+          </ul>
+        </fieldset>
+        {% endif %}
+        <div class="field">
+          <label for="decision-note{{ n }}">{{ t("job._job_forms.5", p0=(NOTE_CHARS)) }}</label>
+          <textarea id="decision-note{{ n }}" name="note" rows="2" maxlength="{{ NOTE_CHARS }}">{{ record.note or "" }}</textarea>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="secondary">{{ t("jobx.save_reasons") }}</button>
+        </div>
+      </form>
+      <form method="post" action="{{ action }}" class="inline decision-undo">
+        {{ m.csrf() }}
+        <input type="hidden" name="revision" value="{{ record.revision }}">
+        <input type="hidden" name="decision" value="">
+        {% if from_list %}<input type="hidden" name="back" value="list">{% endif %}
+        <button type="submit" class="link-button">{{ t("job.job_record.70") }}</button>
+        <span class="hint">{{ t("jobx.undo_hint") }}</span>
+      </form>
+    </details>
+    {% endif %}{% endfor %}
+  </div>
+  {% endif %}
+</section>
+{% endmacro %}
+
+{#- Another decision asked for while the one made has reasons (owner review): nothing is written yet. The new
+    decision's own reasons and the note, as it is, are shown to keep or change; the reasons of the one before are named,
+    since they are not kept for another decision. Cancel changes nothing. -#}
+{% macro change_panel(record, action, change, from_list=False) %}
+{% for value, label, reasons in DECISIONS %}{% if value == change %}
+<section class="decision-confirm" id="decision-change" aria-labelledby="decision-change-title">
+  <h2 id="decision-change-title" tabindex="-1">{{ t("jobx.change_to", label=label) }}</h2>
+  {% if record.decision and record.reasons %}
+  <p>{{ t("jobx.change_drops", old=decision_label(record.decision), reasons=list_join(reason_labels(record.decision, record.reasons)), label=label) }}</p>
+  {% endif %}
+  {% if record.note %}<p class="hint">{{ t("jobx.change_note") }}</p>{% endif %}
+  <form method="post" action="{{ action }}" class="keep-form">
+    {{ m.csrf() }}
+    <input type="hidden" name="revision" value="{{ record.revision }}">
+    <input type="hidden" name="decision" value="{{ value }}">
+    <input type="hidden" name="reasons_shown" value="1">
+    {% if from_list %}<input type="hidden" name="back" value="list">{% endif %}
+    {% if reasons %}
+    <fieldset class="choice-group">
+      <legend>{{ t("job._job_forms.1") }}</legend>
+      <ul class="value-list">
+        {% for code, words in reasons %}
+        <li><label class="check"><input type="checkbox" name="reason" value="{{ code }}">{{ words }}</label></li>
+        {% endfor %}
+      </ul>
+    </fieldset>
+    {% endif %}
+    <div class="field">
+      <label for="change-note">{{ t("job._job_forms.5", p0=(NOTE_CHARS)) }}</label>
+      <textarea id="change-note" name="note" rows="2" maxlength="{{ NOTE_CHARS }}">{{ record.note or "" }}</textarea>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="primary">{{ t("jobx.save_decision") }}</button>
+      <a class="button secondary" href="{% if from_list %}/job-records?job={{ record.id }}{% else %}/job-records/postings/{{ record.id }}{% endif %}">{{ t("common.cancel") }}</a>
+    </div>
+  </form>
+</section>
+{% endif %}{% endfor %}
+{% endmacro %}
+
 {% macro feedback_form(action, hidden) %}
 <details class="fold keep-choice">
-  {{ m.fold_summary("指出不准…") }}
+  {{ m.fold_summary(t("job.report_wrong")) }}
   <form method="post" action="{{ action }}" class="keep-form">
     {{ m.csrf() }}
     {{ hidden_fields(hidden) }}
     <fieldset class="choice-group">
-      <legend>哪一项不准</legend>
+      <legend>{{ t("job._job_forms.6") }}</legend>
       <div class="choice-row">
         {% for code, words in FEEDBACK_FIELDS %}
         <label class="check"><input type="radio" name="field" value="{{ code }}"{% if loop.first %} required{% endif %}>{{ words }}</label>
@@ -63,7 +176,7 @@
       </div>
     </fieldset>
     <fieldset class="choice-group">
-      <legend>哪里不准</legend>
+      <legend>{{ t("job._job_forms.7") }}</legend>
       <div class="choice-row">
         {% for code, words in FEEDBACK_REASONS %}
         <label class="check"><input type="radio" name="feedback_reason" value="{{ code }}"{% if loop.first %} required{% endif %}>{{ words }}</label>
@@ -71,11 +184,11 @@
       </div>
     </fieldset>
     <div class="field">
-      <label for="note-feedback">说明（选填，最多 {{ NOTE_CHARS }} 字，只存在你的岗位记录里）</label>
+      <label for="note-feedback">{{ t("job._job_forms.8", p0=(NOTE_CHARS)) }}</label>
       <textarea id="note-feedback" name="note" rows="2" maxlength="{{ NOTE_CHARS }}"></textarea>
     </div>
     <div class="form-actions">
-      <button type="submit" class="secondary">记下不准</button>
+      <button type="submit" class="secondary">{{ t("job._job_forms.9") }}</button>
     </div>
   </form>
 </details>

@@ -42,13 +42,13 @@ from app.library.lifecycle import active_direction_record
 from app.library.models import DecisionBasis, DirectionDecision, DirectionExploration
 from app.library.references import SourceState, exploration_state, state_of, worst
 from app.library.service import is_expired
+from app.i18n import lazy, t
 
-RESULT_MOVED = "这次结果用到的资料在这之后改过或删除了：结果不能保存，也不能据此做决定。可以重新核对后再探索一次。"
-EXPLORATION_MOVED = "这次探索依据的资料在保存之后改过或删除了：不能再根据它做决定。"
-GONE_FOR_DECIDING = "这次探索保存以后已经永久删除，不能再根据这次结果做决定。要重新探索，请重新核对。"
+RESULT_MOVED = lazy("dir.act.1")
+EXPLORATION_MOVED = lazy("dir.act.2")
+GONE_FOR_DECIDING = lazy("dir.act.3")
 NEEDS_OWN_CHOICE = (
-    "这条决定依据的探索已经不能使用（没有保存、已删除，或者依据的资料改过），所以不能直接改。"
-    "要改变它，请先把它重新定为你自己的选择；也可以撤销这条决定。"
+    lazy("dir.act.4")
 )
 
 

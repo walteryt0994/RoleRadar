@@ -28,10 +28,10 @@ from dataclasses import dataclass, replace
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
+from sqlalchemy import select
 from starlette.datastructures import FormData
 
 from app.analysis_contracts import AnalysisStatus, RequirementGroup, task_fingerprint
-from app.experience_analysis import PREFERENCE_TOPICS
 from app.job_analysis import presentation
 from app.job_analysis.runner import run_task
 from app.job_analysis.service import LiveService, local_provider
@@ -59,17 +59,24 @@ from app.library.service import list_experiences
 from app.library.sends import sends_text
 from app.library.web import NOTICES as LIBRARY_NOTICES
 from app.library.web import CsrfRejected, check_same_origin, current_user, message_page, render, runtime, safe_next, see_other
+from app import i18n
+from app.discovery import records as job_records
+from app.discovery.supplied import LINK
+from app.i18n import MessageMap, lazy, t
+from app.library.lifecycle import active_job_record
+from app.library.models import JobAnalysis, JobPosting
 
 BASE = "/job-analysis"
 # The version of what the review page says about a task; part of its fingerprint.
 NOTICE_VERSION = "1"
 MAX_FORM_FIELDS = 300
-NOTICES = {
-    "already": "这次确认已经开始过，没有重复执行。",
-    "scope_updated": "已按你的选择更新核对内容，请再看一遍后确认。",
-    "scope_changed": "你改动了发送范围，所以还没有开始。下面已按新的范围更新，请再看一遍后确认。",
-    "service_changed": "接收方或处理说明已经变化，所以没有开始。下面已按当前的服务重新生成核对内容，请再看一遍后确认。",
-}
+NOTICES = MessageMap({
+    "analysis_saved": "job.standalone.saved",
+    "already": "job.aweb.notices.1",
+    "scope_updated": "job.aweb.notices.2",
+    "scope_changed": "job.aweb.notices.3",
+    "service_changed": "job.aweb.notices.4",
+})
 
 router = APIRouter()
 
@@ -146,9 +153,8 @@ def install_job_analysis(
     app.include_router(router)
 
     if simulation_delay:
-        app.state.library.templates.env.globals["simulation_note"] = (
-            f"模拟服务每一步会故意等待 {simulation_delay:g} 秒：只用于在本地查看等待、取消和迟到的回答。"
-        )
+        # The banner says it in the page's language (app.i18n, app.simulation_note).
+        app.state.library.templates.env.globals["simulation_seconds"] = f"{simulation_delay:g}"
 
     return jobs
 
@@ -184,13 +190,13 @@ def checked_fields(
 # --- the input page ------------------------------------------------------------------
 
 
-SUPPLIED_GONE = "补充的岗位原文已经过期或不在了（只在内存里保留 30 分钟，退出登录时也会清掉），没有填入；可以重新补充，或者直接粘贴。"
-SUPPLIED_FILLED = "已填入你补充的岗位原文。选好经历以后，要先看核对页并确认，才会分析；只填入不会发出任何请求。"
+SUPPLIED_GONE = lazy("job.aweb.5")
+SUPPLIED_FILLED = lazy("job.aweb.6")
 
 
 @router.get(BASE)
 def input_page(request: Request, notice: str = "", user: CurrentUser = Depends(current_user)):
-    inputs = TaskInputs(chosen=(), posting="", use_preferences=False)
+    inputs = TaskInputs(chosen=(), posting="", use_preferences=False, result_language=i18n.language())
     origin = request.query_params.get("from", "")
     said = LIBRARY_NOTICES.get(notice)
 
@@ -218,7 +224,9 @@ def input_page(request: Request, notice: str = "", user: CurrentUser = Depends(c
                 text = job_texts.text_in_use(db, user.id, record_id)
 
         if text:
-            inputs = TaskInputs(chosen=(), posting=text, use_preferences=False)
+            # The reference goes with the form; the review verifies it (the user's own, still there, the very text).
+            reference = f"supplied:{supplied_token}" if supplied_token else f"record:{record_id}"
+            inputs = TaskInputs(chosen=(), posting=text, use_preferences=False, result_language=i18n.language(), origin=reference)
 
         said = SUPPLIED_FILLED if text else SUPPLIED_GONE
 
@@ -251,6 +259,7 @@ def input_form(
         "job_input.html",
         {
             "area": "jobs",
+            "section": "discover",
             "experiences": snapshot.experiences,
             "unconfirmed": unconfirmed,
             "has_preferences": has_preferences,
@@ -265,7 +274,6 @@ def input_form(
             "service_label": presentation.service_label(jobs_of(request).recipient),
             "MAX_POSTING_CHARS": MAX_POSTING_CHARS,
             "MAX_EXPERIENCES": MAX_EXPERIENCES,
-            "CATEGORY_LABELS": CATEGORY_LABELS,
             "categories": EXPERIENCE_CATEGORIES,
         },
         user=user,
@@ -293,6 +301,9 @@ def review(request: Request, user: CurrentUser = Depends(current_user), form: Fo
         chosen=_chosen(form.getlist("source")),
         posting=form.get("posting", ""),
         use_preferences=form.get("use_preferences") == "yes",
+        # Only a whitelisted language; anything else is the interface language (plan 6.3).
+        result_language=i18n.result_language(form.get("result_language")),
+        origin=form.get("origin", "")[:200],
     )
 
     return new_review(request, user, inputs)
@@ -309,20 +320,21 @@ def new_review(request: Request, user: CurrentUser, inputs: TaskInputs, *, repla
     except InputProblem as problem:
         return input_form(request, user, inputs, problem)
 
-    analysis_request = build_request(user.id, plan, jobs.recipient, jobs.notice_version)
+    analysis_request = build_request(user.id, plan, jobs.recipient, jobs.notice_version, inputs.result_language)
+    origin = resolve_origin(request, user, inputs)
 
     try:
         task = jobs.store.create(
-            user.id, user.token_hash, inputs, plan, analysis_request, task_fingerprint(analysis_request)
+            user.id, user.token_hash, inputs, plan, analysis_request, task_fingerprint(analysis_request), origin=origin
         )
     except TooManyTasks:
         return message_page(
             request,
-            title="暂时不能开始新的分析",
-            message="服务器上正在保留的临时分析太多了。请稍后再试，或先取消你不需要的分析。",
+            title=t("job.aweb.7"),
+            message=t("job.aweb.8"),
             status_code=503,
             user=user,
-            links=[(BASE, "返回岗位分析")],
+            links=[(BASE, t("job.aweb.9"))],
         )
 
     if replaces:
@@ -346,14 +358,13 @@ def _task(request: Request, user: CurrentUser, task_id: str):
 def gone_page(request: Request, user: CurrentUser) -> Response:
     return message_page(
         request,
-        title="找不到这次分析",
+        title=t("job.aweb.10"),
         message=(
-            "它可能已经过期（临时结果保留 30 分钟）、服务已重启、你已退出登录，或者它属于其他会话。"
-            "需要的话，请重新开始一次分析。"
+            t("job.aweb.11")
         ),
         status_code=404,
         user=user,
-        links=[(BASE, "返回岗位分析")],
+        links=[(BASE, t("job.aweb.9"))],
     )
 
 
@@ -369,6 +380,7 @@ def task_page(task_id: str, request: Request, notice: str = "", user: CurrentUse
 
     context = {
         "area": "jobs",
+            "section": "discover",
         "task": task,
         "notice": NOTICES.get(notice),
         "running_label": presentation.running_label(task),
@@ -391,6 +403,7 @@ def review_page(request: Request, user: CurrentUser, task, *, notice=None, error
         "job_review.html",
         {
             "area": "jobs",
+            "section": "discover",
             "task": task,
             "service": presentation.service_view(jobs_of(request)),
             "plan": task.plan,
@@ -400,7 +413,6 @@ def review_page(request: Request, user: CurrentUser, task, *, notice=None, error
             "LEFT_OUT": LEFT_OUT,
             "BLOCKED": BLOCKED,
             "PREFERENCES_KEY": PREFERENCES_KEY,
-            "CATEGORY_LABELS": CATEGORY_LABELS,
             "found_labels": presentation.found_labels,
             "TASK_TTL_MINUTES": TASK_TTL_SECONDS // 60,
             "MAX_OUTBOUND_CHARS": MAX_OUTBOUND_CHARS,
@@ -487,7 +499,7 @@ def confirm(
             request,
             user,
             task,
-            error="你已经有一个分析正在进行。请等它结束，或者取消它之后再开始。",
+            error=t("job.aweb.12"),
             status_code=409,
         )
 
@@ -496,7 +508,7 @@ def confirm(
             request,
             user,
             task,
-            error="这个确认来自旧的核对页面，所以没有开始。请看一遍下面最新的核对内容后再确认。",
+            error=t("job.aweb.13"),
             status_code=409,
         )
 
@@ -564,6 +576,200 @@ def task_status(task_id: str, request: Request, user: CurrentUser = Depends(curr
     )
 
 
+# --- where the posting came from, and keeping the analysis (UI bilingual batch, plan 5.3) ------------------------
+
+
+def resolve_origin(request: Request, user: CurrentUser, inputs: TaskInputs) -> "job_records.AnalysisOrigin":
+    """The posting's source as the server can vouch for it now: a pasted posting the user keeps in 我的岗位, or one
+    补充岗位 read or took in this session, only while it is theirs, still there and the very text posted here (an
+    edited text is the user's own pasted text); anything else, or nothing said, is text pasted here only."""
+    kind, _, reference = inputs.origin.partition(":")
+    posted = same_lines(inputs.posting)
+
+    if kind == "record" and reference:
+        with runtime(request).database.transaction() as db:
+            text = job_texts.text_in_use(db, user.id, reference)
+
+            if text is None or same_lines(text) != posted:
+                return job_records.PASTED_ORIGIN
+
+            row = active_job_record(db, user.id, JobPosting, reference)
+            facts = row.facts or {}
+
+            return job_records.AnalysisOrigin(
+                row.source_id,
+                row.posting_id,
+                job_texts.USER_PROVIDED,
+                job_texts.USER_PROVIDED,
+                title=facts.get("title") or "",
+                company=facts.get("company") or "",
+                record_id=row.id,
+            )
+
+    if kind == "supplied" and reference:
+        holder = getattr(request.app.state, "supplied", None)
+        held = None if holder is None else holder.get(reference, user.id, user.token_hash)
+        content = None if held is None else held.content
+        text = None if content is None else content.text
+
+        if text is None or same_lines(text) != posted:
+            return job_records.PASTED_ORIGIN
+
+        if content.kind == LINK:
+            facts = content.reading.facts or {}
+
+            return job_records.AnalysisOrigin(
+                content.ref.source_id,
+                content.ref.posting_id,
+                content.access,
+                facts.get("evidence") or "official",
+                source_name=content.source_name,
+                title=facts.get("title") or "",
+                company=facts.get("company") or "",
+                url=content.reading.url,
+                supplied_token=reference,
+            )
+
+        if not content.posting_id:
+            return job_records.PASTED_ORIGIN
+
+        # The pasted posting's own id since it was supplied (Codex review F2): the posting it becomes in 我的岗位 has
+        # it too, so the analysis is that posting's whichever is saved first. Kept already, it names that record.
+        record_id = None
+
+        if held.saved is not None:
+            with runtime(request).database.transaction() as db:
+                row = db.get(JobPosting, held.saved)
+
+                if row is not None and row.owner_id == user.id and row.deleted_at is None and row.posting_id == content.posting_id:
+                    record_id = row.id
+
+        return job_records.AnalysisOrigin(
+            job_records.SUPPLIED_SOURCE,
+            content.posting_id,
+            job_texts.USER_PROVIDED,
+            job_texts.USER_PROVIDED,
+            title=content.title,
+            company=content.company,
+            record_id=record_id,
+            supplied_token=reference,
+        )
+
+    return job_records.PASTED_ORIGIN
+
+
+def same_lines(text: str) -> str:
+    """Text as it compares with what a form sends back: a browser sends a textarea's line breaks as CR LF, so the
+    text it was filled with comes back with other line endings; only those, and the ends, are evened out."""
+    return text.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def saved_state(request: Request, user: CurrentUser, task) -> dict:
+    """Whether this task's analysis may be kept, or is kept (in use, in the bin, or gone for good since)."""
+    rt = runtime(request)
+    origin = task.origin or job_records.PASTED_ORIGIN
+    keepable = origin.access in job_records.STANDALONE_KEEPABLE_ACCESS
+
+    with rt.database.transaction() as db:
+        row = job_records.standalone_of(db, user.id, task.id)
+
+        if row is not None and row.deleted_at is not None and _expired(row, rt.now()):
+            row = None
+            gone = True
+        else:
+            gone = row is None and task.saved_id is not None
+
+    return {
+        "saved_row": row if row is not None and row.deleted_at is None else None,
+        "saved_in_bin": row is not None and row.deleted_at is not None,
+        "saved_gone": gone,
+        "keepable": keepable,
+        "origin": origin,
+        "posting_entry": posting_entry(request, user, origin),
+    }
+
+
+def posting_entry(request: Request, user: CurrentUser, origin) -> tuple[str, str | None]:
+    """Where the result page leads for the posting it analysed (Codex review F2), as things are now: the user's posting
+    of the same identity ("record"); else the 补充岗位 result still held, to add it to 我的岗位 from ("supply"); else
+    that result is gone ("expired"); text pasted here only has no posting identity ("pasted"). Saving the analysis and
+    adding the posting stay separate choices: this only leads to the page where the user adds it."""
+    if origin.source_id == job_records.PASTED_ANALYSIS_SOURCE:
+        return "pasted", None
+
+    rt = runtime(request)
+
+    with rt.database.transaction() as db:
+        row = db.scalar(
+            select(JobPosting).where(
+                JobPosting.owner_id == user.id,
+                JobPosting.source_id == origin.source_id,
+                JobPosting.posting_id == origin.posting_id,
+                JobPosting.deleted_at.is_(None),
+            )
+        )
+
+    if row is not None:
+        return "record", row.id
+
+    holder = getattr(request.app.state, "supplied", None)
+
+    if origin.supplied_token and holder is not None and holder.get(origin.supplied_token, user.id, user.token_hash) is not None:
+        return "supply", origin.supplied_token
+
+    return "expired", None
+
+
+def _expired(row, now) -> bool:
+    from app.library.service import is_expired
+
+    return is_expired(row, now)
+
+
+@router.post(f"{BASE}/tasks/{{task_id}}/save")
+def save(task_id: str, request: Request, user: CurrentUser = Depends(current_user), form: FormData = Depends(checked_fields)):
+    """Keep this task's analysis on its own (plan 5.3): no posting is saved or bookmarked by it. Kept already, it is
+    the one kept; in the bin or deleted for good since, it is not kept again; a page of a task gone finds nothing."""
+    try:
+        task = _task(request, user, task_id)
+    except NotFound:
+        return gone_page(request, user)
+
+    if task.stage is not Stage.DONE:
+        return see_other(f"{BASE}/tasks/{task.id}")
+
+    rt = runtime(request)
+
+    try:
+        with rt.database.transaction() as db:
+            row = job_records.keep_standalone_analysis(
+                db,
+                user.id,
+                task.id,
+                task.request,
+                task.result,
+                task.origin or job_records.PASTED_ORIGIN,
+                analysed_at=task.finished_at,
+                mode="live" if jobs_of(request).live is not None else "simulated",
+                saved_id=task.saved_id,
+                now=rt.now(),
+            )
+            saved_id = row.id
+    except job_records.KeepRefused as refused:
+        return message_page(
+            request,
+            title=t("job.standalone.not_saved"),
+            message=str(refused.reason),
+            status_code=409,
+            user=user,
+            links=[(f"{BASE}/tasks/{task.id}", t("job.standalone.back"))],
+        )
+
+    jobs_of(request).store.note_saved(task.id, user.id, user.token_hash, saved_id)
+
+    return see_other(f"{BASE}/tasks/{task.id}?notice=analysis_saved")
+
+
 # --- the result ------------------------------------------------------------------------
 
 
@@ -591,6 +797,7 @@ def result_context(request: Request, user: CurrentUser, task) -> dict:
     }
 
     return {
+        **saved_state(request, user, task),
         "result": result,
         "changed_since": changed,
         "outcome": presentation.outcome_message(result),
@@ -605,7 +812,6 @@ def result_context(request: Request, user: CurrentUser, task) -> dict:
         "reason_labels": presentation.reason_labels,
         "BASIS_LABELS": presentation.BASIS_LABELS,
         "GROUP_HEADINGS": presentation.GROUP_HEADINGS,
-        "PREFERENCE_TOPICS": PREFERENCE_TOPICS,
         "SELECTION_PROBLEMS": presentation.SELECTION_PROBLEMS,
         "Status": AnalysisStatus,
         "Group": RequirementGroup,

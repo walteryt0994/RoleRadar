@@ -83,7 +83,18 @@ from app.library.models import (
     ResumeImport,
     VersionKind,
 )
-from app.library.presentation import EVENT_LABELS, format_local, format_size, state_label, version_label
+from app.library.presentation import (
+    CATEGORY_NAMES,
+    EVENT_LABELS,
+    label_of,
+    format_local,
+    format_size,
+    group_label,
+    preference_label,
+    shown_fields,
+    state_label,
+    version_label,
+)
 from app.library.review import IMPORT_EVENTS, adoption_views, candidates_of, kept_record, review_record, structuring_of
 from app.library.service import (
     active_item,
@@ -92,6 +103,7 @@ from app.library.service import (
     item_versions,
     list_experiences,
 )
+from app.i18n import MessageMap, lazy, list_join, t
 
 EXPORT_FORMAT = "roleradar-library-export"
 # 2: six categories, the profile and the preferences; field labels per kind.
@@ -109,25 +121,24 @@ EXPORT_FORMAT = "roleradar-library-export"
 # 14: postings the user added themselves (U3-D4d): how each came (supplied), and the text of one they pasted (user_text).
 EXPORT_FORMAT_VERSION = 14
 SHARE_WARNING = (
-    "注意：这份文件包含你的私有备注或联系方式。导出文件离开 RoleRadar 后不再受平台的权限保护；"
-    "分享或发送之前，请先检查并删掉不想让别人看到的内容。"
+    lazy("exp.11")
 )
 NOT_INCLUDED = (
-    "已超过恢复期限或已永久删除的内容，包括附件文件",
-    "没有上传完成的附件",
-    "已放弃、已到期或已永久删除的简历导入，包括超过恢复期限的导入草稿",
-    "岗位分析结果、岗位简历和投递记录：这些功能还没有建立",
+    lazy("exp.12"),
+    lazy("exp.13"),
+    lazy("exp.14"),
+    lazy("exp.15"),
 )
-IMPORT_SOURCES = {ImportSource.PDF: "PDF", ImportSource.DOCX: "Word（.docx）", ImportSource.TEXT: "粘贴的文字"}
-IMPORT_STATES = {"reading": "正在读取", "read": "文字已读取", "partial": "部分读取", "failed": "读取失败"}
+IMPORT_SOURCES = MessageMap({ImportSource.PDF: "exp.import_sources.1", ImportSource.DOCX: "exp.import_sources.2", ImportSource.TEXT: "exp.import_sources.3"})
+IMPORT_STATES = MessageMap({"reading": "exp.import_states.1", "read": "exp.import_states.2", "partial": "exp.import_states.3", "failed": "exp.import_states.4"})
 FILE_PREFIXES = {PROFILE: "roleradar-profile", PREFERENCES: "roleradar-preferences"}
 # What happened to an attachment file in "export all".
 INCLUDED, MISSING, UNREADABLE, CHANGED = "included", "missing", "unreadable", "changed"
-STATUS_TEXT = {
-    MISSING: "文件缺失，没有包含在导出包里",
-    UNREADABLE: "文件无法读取，没有包含在导出包里",
-    CHANGED: "文件和上传时记录的大小或校验值不一致（可能已损坏），没有包含在导出包里",
-}
+STATUS_TEXT = MessageMap({
+    MISSING: "exp.status_text.1",
+    UNREADABLE: "exp.status_text.2",
+    CHANGED: "exp.status_text.3",
+})
 # Characters some systems do not allow in file names.
 _NOT_IN_NAMES = re.compile(r'[\\/:*?"<>|]')
 
@@ -174,6 +185,9 @@ class ExportPackage:
     handle: BinaryIO
     size: int
     complete: bool
+    # What this very build could not put in (UI bilingual batch, plan 5.6): each attachment or import file left out,
+    # with its status and where to find it; the same build's manifest and README list the same.
+    left_out: list[dict] = field(default_factory=list)
 
 
 def single_export(
@@ -234,74 +248,73 @@ def item_markdown(
     lines = [
         f"# {display_title(item.content, item.category)}",
         "",
-        f"- 类别：{CATEGORY_LABELS.get(item.category, item.category)}",
+        t("exp.16", p0=CATEGORY_NAMES.get(item.category, item.category)),
     ]
 
     if not document:
         last_confirmed = (
-            format_local(item.last_confirmed_at) if item.last_confirmed_at else "尚未确认"
+            format_local(item.last_confirmed_at) if item.last_confirmed_at else t("exp.17")
         )
-        lines.append(f"- 状态：{state_label(item)}")
+        lines.append(t("exp.18", p0=state_label(item)))
 
     lines += [
-        f"- 第一次保存：{format_local(item.created_at)}",
-        f"- 最近一次保存：{format_local(item.updated_at)}",
+        t("exp.19", p0=format_local(item.created_at)),
+        t("exp.20", p0=format_local(item.updated_at)),
     ]
 
     if not document:
-        lines.append(f"- 上次确认：{last_confirmed}")
+        lines.append(t("exp.21", p0=last_confirmed))
 
     lines += [
-        f"- {'编号' if document else '经历编号'}：{item.id}",
-        f"- 导出时间：{format_local(now)}",
+        t("exp.22", p0=t("exp.id_document") if document else t("exp.id_item"), p1=item.id),
+        t("exp.23", p0=format_local(now)),
     ]
 
-    lines += [f"- 来源提示：{format_local(at)} {EVENT_LABELS.get(action, action)}" for action, at in provenance]
+    lines += [t("exp.24", p0=format_local(at), p1=EVENT_LABELS.get(action, action)) for action, at in provenance]
 
     if item.deleted_at is not None:
         lines.append(
-            f"- 回收站：删除于 {format_local(item.deleted_at)}，"
-            f"在 {format_local(item.purge_after)} 之前可以恢复，之后会被永久删除"
+            t("exp.25", p0=format_local(item.deleted_at), p1=format_local(item.purge_after))
         )
 
-    lines += ["", f"> {SHARE_WARNING}", "", "## 当前内容", ""]
+    lines += ["", f"> {SHARE_WARNING}", "", t("exp.26"), ""]
     lines += _field_lines(item.category, item.content)
 
     if not document:
-        lines += ["## 私有备注", "", item.private_note or NOT_FILLED, ""]
+        lines += [t("exp.27"), "", item.private_note or NOT_FILLED, ""]
 
     if attachments is not None:
         lines += _attachment_lines(item, attachments)
 
-    lines += [f"## 历史版本（{len(versions)} 个）", ""]
+    lines += [t("exp.28", p0=len(versions)), ""]
 
     if not versions:
-        lines += ["没有保留的历史版本。", ""]
+        lines += [t("exp.29"), ""]
 
     for version in versions:
         when = {
-            VersionKind.INITIAL: "第一次保存于",
-            VersionKind.SAVED: "保存于",
-        }.get(version.kind, "确认于")
+            VersionKind.INITIAL: t("exp.30"),
+            VersionKind.SAVED: t("exp.31"),
+        }.get(version.kind, t("exp.32"))
         lines += [f"### {version_label(version)} · {when} {format_local(version.created_at)}", ""]
 
         if version.deleted_at is not None:
             lines += [
-                f"这个历史版本已单独删除，在 {format_local(version.purge_after)} 之前可以恢复。",
+                t("exp.33", p0=format_local(version.purge_after)),
                 "",
             ]
 
         lines += _field_lines(item.category, version.content)
 
         if not document:
-            lines += ["**当时的私有备注**", "", version.private_note or NOT_FILLED, ""]
+            lines += [t("exp.34"), "", version.private_note or NOT_FILLED, ""]
 
     scope = (
-        "导出范围：当前内容，以及仍保留或仍可恢复的历史版本；"
+        t("exp.35")
         if document
-        else "导出范围：这条经历的当前内容和私有备注，以及仍保留或仍可恢复的历史版本；"
+        else t("exp.36")
     )
-    lines += ["---", "", scope + "不含已超过恢复期限或已永久删除的内容。", ""]
+    lines += ["---", "", scope + t("exp.37"), ""]
 
     return "\n".join(lines)
 
@@ -311,33 +324,32 @@ experience_markdown = item_markdown
 
 
 def _attachment_lines(item: ExperienceItem, entries: list[AttachmentEntry]) -> list[str]:
-    lines = [f"## 附件（{len(entries)} 个）", ""]
+    lines = [t("exp.38", p0=len(entries)), ""]
 
     if not entries:
-        return lines + ["没有附件。", ""]
+        return lines + [t("exp.39"), ""]
 
     for entry in entries:
         attachment = entry.attachment
         notes = []
 
         if attachment.deleted_at is not None and attachment.deletion_id != item.deletion_id:
-            notes.append(f"已单独删除，在 {format_local(attachment.purge_after)} 之前可以恢复")
+            notes.append(t("exp.40", p0=format_local(attachment.purge_after)))
 
         if entry.path is not None:
-            notes.append(f"文件在导出包的 `{entry.path}`")
+            notes.append(t("exp.41", p0=entry.path))
         elif entry.status is not None:
             notes.append(STATUS_TEXT[entry.status])
 
         line = (
-            f"- {attachment.filename}（{TYPE_LABELS.get(attachment.media_type, attachment.media_type)}，"
-            f"{format_size(attachment.size)}，上传于 {format_local(attachment.created_at)}）"
+            t("exp.42", p0=attachment.filename, p1=TYPE_LABELS.get(attachment.media_type, attachment.media_type), p2=format_size(attachment.size), p3=format_local(attachment.created_at))
         )
-        lines.append(line + ("：" + "；".join(notes) if notes else ""))
+        lines.append(line + (t("exp.43") + list_join(notes, "clauses") if notes else ""))
 
     lines.append("")
 
     if all(entry.status is None for entry in entries):
-        lines += ["附件文件本身不在这个 Markdown 文件里；需要文件时，请在经历页面单独下载，或使用“导出全部”。", ""]
+        lines += [t("exp.45"), ""]
 
     return lines
 
@@ -348,8 +360,10 @@ def _field_lines(category: str, content: dict) -> list[str]:
 
     lines = []
 
-    for field in CATEGORY_FIELDS[category]:
-        lines += [f"**{field.label}**", "", content.get(field.name) or NOT_FILLED, ""]
+    # The fields as the reading page shows them (plan 5.2), named in the language the export is built in (6.4); the
+    # user's words as they are.
+    for name in shown_fields(content, category):
+        lines += [f"**{label_of(category, name)}**", "", content.get(name) or t("content.not_filled"), ""]
 
     return lines
 
@@ -358,14 +372,14 @@ def _preference_lines(content: dict) -> list[str]:
     """Each preference with only the answers given; nothing given reads as undecided."""
     lines = []
 
-    for _, label, fields in PREFERENCE_GROUPS:
+    for key, _, fields in PREFERENCE_GROUPS:
         answers = [
-            f"{field.label}：{content[field.name]}" for field in fields if content.get(field.name)
+            t("exp.46", p0=preference_label(field.name), p1=content[field.name]) for field in fields if content.get(field.name)
         ]
-        lines += [f"**{label}**", "", "\n\n".join(answers) if answers else NOT_DECIDED, ""]
+        lines += [f"**{group_label(f'pref.group.{key}')}**", "", "\n\n".join(answers) if answers else t("content.not_decided"), ""]
 
     for field in PREFERENCE_SINGLES:
-        lines += [f"**{field.label}**", "", content.get(field.name) or NOT_DECIDED, ""]
+        lines += [f"**{preference_label(field.name)}**", "", content.get(field.name) or t("content.not_decided"), ""]
 
     return lines
 
@@ -656,7 +670,15 @@ def _write_zip(content: ExportContent, files: FileStore, owner_label: str, now: 
     handle.seek(0)
     suffix = "" if complete else "-incomplete"
 
-    return ExportPackage(filename=f"{folder}{suffix}.zip", handle=handle, size=size, complete=complete)
+    missing = [
+        {"kind": "attachment", "name": entry["filename"], "status": entry["status"], "href": f"/experiences/{entry['experience_id']}"}
+        for entry in left_out
+    ] + [
+        {"kind": "import", "name": entry["filename"] or entry["folder"], "status": entry["original_status"], "href": f"/imports/{entry['import_id']}"}
+        for entry in imports_left_out
+    ]
+
+    return ExportPackage(filename=f"{folder}{suffix}.zip", handle=handle, size=size, complete=complete, left_out=missing)
 
 
 def _copy_attachment(archive: zipfile.ZipFile, files: FileStore, attachment: Attachment, name: str, stamp) -> str:
@@ -709,12 +731,12 @@ def _copy_import(archive: zipfile.ZipFile, files: FileStore, row: ResumeImport, 
 def _kept_text(row: ResumeImport, draft: ImportDraft | None) -> str:
     """How an import is kept, as the README says it (U2-B3a)."""
     if draft is None:
-        return f"暂存到 {format_local(row.expires_at)}"
+        return t("exp.47", p0=format_local(row.expires_at))
 
     if draft.deleted_at is None:
-        return f"已保存为待核对草稿（{format_local(draft.saved_at)} 保存，不会到期）"
+        return t("exp.48", p0=format_local(draft.saved_at))
 
-    return f"已删除的草稿，在回收站里，{format_local(draft.purge_after)} 之前可以恢复"
+    return t("exp.49", p0=format_local(draft.purge_after))
 
 
 def _import_record(row: ResumeImport, entry: dict, review: dict | None, draft: ImportDraft | None) -> dict:
@@ -765,119 +787,105 @@ def _readme(
     imports_left_out = [entry for _, entry, _ in imports if entry["original_status"] not in (None, INCLUDED)]
     current_files = sum(1 for entry in included if entry["section"] == "current")
     lines = [
-        "# RoleRadar 经历库导出",
+        t("exp.50"),
         "",
-        f"- 导出时间：{format_local(now)}",
-        f"- 导出账号：{owner_label}（本地开发模式的合成用户）",
+        t("exp.23", p0=format_local(now)),
+        t("exp.51", p0=owner_label),
         "",
     ]
 
     if left_out:
         lines += [
-            f"**这个导出包不完整：有 {len(left_out)} 个附件的文件没能放进来，原因见下面的“没能包含的附件”和 manifest.json。**",
+            t("exp.52", p0=len(left_out)),
             "",
         ]
 
     if imports_left_out:
         lines += [
-            f"**这个导出包不完整：有 {len(imports_left_out)} 个导入的原文件没能放进来，原因见下面的“简历导入（不是正式资料）”和 manifest.json。**",
+            t("exp.53", p0=len(imports_left_out)),
             "",
         ]
 
     lines += [
-        "## 包含什么",
+        t("exp.54"),
         "",
-        f"- `experiences/`：当前的经历（六个类别），每条一个 Markdown 文件，共 {len(listing['experiences'])} 条；"
-        f"每条经历的附件原文件在它旁边的 `…-attachments/` 文件夹里，共 {current_files} 个。",
-        "- `profile.md`、`preferences.md`：当前的基本资料和求职偏好（只在已经填写时才有）。",
-        f"- `recycle-bin/`：回收站里仍可恢复的内容，共 {len(listing['recycle-bin'])} 份，"
-        f"以及仍可恢复的附件文件 {len(included) - current_files} 个；每份都写明了恢复截止时间。"
-        "当前经历中单独删除的附件在 `recycle-bin/deleted-attachments/` 里，文件夹名对应 `experiences/` 里的经历。",
-        f"- `imports/`：还在暂存期内的简历导入，共 {len(imports)} 份，每份有读到的文字（`text.txt`）和原文件；"
-        "整理过的还有待核对的条目和核对进度（`candidates.json`）。它们不属于经历库，见下面的“导入中的临时资料”。",
+        t("exp.55", p0=len(listing['experiences']), p1=current_files),
+        t("exp.56"),
+        t("exp.57", p0=len(listing['recycle-bin']), p1=len(included) - current_files),
+        t("exp.58", p0=len(imports)),
     ]
 
     if directions.explorations or directions.decisions:
         counts = directions.counts()
         lines.append(
-            f"- `directions.md`：你保存的方向探索 {counts['direction_explorations']} 次、方向决定 "
-            f"{counts['direction_decisions']} 条，以及回收站里还能恢复的 {counts['direction_recycle_bin']} 条；"
-            "每条都写明它依据的资料现在的状态。方向探索是当时的结果，不会随资料改动而改写。"
+            t("exp.59", p0=counts['direction_explorations'], p1=counts['direction_decisions'], p2=counts['direction_recycle_bin'])
         )
 
     if jobs:
         counts = jobs.counts()
         lines.append(
-            f"- `jobs.md`：你在找岗位结果里加入我的岗位的岗位 {counts['job_postings']} 个、分析 {counts['job_analyses']} 份、"
-            f"查找摘要 {counts['job_searches']} 份，回收站里还能恢复的 {counts['job_recycle_bin']} 条，"
-            f"以及按你的勾选临时留存跟踪、到期自动删除的推荐 {counts['job_recommendations']} 个，"
-            f"每日查新 {counts['job_watches']} 个和它们还在保留期内的新增岗位 {counts['job_watch_postings']} 个，"
-            f"你粘贴并加入我的岗位的原文 {counts['job_posting_texts']} 份（按你保存前确认的样子写在岗位下面）；"
-            "岗位的事实是保存时那次查找里的公开信息，来源核对的时间和保存时间分开写；分析按保存时的样子写出，"
-            "并写明它依据的经历现在的状态。"
+            t("exp.60", p0=counts['job_postings'], p1=counts['job_analyses'], p2=counts['job_searches'], p3=counts['job_recycle_bin'], p4=counts['job_recommendations'], p5=counts['job_watches'], p6=counts['job_watch_postings'], p7=counts['job_posting_texts'])
         )
 
     lines += [
-        "- `data.json`：同样的内容整理成结构化数据，方便以后导入其他工具。",
-        "- `manifest.json`：文件清单、每个文件的 SHA-256 校验值，以及每个附件的来源和状态。",
+        t("exp.61"),
+        t("exp.62"),
         "",
     ]
 
     if left_out:
-        lines += ["## 没能包含的附件", ""]
+        lines += [t("exp.63"), ""]
         lines += [
-            f"- {entry['filename']}（属于 `{entry['experience_file']}`）：{STATUS_TEXT[entry['status']]}。"
+            t("exp.64", p0=entry['filename'], p1=entry['experience_file'], p2=STATUS_TEXT[entry['status']])
             for entry in left_out
         ]
         lines.append("")
 
     for section, heading in (
-        ("experiences", "当前经历"),
-        ("documents", "基本资料与求职偏好"),
-        ("recycle-bin", "回收站"),
+        ("experiences", t("exp.65")),
+        ("documents", t("exp.66")),
+        ("recycle-bin", t("exp.67")),
     ):
         if listing[section]:
             lines += [f"### {heading}", ""]
-            lines += [f"- `{path}`：{_listing_label(item)}" for path, item in listing[section]]
+            lines += [t("exp.68", p0=path, p1=_listing_label(item)) for path, item in listing[section]]
             lines.append("")
 
     if imports:
         lines += [
-            "## 简历导入（不是正式资料）",
+            t("exp.69"),
             "",
-            "下面这些是导入时读到的原文和原文件，以及从中整理出的待核对条目，都还没有加入经历库，"
-            "条目也没有经过核实。没有保存的导入只暂存到各自的到期时间；保存为草稿的会一直保留，直到删除；"
-            "回收站里的草稿在恢复期限之后删除。导出包里的这份副本不受影响，导出也不会恢复、保存或加入任何内容。",
+            t("exp.70"),
             "",
         ]
 
         for row, entry, draft in imports:
-            name = row.filename or "粘贴的文字"
-            line = f"- `{entry['folder']}/`：{name}（{IMPORT_SOURCES.get(row.source, row.source)}，"
-            line += f"{IMPORT_STATES.get(row.state, row.state)}），{_kept_text(row, draft)}"
+            name = row.filename or t("exp.import_sources.3")
+            line = t("exp.71", p0=entry['folder'], p1=name, p2=IMPORT_SOURCES.get(row.source, row.source))
+            line += t("exp.72", p0=IMPORT_STATES.get(row.state, row.state), p1=_kept_text(row, draft))
 
             if entry["original_status"] not in (None, INCLUDED):
-                line += f"；原文件{STATUS_TEXT[entry['original_status']]}"
+                line += t("exp.73", p0=STATUS_TEXT[entry['original_status']])
 
             if entry["candidates_path"]:
-                line += f"；整理出的待核对条目 {entry['candidates']} 条，在 `candidates.json`"
+                line += t("exp.74", p0=entry['candidates'])
 
-            lines.append(line + "。")
+            lines.append(line + t("exp.75"))
 
         lines.append("")
 
-    lines += ["## 不包含什么", ""]
+    lines += [t("exp.76"), ""]
     lines += [f"- {entry}" for entry in NOT_INCLUDED]
     lines += [
         "",
-        "## 分享前请注意",
+        t("exp.77"),
         "",
         f"- {SHARE_WARNING}",
-        "- 这个导出包是一份副本：之后在 RoleRadar 里删除内容，不会删除已经下载到你电脑上的这份文件。",
+        t("exp.78"),
         "",
-        "## 怎么打开",
+        t("exp.79"),
         "",
-        "`.md` 文件是纯文本，可以用任何文本编辑器或 Markdown 阅读器打开；`.json` 文件也可以用文本编辑器查看。",
+        t("exp.80"),
         "",
     ]
 
@@ -890,7 +898,7 @@ def _listing_label(item: ExperienceItem) -> str:
     if item.category in DOCUMENT_KINDS:
         return title
 
-    return f"{CATEGORY_LABELS[item.category]}：{title}（{state_label(item)}）"
+    return t("exp.81", p0=CATEGORY_NAMES.get(item.category, item.category), p1=title, p2=state_label(item))
 
 
 def _document_record(record: ExportRecord | None) -> dict | None:
@@ -979,4 +987,5 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def _json_bytes(value) -> bytes:
-    return json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8")
+    # Interface words (lazy messages) are written in the language the export is built in.
+    return json.dumps(value, ensure_ascii=False, indent=2, default=str).encode("utf-8")

@@ -56,6 +56,7 @@ from app.library.models import (
     TargetType,
 )
 from app.library.service import new_id, record_event
+from app.i18n import lazy, t
 
 # Only synthetic data is checked from a record (U3-D4a), whatever a set lists: a real source needs its own approval.
 # Synthetic data and (U3-D6) the D6 batch's board: checked only while the set the app runs on keeps it and can call it
@@ -69,13 +70,13 @@ TEXT_TTL_SECONDS = 30 * 60
 # The public facts a check compares with the version before.
 COMPARED = ("title", "company", "cities", "places_stated", "job_type", "type_stated", "posted_on", "deadline", "url", "apply_url")
 
-NOT_TRACKABLE = "这个岗位来自的来源不能在这里核对：现在只核对合成来源的岗位。没有发出请求。"
+NOT_TRACKABLE = lazy("job.upd.1")
 # A posting the user pasted (U3-D4d): reached by no source, so nothing can check it.
-PASTED = "这是你提供的原文，系统不能核对它的招聘状态；准备申请时，请到原网站确认。没有发出请求。"
-LEAD = "这是待核验线索，不核对招聘状态；请到它指向的官方岗位核对。没有发出请求。"
-BUSY = "这条岗位记录正在核对，请等这次核对结束再试。"
+PASTED = lazy("job.upd.2")
+LEAD = lazy("job.upd.3")
+BUSY = lazy("job.upd.4")
 # A current recommendation whose time has come (U3-D4b-2): never checked again, whether or not it is removed yet.
-LAPSED = "这条临时留存的推荐已经到期，不再保留，也不再核对。没有发出请求。"
+LAPSED = lazy("job.upd.5")
 # Why a check of a current recommendation that lapsed while it ran wrote nothing.
 LAPSED_REASON = "recommendation_lapsed"
 
@@ -85,6 +86,9 @@ DONE, DISCARDED = "done", "discarded"
 class Trigger(StrEnum):
     RECHECK = "recheck"
     APPLY = "apply"
+    # 更新岗位 (UI bilingual batch, plan 5.4): the posting page's one check, the full one 申请前核对 runs (its text shown
+    # for a while), under its own name; 再核对一次 and 申请前核对 stay for the pages and records of before.
+    REFRESH = "refresh"
     # A batch of the postings tracked (U3-D4b-1): asked for now on the records page, or run when due.
     MANUAL = "manual"
     SCHEDULED = "scheduled"

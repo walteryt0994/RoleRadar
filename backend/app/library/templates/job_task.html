@@ -2,9 +2,9 @@
 {% import "_macros.html" as m with context %}
 {% import "_icons.html" as i %}
 {% set area = "jobs" %}
-{% block title %}{% if task.stage == "running" %}正在分析{% elif task.stage == "cancelled" %}分析已取消{% else %}岗位分析结果{% endif %}{% endblock %}
+{% block title %}{% if task.stage == "running" %}{{ t("job.job_task.1") }}{% elif task.stage == "cancelled" %}{{ t("job.job_task.2") }}{% else %}{{ t("job.job_task.3") }}{% endif %}{% endblock %}
 
-{% from "_findings.html" import finding_row with context %}
+{% from "_findings.html" import finding_row, coverage_card, evidence_summary with context %}
 
 {% block layout %}
 <main id="main" class="job-page job-reading" tabindex="-1"{% if task.stage == "running" %} data-task-running data-task-status="/job-analysis/tasks/{{ task.id }}/status"{% endif %}>
@@ -13,132 +13,185 @@
   {% endif %}
 
   {% if task.stage == "running" %}
-  <header class="job-head">
-    <h1>正在分析</h1>
+  {#- 正在分析岗位 (owner redesign, plan 6.2, image 02): the real step it is at (never a made-up percentage or time),
+      a quiet sign that it runs, and 取消分析; what it sends folds away. Cancelling never calls back a request that
+      went out. -#}
+  <div class="confirm-card running-card">
+    <header class="confirm-head">
+      <h1>{{ t("job.job_task.1") }}</h1>
+    </header>
     <p class="job-mode">{{ running_label }}</p>
-  </header>
-  <ol class="steps">
-    {% for step, label in STEP_LABELS.items() %}
-    <li{% if step == task.step %} aria-current="step"{% endif %}>{{ label }}</li>
-    {% endfor %}
-  </ol>
-  <p class="task-status" role="status" data-task-step>正在{{ STEP_LABELS[task.step] }}。已交给服务的请求：{{ sends_text(task.handed) }}。</p>
-  <p class="hint">完成后这一页会自动更新；没有更新时可以<a href="/job-analysis/tasks/{{ task.id }}" data-skip-leave-guard>刷新状态</a>。</p>
-  <form method="post" action="/job-analysis/tasks/{{ task.id }}/cancel" data-task-cancel>
-    {{ m.csrf() }}
-    <input type="hidden" name="next" value="">
-    <button type="submit">取消分析</button>
-  </form>
-  <p class="hint">取消会停止之后的发送；已经交给服务的请求无法撤回。</p>
-  <section class="review-section" aria-labelledby="scope-title">
-    <h2 id="scope-title">正在使用</h2>
-    <ul class="points">
-      {% for source in task.plan.sources %}
-      <li>{{ source.title }}（{{ source.sent|length }} 栏）</li>
+    <div class="running-sign" aria-hidden="true"><span class="spinner"></span></div>
+    <p class="task-stage" role="status" data-task-step>{{ t("job.job_task.4", p0=(STEP_LABELS[task.step]), p1=(sends_text(task.handed))) }}</p>
+    <ol class="steps running-steps">
+      {% for step, label in STEP_LABELS.items() %}
+      <li{% if step == task.step %} aria-current="step"{% endif %}>{{ label }}</li>
       {% endfor %}
-      <li>岗位描述（{{ task.plan.posting|length }} 字）</li>
-      <li>{% if task.plan.sent_preferences %}求职偏好 {{ task.plan.sent_preferences|length }} 项{% else %}不参考求职偏好{% endif %}</li>
-    </ul>
-  </section>
+    </ol>
+    <div class="actions running-actions">
+      <form method="post" action="/job-analysis/tasks/{{ task.id }}/cancel" data-task-cancel class="inline">
+        {{ m.csrf() }}
+        <input type="hidden" name="next" value="">
+        <button type="submit" class="secondary">{{ t("job.job_task.8") }}</button>
+      </form>
+      <a href="/job-analysis/tasks/{{ task.id }}" data-skip-leave-guard>{{ t("job.job_task.6") }}</a>
+    </div>
+    <p class="hint">{{ t("job.job_task.9") }}</p>
+    <details class="fold confirm-fold">
+      {{ m.fold_summary(t("job.job_task.10")) }}
+      <ul class="points">
+        {% for source in task.plan.sources %}
+        <li>{{ t("job.job_task.11", p0=(source.title), p1=(source.sent|length)) }}</li>
+        {% endfor %}
+        <li>{{ t("job.job_task.12", p0=(task.plan.posting|length)) }}</li>
+        <li>{% if task.plan.sent_preferences %}{{ t("job.job_task.13", p0=(task.plan.sent_preferences|length)) }}{% else %}{{ t("job.job_task.14") }}{% endif %}</li>
+      </ul>
+    </details>
+  </div>
   <dialog id="task-leave-dialog" aria-labelledby="task-leave-title">
-    <h2 id="task-leave-title">分析还在进行</h2>
+    <h2 id="task-leave-title">{{ t("job.job_task.15") }}</h2>
     <div class="dialog-actions">
-      <button type="button" data-task-choice="stay" class="secondary">继续查看</button>
-      <button type="button" data-task-choice="cancel" class="danger">取消分析并离开</button>
+      <button type="button" data-task-choice="stay" class="secondary">{{ t("job.job_task.16") }}</button>
+      <button type="button" data-task-choice="cancel" class="danger">{{ t("job.job_task.17") }}</button>
     </div>
   </dialog>
 
   {% elif task.stage == "cancelled" %}
-  <header class="job-head">
-    <h1>分析已取消</h1>
-  </header>
-  <p>{{ cancelled_by }}之后没有再发送。已交给服务的请求：{{ sends_text(task.handed) }}；这些请求无法撤回。</p>
-  <div class="actions">
-    <form method="post" action="/job-analysis/tasks/{{ task.id }}/again" class="inline">
-      {{ m.csrf() }}
-      <button type="submit" class="primary">重新分析</button>
-    </form>
-    <a href="/job-analysis?from={{ task.id }}">修改输入</a>
+  {#- 分析已取消 (image 18): said once, with what had gone out, and the two ways on. -#}
+  <div class="state-card">
+    <p class="state-icon">{{ i.icon("circle-x") }}</p>
+    <div class="state-body">
+      <h1>{{ t("job.job_task.2") }}</h1>
+      <p>{{ t("job.job_task.18", p0=(cancelled_by), p1=(sends_text(task.handed))) }}</p>
+      <div class="actions">
+        <a class="button secondary" href="/job-analysis?from={{ task.id }}">{{ t("job.job_task.20") }}</a>
+        <form method="post" action="/job-analysis/tasks/{{ task.id }}/again" class="inline">
+          {{ m.csrf() }}
+          <button type="submit" class="primary">{{ t("job.job_task.19") }}</button>
+        </form>
+      </div>
+    </div>
   </div>
 
   {% else %}
   <header class="job-head">
-    <h1>岗位分析结果</h1>
+    <h1>{{ t("job.job_task.3") }}</h1>
     <p class="job-mode">{{ mode_label }}</p>
+    <p class="job-mode">{{ t("task.result_language") }}{{ t("common.colon") }}<span lang="{{ task.request.result_language }}">{{ LANGUAGE_NAMES[task.request.result_language] }}</span></p>
   </header>
+  {# The posting this analysed, as the server verified it at the review (Codex review F2), and where it leads now:
+     saving the analysis and adding the posting to 我的岗位 stay separate choices. #}
+  <div class="job-identity" data-reveal>
+    {% if origin.title or origin.company %}
+    <p>{{ t("job.standalone.posting_label") }}{{ t("common.colon") }}{{ origin.title or t("job.standalone.untitled") }}{% if origin.company %} · {{ origin.company }}{% endif %}{% if origin.access == "user_provided" %}{{ t("job.standalone.user_provided_note") }}{% endif %}</p>
+    {% endif %}
+    {% if posting_entry[0] == "record" %}
+    <p class="hint"><a href="/job-records/postings/{{ posting_entry[1] }}">{{ t("job.standalone.posting_in_mine") }}</a></p>
+    {% elif posting_entry[0] == "supply" %}
+    <p class="hint">{{ t("job.standalone.posting_add_hint") }}<a href="/job-records/supply/{{ posting_entry[1] }}">{{ t("job.standalone.posting_add") }}</a></p>
+    {% elif posting_entry[0] == "expired" %}
+    <p class="hint">{{ t("job.standalone.posting_expired") }}</p>
+    {% else %}
+    <p class="hint">{{ t("job.standalone.posting_pasted") }}<a href="/job-records/supply">{{ t("job.standalone.posting_supply") }}</a></p>
+    {% endif %}
+  </div>
+  {% if result.status == Status.COMPLETE %}
+  <div class="direction-save" data-reveal>
+    {% if saved_row %}
+    <p>{{ t("job.standalone.kept_here") }}<a href="/job-records/analyses/{{ saved_row.id }}">{{ t("job.standalone.view") }}</a></p>
+    {% elif saved_in_bin %}
+    <p>{{ t("job.standalone.in_bin_here") }}<a href="/data/trash">{{ t("job.standalone.to_trash") }}</a></p>
+    {% elif saved_gone %}
+    <p>{{ t("job.standalone.purged") }}</p>
+    {% elif changed_since %}
+    <p class="hint">{{ t("job.standalone.changed") }}</p>
+    {% elif keepable %}
+    <form method="post" action="/job-analysis/tasks/{{ task.id }}/save" class="inline">
+      {{ m.csrf() }}
+      <button type="submit" class="primary">{{ t("job.standalone.save") }}</button>
+    </form>
+    <p class="hint">{{ t("job.standalone.save_hint") }}{% if origin.record_id or posting_entry[0] == "record" %}{{ t("job.standalone.linked_record") }}{% elif origin.source_id == "user-provided" %}{{ t("job.standalone.linked_supplied") }}{% elif origin.source_id != "user-pasted" %}{{ t("job.standalone.linked_source") }}{% else %}{{ t("job.standalone.unlinked") }}{% endif %}</p>
+    {% else %}
+    <p class="hint">{{ t("job.standalone.not_keepable") }}</p>
+    {% endif %}
+  </div>
+  {% endif %}
   {% if outcome %}
   <p class="{% if result.status in (Status.FAILED, Status.REJECTED) %}error{% else %}warning{% endif %}" role="alert">{{ outcome }}</p>
   {% endif %}
   {% if changed_since %}
-  <p class="warning" role="alert">分析之后，所选的资料有了变化（修改、重新确认、删除或偏好改动）。这份结果按核对时的版本得出，不是当前有效的分析；需要时请重新分析。</p>
+  <p class="warning" role="alert">{{ t("job.job_task.21") }}</p>
   {% endif %}
   {% if result.selection_problems %}
   <ul class="points">
     {% for problem in result.selection_problems %}
-    <li>{% if problem.item_id == "preferences" %}求职偏好{% else %}{{ titles[problem.item_id].title if problem.item_id in titles else "一段经历" }}{% endif %}：{{ SELECTION_PROBLEMS.get(problem.reason, problem.reason) }}</li>
+    <li>{% if problem.item_id == "preferences" %}{{ t("job.job_task.22") }}{% else %}{{ titles[problem.item_id].title if problem.item_id in titles else t("job.an_experience") }}{% endif %}{{ t("job.job_task.23", p0=(SELECTION_PROBLEMS.get(problem.reason, problem.reason))) }}</li>
     {% endfor %}
   </ul>
   {% endif %}
 
   {% if result.status == Status.DEGRADED %}
   <section class="result-section" aria-labelledby="rule-title">
-    <h2 id="rule-title">按规则找到的技能词</h2>
+    <h2 id="rule-title">{{ t("job.job_task.24") }}</h2>
     {% if result.rule_skills %}
-    <p>{{ result.rule_skills|join("、") }}</p>
+    <p>{{ list_join(result.rule_skills) }}</p>
     {% else %}
-    <p class="empty">没有找到常见的技能词。</p>
+    <p class="empty">{{ t("job.job_task.25") }}</p>
     {% endif %}
   </section>
   {% endif %}
 
   {% if result.status in (Status.COMPLETE, Status.STALE) %}
+  {% if result.status == Status.COMPLETE %}
+  {{ coverage_card(result, result.condition_conflicts) }}
+  {{ evidence_summary(result) }}
+  {% endif %}
   <section class="result-section" aria-labelledby="conditions-title">
-    <h2 id="conditions-title">招聘条件</h2>
+    <h2 id="conditions-title">{{ t("job.job_task.26") }}</h2>
     {% set conflicts = result.condition_conflicts %}
     {% if conflicts %}
-    <p class="result-alert">有 {{ conflicts|length }} 项招聘条件和所选资料冲突。技能覆盖再高，也请先看这一项。</p>
+    <p class="result-alert">{{ t("job.job_task.27", p0=(conflicts|length)) }}</p>
     {% endif %}
     {% for finding in conditions %}
     {{ finding_row(finding) }}
     {% else %}
-    <p class="empty">岗位描述里没有找到明确的硬性条件。</p>
+    <p class="empty">{{ t("job.job_task.28") }}</p>
     {% endfor %}
   </section>
 
   <section class="result-section" aria-labelledby="skills-title">
-    <h2 id="skills-title">经历支持</h2>
+    <h2 id="skills-title">{{ t("job.job_task.29") }}</h2>
     {% for group, items in skill_groups.items() %}
     {% if items %}
-    <h3 class="result-group">{{ GROUP_HEADINGS[group] }}{% if group == Group.UNCERTAIN %}<span>不计入技能覆盖</span>{% endif %}</h3>
+    <h3 class="result-group">{{ GROUP_HEADINGS[group] }}{% if group == Group.UNCERTAIN %}<span>{{ t("job.job_task.30") }}</span>{% endif %}</h3>
     {% for finding in items %}
     {{ finding_row(finding) }}
     {% endfor %}
     {% endif %}
     {% endfor %}
     {% if not result.findings or (not skill_groups[Group.REQUIRED] and not skill_groups[Group.PREFERRED] and not skill_groups[Group.UNCERTAIN]) %}
-    <p class="empty">岗位描述里没有找到技能要求。</p>
+    <p class="empty">{{ t("job.job_task.31") }}</p>
     {% endif %}
-    <p class="hint">“目前未找到支持材料”只说明所选的经历里没有写到，不代表你不会。</p>
+    <p class="hint">{{ t("job.job_task.32") }}</p>
   </section>
 
   <section class="result-section" aria-labelledby="preferences-title">
-    <h2 id="preferences-title">工作偏好</h2>
+    <h2 id="preferences-title">{{ t("job.job_task.33") }}</h2>
     {% if result.preferences != "compared" %}
-    <p>本次未参考偏好。</p>
+    <p>{{ t("job.job_task.34") }}</p>
     {% else %}
     {% set firm = result.preference_conflicts %}
     {% if firm %}
-    <p class="result-alert">有 {{ firm|length }} 项和你“不能接受”或“必须满足”的条件冲突。</p>
+    <p class="result-alert">{{ t("job.job_task.35", p0=(firm|length)) }}</p>
     {% endif %}
     {% for finding in result.preference_findings %}
-    {% set topic = PREFERENCE_TOPICS[finding.field] %}
     <details class="fold finding">
-      <summary><span class="fold-title finding-text">{{ topic[0] }}{% if topic[2] %}（{{ topic[2] }}）{% endif %}</span><span class="finding-verdict">{{ preference_label(finding) }}</span><span class="chevron">{{ i.icon("chevron-right") }}</span></summary>
+      <summary><span class="fold-title finding-text">{{ preference_topic(finding.field) }}</span><span class="finding-verdict">{{ preference_label(finding) }}</span><span class="chevron">{{ i.icon("chevron-right") }}</span></summary>
       <div class="finding-body">
-        <p class="finding-label">你的偏好</p>
+        <p class="finding-label">{{ t("job.job_task.37") }}</p>
         <blockquote class="quote">{{ finding.text }}</blockquote>
         {% for quote in finding.job_quotes %}
-        <p class="finding-label">岗位原文</p>
+        <p class="finding-label">{{ t("job.job_task.38") }}</p>
         <blockquote class="quote">{{ quote }}</blockquote>
         {% endfor %}
         <ul class="reasons">
@@ -149,30 +202,21 @@
       </div>
     </details>
     {% endfor %}
-    <p class="hint">偏好是你的意愿，不是硬性筛选；“岗位未说明”表示岗位没有明确说明这一条件，需要时可向招聘方确认，不由公司、职位名称或学历毕业等要求推测。</p>
+    <p class="hint">{{ t("job.job_task.39") }}</p>
     {% endif %}
   </section>
 
-  <section class="result-section coverage" aria-labelledby="coverage-title">
-    <h2 id="coverage-title">技能覆盖</h2>
-    {% set score = result.coverage %}
-    {% if score.overall_score is none %}
-    <p>不适用：岗位描述里没有找到必要要求或加分项。</p>
-    {% else %}
-    <p class="coverage-score">{{ score_text(score.overall_score) }}</p>
-    <p class="hint">必要要求 {{ score.required_total }} 项中 {{ score.required_matched }} 项有经历支持{% if score.required_uncertain %}、{{ score.required_uncertain }} 项待确认{% endif %}；加分项 {{ score.preferred_total }} 项中 {{ score.preferred_matched }} 项有经历支持{% if score.preferred_uncertain %}、{{ score.preferred_uncertain }} 项待确认{% endif %}。按必要 80%、加分 20% 计算，待确认和未找到的都不计入。它只说明所选资料覆盖了多少技能要求，不是录用的可能性。</p>
-    {% endif %}
-  </section>
   {% endif %}
 
-  <p class="hint result-foot">这是临时结果：保留 {{ TASK_TTL_MINUTES }} 分钟，服务重启后需要重做；不会保存，也不会投递。已交给服务的请求：{{ sends_text(task.handed) }}。</p>
+  {# Once the analysis is kept, the page no longer says nothing is saved (Codex review F2). #}
+  <p class="hint result-foot">{{ t("job.job_task.46_saved" if saved_row else "job.job_task.46", p0=(TASK_TTL_MINUTES), p1=(sends_text(task.handed))) }}</p>
   <div class="actions">
     <form method="post" action="/job-analysis/tasks/{{ task.id }}/again" class="inline">
       {{ m.csrf() }}
-      <button type="submit"{% if result.status != Status.COMPLETE or changed_since %} class="primary"{% endif %}>重新分析</button>
+      <button type="submit"{% if result.status != Status.COMPLETE or changed_since %} class="primary"{% endif %}>{{ t("job.job_task.19") }}</button>
     </form>
-    <a href="/job-analysis?from={{ task.id }}">修改输入</a>
-    <a href="/job-analysis">开始新的分析</a>
+    <a href="/job-analysis?from={{ task.id }}">{{ t("job.job_task.20") }}</a>
+    <a href="/job-analysis">{{ t("job.job_task.47") }}</a>
   </div>
   {% endif %}
 </main>

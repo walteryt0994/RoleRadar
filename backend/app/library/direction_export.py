@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.library.content import ALL_KINDS, CATEGORY_FIELDS
 from app.library.models import DecisionBasis, DirectionDecision, DirectionExploration, PurgeJob, SourceHolder
-from app.library.presentation import format_local
+from app.library.presentation import format_local, label_of
 from app.library.references import (
     BasisState,
     SourceState,
@@ -25,31 +25,42 @@ from app.library.references import (
     usable_for_search,
 )
 from app.library.service import is_expired
+from app.i18n import MessageMap, t
 
-SOURCE_STATE_LABELS = {
-    SourceState.CURRENT: "依据的资料和当时一致",
-    SourceState.CHANGED: "依据的资料之后改过",
-    SourceState.VERSION_IN_BIN: "依据的版本已删除（还能恢复）",
-    SourceState.RECORD_IN_BIN: "依据的资料已删除（还能恢复）",
-    SourceState.GONE: "依据的资料已永久删除",
-}
-BASIS_STATE_LABELS = {
-    **{BasisState(state.value): label for state, label in SOURCE_STATE_LABELS.items()},
-    BasisState.PERSONAL: "你自己的选择",
-    BasisState.EXPLORATION_IN_BIN: "依据的方向探索已删除（还能恢复）",
-    BasisState.EXPLORATION_GONE: "依据的方向探索已永久删除",
-}
-BASIS_LABELS = {
-    DecisionBasis.SAVED_EXPLORATION: "根据已保存的方向探索",
-    DecisionBasis.UNSAVED_EXPLORATION: "根据没有保存的方向探索（没有保留完整分析）",
-    DecisionBasis.PERSONAL: "你自己的选择",
-}
-DECISION_STATE_LABELS = {"keep": "保留", "defer": "暂缓", "exclude": "排除"}
-RELATION_LABELS = {"fits": "符合", "may_conflict": "可能冲突", "unknown": "无法判断"}
-SOURCE_KIND_LABELS = {"experience": "经历", "preferences": "求职偏好"}
+SOURCE_STATE_LABELS = MessageMap({
+    SourceState.CURRENT: "dir.exp_md.1",
+    SourceState.CHANGED: "dir.exp_md.2",
+    SourceState.VERSION_IN_BIN: "dir.exp_md.3",
+    SourceState.RECORD_IN_BIN: "dir.exp_md.4",
+    SourceState.GONE: "dir.exp_md.5",
+})
+# Looked up when read, like the rest: built from the message keys, never from words taken at import (UI R4), so an
+# English page or package says how a decision's basis stands in English.
+BASIS_STATE_LABELS = MessageMap({
+    **{BasisState(state.value): key for state, key in SOURCE_STATE_LABELS.keys_map().items()},
+    BasisState.PERSONAL: "dir.exp_md.6",
+    BasisState.EXPLORATION_IN_BIN: "dir.exp_md.7",
+    BasisState.EXPLORATION_GONE: "dir.exp_md.8",
+})
+BASIS_LABELS = MessageMap({
+    DecisionBasis.SAVED_EXPLORATION: "dir.exp_md.9",
+    DecisionBasis.UNSAVED_EXPLORATION: "dir.exp_md.10",
+    DecisionBasis.PERSONAL: "dir.exp_md.6",
+})
+DECISION_STATE_LABELS = MessageMap({"keep": "dir.exp_md.11", "defer": "dir.exp_md.12", "exclude": "dir.exp_md.13"})
+RELATION_LABELS = MessageMap({"fits": "dir.exp_md.14", "may_conflict": "dir.exp_md.15", "unknown": "dir.exp_md.16"})
+SOURCE_KIND_LABELS = MessageMap({"experience": "dir.exp_md.17", "preferences": "dir.exp_md.18"})
 IN_USE, IN_BIN = "in_use", "recycle_bin"
-# Field names are the same words wherever they appear.
-FIELD_LABELS = {spec.name: spec.label for kind in ALL_KINDS for spec in CATEGORY_FIELDS[kind]}
+# A field is named by one kind's words, the last kind that has it, as the package always named it; the words are
+# looked up when the package is written (UI R4), in its language, never taken at import.
+FIELD_KINDS = {spec.name: kind for kind in ALL_KINDS for spec in CATEGORY_FIELDS[kind]}
+
+
+def field_words(name: str | None) -> str | None:
+    """A source field's name in the package's language; a name that is not one of the library's stays as it is."""
+    kind = FIELD_KINDS.get(name)
+
+    return label_of(kind, name) if kind else name
 
 
 @dataclass
@@ -164,15 +175,15 @@ def _decision_data(db: Session, owner_id: str, row: DirectionDecision, now: date
 def directions_markdown(content: DirectionExport, now: datetime) -> str:
     """The readable copy: decisions first, then each saved exploration as it was saved."""
     lines = [
-        "# 方向探索与方向决定",
+        t("dir.exp_md.19"),
         "",
-        f"- 导出时间：{format_local(now)}",
-        "- 方向探索是当时生成、由你保存的结果，保存后不会改写；“依据状态”说明它依据的资料现在怎样。",
-        "- 主要工作、差距等是一般性判断，没有经过岗位来源核验；没有经历依据不代表不适合。",
+        t("dir.exp_md.20", p0=format_local(now)),
+        t("dir.exp_md.21"),
+        t("dir.exp_md.22"),
         "",
     ]
 
-    for kept_as, heading in ((IN_USE, "方向决定"), (IN_BIN, "回收站里的方向决定")):
+    for kept_as, heading in ((IN_USE, t("dir.exp_md.23")), (IN_BIN, t("dir.exp_md.24"))):
         entries = [entry for entry in content.decisions if entry["kept_as"] == kept_as]
 
         if entries:
@@ -180,7 +191,7 @@ def directions_markdown(content: DirectionExport, now: datetime) -> str:
             lines += [_decision_line(entry) for entry in entries]
             lines.append("")
 
-    for kept_as, heading in ((IN_USE, "已保存的方向探索"), (IN_BIN, "回收站里的方向探索")):
+    for kept_as, heading in ((IN_USE, t("dir.exp_md.25")), (IN_BIN, t("dir.exp_md.26"))):
         entries = [entry for entry in content.explorations if entry["kept_as"] == kept_as]
 
         if entries:
@@ -193,51 +204,49 @@ def directions_markdown(content: DirectionExport, now: datetime) -> str:
 
 
 def _decision_line(entry: dict) -> str:
-    line = f"- {entry['name']}：{entry['state_label']}（{entry['basis_label']}；{entry['basis_state_label']}）"
+    line = t("dir.exp_md.27", p0=entry['name'], p1=entry['state_label'], p2=entry['basis_label'], p3=entry['basis_state_label'])
 
     if entry["kept_as"] == IN_BIN:
-        line += f"，删除于 {_local(entry['deleted_at'])}，{_local(entry['restore_deadline'])} 前可以恢复"
+        line += t("dir.exp_md.28", p0=_local(entry['deleted_at']), p1=_local(entry['restore_deadline']))
 
-    return line + "。"
+    return line + t("dir.exp_md.29")
 
 
 def _exploration_lines(number: int, entry: dict) -> list[str]:
     generation = entry["generation"]
     lines = [
-        f"### {number}. 保存于 {_local(entry['saved_at'])}（{entry['basis_state_label']}）",
+        t("dir.exp_md.30", p0=number, p1=_local(entry['saved_at']), p2=entry['basis_state_label']),
         "",
-        f"- 生成：{generation.get('provider', '')} {generation.get('model', '')}，"
-        f"提示词版本 {generation.get('prompt_version', '')}，处理说明 {generation.get('notice_version', '')}，"
-        f"生成于 {_local(generation.get('generated_at'))}",
+        t("dir.exp_md.31", p0=generation.get('provider', ''), p1=generation.get('model', ''), p2=generation.get('prompt_version', ''), p3=generation.get('notice_version', ''), p4=_local(generation.get('generated_at'))),
     ]
 
     if entry["kept_as"] == IN_BIN:
-        lines.append(f"- 删除于 {_local(entry['deleted_at'])}，{_local(entry['restore_deadline'])} 前可以恢复")
+        lines.append(t("dir.exp_md.32", p0=_local(entry['deleted_at']), p1=_local(entry['restore_deadline'])))
 
     for source in entry["sources"]:
-        fields = "、".join(FIELD_LABELS.get(name, name) for name in source["fields"])
-        lines.append(f"- 依据：{SOURCE_KIND_LABELS.get(source['kind'], source['kind'])}（{fields}）——{source['state_label']}")
+        fields = t("dir.exp_md.33").join(field_words(name) for name in source["fields"])
+        lines.append(t("dir.exp_md.34", p0=SOURCE_KIND_LABELS.get(source['kind'], source['kind']), p1=fields, p2=source['state_label']))
 
     lines.append("")
 
     for index, direction in enumerate(entry["directions"], start=1):
-        lines += [f"#### 方向 {index}：{direction.get('name', '')}", "", f"- 主要工作（一般性介绍）：{direction.get('main_work', '')}"]
-        lines += [f"- 经历依据：「{quote.get('text', '')}」（{FIELD_LABELS.get(quote.get('field'), quote.get('field'))}）" for quote in direction.get("evidence", [])]
+        lines += [t("dir.exp_md.35", p0=index, p1=direction.get('name', '')), "", t("dir.exp_md.36", p0=direction.get('main_work', ''))]
+        lines += [t("dir.exp_md.37", p0=quote.get('text', ''), p1=field_words(quote.get("field"))) for quote in direction.get("evidence", [])]
 
         if not direction.get("evidence"):
-            lines.append("- 经历依据：暂无（不代表不适合）")
+            lines.append(t("dir.exp_md.38"))
 
         for link in direction.get("ideal", []):
             condition = link.get("condition", {})
-            basis = f"；方向一侧的依据：{link['basis']}" if link.get("basis") else ""
+            basis = t("dir.exp_md.39", p0=link['basis']) if link.get("basis") else ""
             lines.append(
-                f"- 和你写的条件「{condition.get('text', '')}」：{RELATION_LABELS.get(link.get('relation'), link.get('relation'))}{basis}"
+                t("dir.exp_md.40", p0=condition.get('text', ''), p1=RELATION_LABELS.get(link.get('relation'), link.get('relation')), p2=basis)
             )
 
-        lines += [f"- 差距（一般性判断）：{gap}" for gap in direction.get("gaps", [])]
-        lines += [f"- 还不能判断：{unknown}" for unknown in direction.get("unknowns", [])]
-        lines.append(f"- 和其他方向的区别：{direction.get('difference', '')}")
-        lines += [f"- 下一步可以：{step}" for step in direction.get("next_steps", [])]
+        lines += [t("dir.exp_md.41", p0=gap) for gap in direction.get("gaps", [])]
+        lines += [t("dir.exp_md.42", p0=unknown) for unknown in direction.get("unknowns", [])]
+        lines.append(t("dir.exp_md.43", p0=direction.get('difference', '')))
+        lines += [t("dir.exp_md.44", p0=step) for step in direction.get("next_steps", [])]
         lines.append("")
 
     return lines

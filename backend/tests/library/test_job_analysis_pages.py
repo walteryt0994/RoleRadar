@@ -92,19 +92,33 @@ def project(browser, **content) -> str:
 # --- where it is, and what it offers ------------------------------------------------------
 
 
-def test_job_opportunities_lead_to_job_analysis_and_mark_where_you_are(browser_a):
-    def top(page):
-        return re.findall(r'<a href="([^"]+)"( aria-current="true")?>([^<]+)</a>', region(page, '<nav class="nav"', "</nav>"))
+def tabs(page):
+    """The second-level navigation of a page's area (UI bilingual batch, plan 2): href, current mark, words."""
+    nav = page[page.index('<nav class="tabs"'): page.index("</nav>", page.index('<nav class="tabs"'))]
 
+    return re.findall(r'<a href="([^"]+)"( aria-current="page")?>([^<]+)</a>', nav)
+
+
+def primary(page):
+    """The first-level places of the side bar: href, current mark, words."""
+    nav = page[page.index('<nav class="primary-nav"'): page.index("</nav>", page.index('<nav class="primary-nav"'))]
+
+    return re.findall(r'<a class="nav-item" href="([^"]+)"( aria-current="(?:true|page)")?>.*?<span>([^<]+)</span></a>', nav)
+
+
+def test_job_opportunities_lead_to_job_analysis_and_mark_where_you_are(browser_a):
     jobs = browser_a.get("/job-analysis").text
     library = browser_a.get("/experiences").text
 
-    assert top(jobs) == [("/experiences", "", "我的资料"), ("/directions", "", "方向探索"), ("/job-analysis", ' aria-current="true"', "岗位机会")]
-    assert top(library) == [("/experiences", ' aria-current="true"', "我的资料"), ("/directions", "", "方向探索"), ("/job-analysis", "", "岗位机会")]
-    assert '<a href="/job-analysis" aria-current="page">岗位分析</a>' in region(jobs, '<nav class="subnav"', "</nav>")
-    # 资料管理 and the parts of 我的资料 belong to 我的资料 only.
-    assert 'class="manage"' not in jobs and 'href="/basic-profile"' not in jobs
-    # Later modules still get no entry (方向探索 has its own since U3-C3a).
+    names = [words for _, _, words in primary(jobs)]
+    assert names == ["工作台", "我的资料", "方向探索", "岗位机会"]
+    assert ("/discover", ' aria-current="true"', "岗位机会") in primary(jobs)
+    assert ("/experiences", ' aria-current="true"', "我的资料") in primary(library)
+    # Analysing a posting is part of 发现岗位 (UI bilingual batch, plan 2).
+    assert ("/discover", ' aria-current="page"', "发现岗位") in tabs(jobs)
+    # The parts of 我的资料 belong to 我的资料 only.
+    assert not any(href == "/basic-profile" for href, _, _ in tabs(jobs))
+    # Later modules still get no entry.
     assert not any(name in jobs for name in ("我的简历", "投递跟踪"))
 
 
@@ -617,7 +631,8 @@ def test_the_result_reads_conditions_support_and_preferences_with_their_sources(
     text = text_of(main)
     conditions = region(main, 'id="conditions-title"', "</section>")
 
-    headings = [main.index(f'id="{name}-title"') for name in ("conditions", "skills", "preferences", "coverage")]
+    # Owner redesign (plan 7): 岗位要求依据覆盖 first, then the conditions, the skills and the preferences.
+    headings = [main.index('class="coverage-card"')] + [main.index(f'id="{name}-title"') for name in ("conditions", "skills", "preferences")]
 
     assert headings == sorted(headings)
     # The conflict stands first, apart from the skill coverage.
@@ -625,8 +640,10 @@ def test_the_result_reads_conditions_support_and_preferences_with_their_sources(
     assert all(words in text_of(conditions) for words in ("2027 年及以后毕业", "冲突", "合成大学", "确认版 1", "毕业时间", "不符的事实", "2025 年 6 月"))
     assert "有经历支持" in text and "目前未找到支持材料" in text and "加分项" in text
     assert "本次未参考偏好" in text and "本机模拟服务的结果" in text
-    # 1 of 2 required at 80%, 0 of 1 preferred at 20%.
-    assert '<p class="coverage-score">40</p>' in main and "不是录用的可能性" in text
+    # 1 of 2 required and 0 of 1 preferred: 1 of 3 with evidence, 33.3% (evidence_coverage_v1). The weighted skill
+    # coverage (required 80%, preferred 20%: 40) is not shown beside it (plan 7.1), and nothing reads as a chance.
+    assert '<span class="coverage-percent" data-coverage-version="evidence_coverage_v1">33.3%</span>' in main
+    assert "1／3 项有依据" in text and "不是录用的可能性" in text and '<p class="coverage-score">' not in main
     # No ids, raw codes or JSON in what is read.
     assert not re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-", text)
     assert not any(code in text for code in ("needs_confirmation", "no_evidence", "practice", "complete", "{"))

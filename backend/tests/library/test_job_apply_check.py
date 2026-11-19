@@ -72,7 +72,8 @@ def test_a_recheck_writes_what_the_source_said_and_never_the_decision(app, brows
     _, result, record = kept_result(app, browser_a, library, action="decide", decision="apply")
     before = page(browser_a, record.id)
 
-    assert "准备申请" in before and "再核对一次" in before and "申请前核对" in before
+    # One check on the page since the UI bilingual batch (plan 5.4): 更新岗位, the full check, under its own name.
+    assert "准备申请" in before and "更新岗位" in before and "/recheck" not in before and "/apply-check" not in before
     assert "“准备申请”是你自己的决定：不代表已经投递，也不代表岗位已经核实" in before
 
     response = check(browser_a, app, record.id)
@@ -173,7 +174,7 @@ def test_a_failed_check_is_to_be_confirmed_never_verified_and_keeps_the_saved_en
     assert "状态待确认：核对没有得到回答" in shown and "来源没有在时限内回答" in shown and "这次没有读到岗位正文" in shown
     assert record.facts["apply_url"] in shown and "保存时记下的，保留给你" in shown
     assert "仍公开发布" not in shown and "已验证" not in shown and "已投递" not in shown
-    assert now.count("状态待确认：最近一次核对") == 1 and "上次成功核对是" in now
+    assert now.count("岗位状态待确认：最近一次核对") == 1 and "最近成功核对：" in now
 
 
 def test_a_record_changed_while_its_check_runs_keeps_nothing_and_shows_no_text(app, browser_a, library, inline, board):
@@ -219,8 +220,8 @@ def test_only_synthetic_sources_are_checked_and_a_source_not_run_on_now_is_asked
     shown = page(browser_a, record.id)
     response = check(browser_a, app, record.id)
 
-    assert updates.NOT_TRACKABLE in shown and "再核对一次</button>" not in browser_a.get(f"/job-records/postings/{record.id}").text
-    assert response.status_code == 403 and updates.NOT_TRACKABLE in text_of(response.text)
+    assert str(updates.NOT_TRACKABLE) in shown and "再核对一次</button>" not in browser_a.get(f"/job-records/postings/{record.id}").text
+    assert response.status_code == 403 and str(updates.NOT_TRACKABLE) in text_of(response.text)
     assert len(rows(app, JobPostingRecheck)) == 1 and len(board.calls) == asked
 
 
@@ -233,14 +234,16 @@ def test_apply_is_a_decision_of_its_own_with_no_reasons(app, browser_a, library,
 
     shown = page(browser_a, record.id)
     refused = post(browser_a, path, revision=str(current(app, record.id).revision), decision="apply", reason="other")
-    assert "准备申请…" in shown and "只记下你的决定，不投递，也不核对来源" in shown
+    # 准备申请 is one of the four choices shown at once (owner redesign, plan 6.1), with what a choice does said once.
+    assert "准备申请" in shown and "只记下你的决定，不投递，也不核对来源" in shown
     assert refused.status_code == 422 and current(app, record.id).decision is None
 
     assert post(browser_a, path, revision=str(current(app, record.id).revision), decision="apply").status_code == 303
-    listed = text_of(browser_a.get("/job-records").text)
+    listed = browser_a.get("/job-records").text
 
     assert current(app, record.id).decision == "apply" and rows(app, JobPostingRecheck) == []
-    assert re.search(r"准备申请\s*1 个", listed)
+    # The list row says the decision (owner redesign, plan 5.3: a list with one true line per job, no group counts).
+    assert re.findall(r'<span class="md-item-line">([^<]+)</span>', listed) == ["准备申请"]
 
 
 # --- an analysis kept of it ---------------------------------------------------------------------------------------------

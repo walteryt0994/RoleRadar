@@ -9,88 +9,89 @@ does not say; nothing reads as a hiring probability.
 Keyed by the codes of the analysis contracts (app.analysis_contracts), whose StrEnum members look them up as they are.
 It imports nothing, so the experience library may use it and still load no analysis code.
 """
+from app.i18n import MessageMap, lazy, t
 
 # A requirement of this group is held against the user's conditions; any other against the chosen material.
 HARD_CONSTRAINT = "hard_constraint"
 
-EVIDENCE_LABELS = {
-    "supported": "有经历支持",
-    "needs_confirmation": "待确认",
-    "no_evidence": "目前未找到支持材料",
-}
-CONDITION_LABELS = {
-    "met": "符合",
-    "conflict": "冲突",
-    "needs_confirmation": "待确认",
-    "unknown": "未知",
+EVIDENCE_LABELS = MessageMap({
+    "supported": "job.words.evidence_labels.1",
+    "needs_confirmation": "job.words.evidence_labels.2",
+    "no_evidence": "job.words.evidence_labels.3",
+})
+CONDITION_LABELS = MessageMap({
+    "met": "job.words.condition_labels.1",
+    "conflict": "job.words.condition_labels.2",
+    "needs_confirmation": "job.words.condition_labels.3",
+    "unknown": "job.words.condition_labels.4",
     # U3-D6 R4: the posting's own condition for it does not hold, by a fact the posting states.
-    "not_applicable": "不适用",
-}
-PREFERENCE_LABELS = {
-    "consistent": "一致",
-    "different": "不一致",
-    "conflict": "冲突",
-    "needs_confirmation": "待确认",
-    "not_stated": "岗位未说明",
-}
-REASONS = {
-    "practice": "写明了你自己做过",
-    "claim": "只写了熟悉或掌握，没有写做过什么",
-    "plan": "写的是打算学或打算做",
-    "other_person": "写的是别人做的",
-    "negated": "写明没有做过或没有用过",
-    "fact": "写明的事实",
-    "conflict": "写明的事实和要求不符",
-    "contradiction": "所选经历里有相互矛盾的说法",
-    "no_material": "所选经历里没有相关内容",
-    "flag:plan": "引文所在的句子提到“计划”或“打算”",
-    "flag:other_person": "引文所在的句子提到了别人",
-    "flag:negated": "引文所在的句子有否定的说法",
-    "flag:claim": "引文所在的句子只是说熟悉或掌握",
-    "consistent": "岗位原文与偏好一致",
-    "conflicts": "岗位原文与偏好相反",
-    "unclear": "岗位原文提到了，但看不出是否符合",
-    "no_quote": "没有岗位原文能说明",
-    "other_aspect": "引用的岗位原文说的是别的方面，不能作为这一项的依据",
-    "not_stated": "岗位未明确说明这一条件",
+    "not_applicable": "job.words.condition_labels.5",
+})
+PREFERENCE_LABELS = MessageMap({
+    "consistent": "job.words.preference_labels.1",
+    "different": "job.words.preference_labels.2",
+    "conflict": "job.words.preference_labels.3",
+    "needs_confirmation": "job.words.preference_labels.4",
+    "not_stated": "job.words.preference_labels.5",
+})
+REASONS = MessageMap({
+    "practice": "job.words.reasons.1",
+    "claim": "job.words.reasons.2",
+    "plan": "job.words.reasons.3",
+    "other_person": "job.words.reasons.4",
+    "negated": "job.words.reasons.5",
+    "fact": "job.words.reasons.6",
+    "conflict": "job.words.reasons.7",
+    "contradiction": "job.words.reasons.8",
+    "no_material": "job.words.reasons.9",
+    "flag:plan": "job.words.reasons.10",
+    "flag:other_person": "job.words.reasons.11",
+    "flag:negated": "job.words.reasons.12",
+    "flag:claim": "job.words.reasons.13",
+    "consistent": "job.words.reasons.14",
+    "conflicts": "job.words.reasons.15",
+    "unclear": "job.words.reasons.16",
+    "no_quote": "job.words.reasons.17",
+    "other_aspect": "job.words.reasons.18",
+    "not_stated": "job.words.reasons.19",
     # U3-D6 R4 (app.requirement_reading).
-    "listed_partly": "这一条列了几项，引文只写到其中一部分，其余还没有依据",
-    "listed_unnamed": "这一条列了几项，引文写了做过的事，但没有写到其中任何一项",
-    "listed_unclear": "这一条像是列了几项，本机读不准要全部还是任一、或列的是哪几项，引文没有写到每一项，需要确认",
+    "listed_partly": "job.words.reasons.20",
+    "listed_unnamed": "job.words.reasons.21",
+    "listed_unclear": "job.words.reasons.22",
     # U3-D6 R8.
-    "listed_unread": "这一条的写法本机没有认出是一项还是几项，引文写了做过的事，是否覆盖整条要求需要确认",
+    "listed_unread": "job.words.reasons.23",
     # U3-D6 R9.
-    "single_unnamed": "引文写了做过的事，但没有把这一条要求的各部分都写到，是否覆盖整条要求需要确认",
-    "condition_unknown": "岗位原文是条件句，岗位没有写明条件是否成立",
-    "condition_met": "岗位原文是条件句，岗位写明的事实说明条件成立",
-    "condition_not_met": "岗位原文是条件句，岗位写明的事实说明条件不成立，这一条不适用",
-    "conditional_quote": "引用的岗位原文是条件句，岗位没有写明条件成立，不能当作无条件的说法",
-}
+    "single_unnamed": "job.words.reasons.24",
+    "condition_unknown": "job.words.reasons.25",
+    "condition_met": "job.words.reasons.26",
+    "condition_not_met": "job.words.reasons.27",
+    "conditional_quote": "job.words.reasons.28",
+})
 # How a requirement listing several items asks for them (U3-D6 R4).
-LISTED_MODES = {
-    "all": "所列各项都要",
-    "any": "所列任一即可",
+LISTED_MODES = MessageMap({
+    "all": "job.words.listed_modes.1",
+    "any": "job.words.listed_modes.2",
     # U3-D6 R5: read as all of them, to be safe.
-    "unclear": "读不准要全部还是任一，按全部来核对",
+    "unclear": "job.words.listed_modes.3",
     # U3-D6 R8: never with items, so never shown as a list; here only so that every mode has its words.
-    "unread": "没有认出是一项还是几项",
-}
-BASIS_LABELS = {
-    "practice": "实践",
-    "claim": "自述",
-    "plan": "计划",
-    "other_person": "他人",
-    "negated": "否定",
-    "fact": "事实",
-    "conflict": "不符的事实",
-}
-GROUP_HEADINGS = {
-    "required": "必要要求",
-    "preferred": "加分项",
-    "uncertain": "写得不明确的要求",
-}
+    "unread": "job.words.listed_modes.4",
+})
+BASIS_LABELS = MessageMap({
+    "practice": "job.words.basis_labels.1",
+    "claim": "job.words.basis_labels.2",
+    "plan": "job.words.basis_labels.3",
+    "other_person": "job.words.basis_labels.4",
+    "negated": "job.words.basis_labels.5",
+    "fact": "job.words.basis_labels.6",
+    "conflict": "job.words.basis_labels.7",
+})
+GROUP_HEADINGS = MessageMap({
+    "required": "job.words.group_headings.1",
+    "preferred": "job.words.group_headings.2",
+    "uncertain": "job.words.group_headings.3",
+})
 # What the pages call the hard constraints ("岗位里没有找到明确的硬性条件").
-HARD_CONSTRAINT_HEADING = "硬性条件"
+HARD_CONSTRAINT_HEADING = lazy("job.words.56")
 
 
 def conclusion_text(group: str, conclusion: str) -> str:
@@ -109,7 +110,7 @@ def requirement_text(text: str, condition: str = "", state: str = "") -> str:
     if not condition:
         return text
 
-    return f"{text}（{'条件成立' if state == 'met' else '原文条件'}：{condition}）"
+    return t("job.words.57", p0=text, p1=t("job.words.condition_met") if state == "met" else t("job.words.condition_quoted"), p2=condition)
 
 
 def requirement_words(finding) -> str:
@@ -135,7 +136,7 @@ def reason_labels(reasons) -> list[str]:
 
 
 def group_heading(group: str) -> str:
-    return HARD_CONSTRAINT_HEADING if group == HARD_CONSTRAINT else GROUP_HEADINGS[group]
+    return str(HARD_CONSTRAINT_HEADING) if group == HARD_CONSTRAINT else GROUP_HEADINGS[group]
 
 
 def requirement_group(group: str) -> str:

@@ -29,7 +29,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from app.ai_provider import AIProviderResponseError
 # SCHEMA_NAME is what app.job_analysis.simulation compares a request's schema with before handing it here.
-from app.directions.explore import MATERIAL_END, MATERIAL_START, QUOTE_CHARS, SCHEMA_NAME  # noqa: F401
+from app.directions.explore import MATERIAL_END, MATERIAL_START, OUTPUT_LANGUAGE_LINES, QUOTE_CHARS, SCHEMA_NAME  # noqa: F401
 from app.job_analysis.simulation import BASES, SENTENCE
 
 
@@ -117,6 +117,91 @@ CATALOGUE = (
         ("拆解一个你喜欢的品牌最近的一次推广", "读几份市场类岗位的描述，记下常见要求"),
     ),
 )
+# What a task asking for English results gets instead (UI bilingual batch, plan 6.3), by the Chinese name: the same
+# directions in English, with English words matched besides the Chinese ones. Only such a task reads them, so a
+# Chinese task is answered exactly as before. Quotes are never translated: they stay as the material wrote them.
+ENGLISH = {
+    "数据分析": _Entry(
+        "Data analysis",
+        ("data", "analysis", "analytics", "report", "statistic", "visuali", "dashboard"),
+        "Cleaning and organizing business data, running statistical analysis, building reports and charts, and "
+        "explaining the findings to colleagues.",
+        "Day to day, this direction usually means working with data, running statistical analysis and writing reports",
+        ("Usually needs fluent SQL and one analysis tool", "Needs to explain findings clearly, including to people who do not work with data"),
+        ("Tool and domain requirements differ a lot between industries and teams", "City, job type and start date depend on the specific posting"),
+        "More focused on numbers and reports than user research, with less event work than product operations.",
+        ("Take a public dataset and carry one analysis from cleaning to conclusions", "Read a few data analyst postings and note the requirements that keep coming up"),
+    ),
+    "用户研究": _Entry(
+        "User research",
+        ("interview", "survey", "questionnaire", "user", "usability", "observ"),
+        "Designing and running user interviews, surveys and usability tests, organizing the findings and helping the "
+        "team understand what users need.",
+        "Day to day, this direction usually means talking with users, watching how they use things and organizing the findings",
+        ("Usually needs the basic methods of interviews and surveys", "Needs to turn scattered findings into conclusions a team can use"),
+        ("Some teams lean qualitative and some quantitative, so the work varies a lot", "City, job type and start date depend on the specific posting"),
+        "More direct contact with people than data analysis, with less responsibility for running things after launch than product operations.",
+        ("Run a small interview with three classmates to practice asking and summarising", "Read a few user research reports and see how they move from findings to recommendations"),
+    ),
+    "产品运营": _Entry(
+        "Product operations",
+        ("operation", "event", "campaign", "community", "growth", "promotion"),
+        "Planning and running events, looking after user communities, tracking the numbers and finding ways to keep "
+        "more users engaged.",
+        "Day to day, this direction usually means planning events, looking after communities and following up on results",
+        ("Usually needs to plan and deliver an event on your own", "Needs to read basic data to judge how an event went"),
+        ("Operations focus differs by product: some lean on content, some on events", "City, job type and start date depend on the specific posting"),
+        "More focused on event results and user retention than content planning, and closer to the product itself than marketing.",
+        ("Plan an online event for a club or small group and record how it went", "Read a few operations retrospectives and see how they measure an event"),
+    ),
+    "内容策划与编辑": _Entry(
+        "Content planning and editing",
+        ("writing", "editing", "editor", "content", "copywriting", "article", "newsletter"),
+        "Choosing topics, writing and editing articles or video scripts, running content columns and adjusting "
+        "direction from reader feedback.",
+        "Day to day, this direction usually means choosing topics, writing and revising drafts",
+        ("Usually needs a steady body of published work", "Needs to know the target readers and adapt the writing style"),
+        ("Platforms differ in the form and pace of content they expect", "City, job type and start date depend on the specific posting"),
+        "More focused on the content itself than product operations, and less involved in ad spend and budgets than marketing.",
+        ("Write one short piece a week for a month and watch how readers respond", "Pick three columns you like and analyze how they choose topics"),
+    ),
+    "项目协调与管理": _Entry(
+        "Project coordination and management",
+        ("coordinat", "project", "schedule", "organiz", "organis", "planning", "communicat"),
+        "Breaking work into tasks, setting schedules, coordinating people and departments, following up on risks and "
+        "keeping projects on time.",
+        "Day to day, this direction usually means assigning tasks, tracking progress and coordinating everyone involved",
+        ("Usually needs to break a piece of work into steps that can be tracked", "Needs to move people towards agreement when opinions differ"),
+        ("Teams differ in the project management methods and tools they expect", "City, job type and start date depend on the specific posting"),
+        "Less hands-on specialist output than the other directions, and more about getting things done together.",
+        ("In your next group assignment, volunteer to set the schedule and follow up", "Learn one common project management method, such as a kanban board"),
+    ),
+    "教育培训": _Entry(
+        "Education and training",
+        ("teaching", "teach", "tutor", "course", "training", "lecture"),
+        "Designing and delivering courses or training, coaching learners and adjusting the content from their feedback.",
+        "Day to day, this direction usually means preparing lessons, teaching and coaching learners",
+        ("Usually needs real experience of teaching or tutoring", "Needs to explain complex material simply and clearly"),
+        ("Schools, training companies and in-house training expect very different things", "City, job type and start date depend on the specific posting"),
+        "More face-to-face explanation than content planning, and more focused on one subject than project coordination.",
+        ("Find a chance to be a teaching assistant or give one lesson to younger students", "Sit in on a few open classes and notice how the teacher paces them"),
+    ),
+    "市场营销": _Entry(
+        "Marketing",
+        ("marketing", "market", "brand", "advertis", "campaign"),
+        "Studying target audiences, planning brand communication and promotion, measuring results and working with "
+        "sales and product.",
+        "Day to day, this direction usually means planning promotion, running communication and measuring results",
+        ("Usually needs the basic marketing methods and channels", "Needs to adjust plans based on performance data"),
+        ("Marketing teams divide the work very differently: some lean on brand, some on paid channels", "City, job type and start date depend on the specific posting"),
+        "More aimed at people who do not use the product yet than product operations, and more focused on promotion results than content planning.",
+        ("Take apart a recent promotion by a brand you like", "Read a few marketing postings and note the common requirements"),
+    ),
+}
+
+if set(ENGLISH) != {entry.name for entry in CATALOGUE}:
+    raise RuntimeError("every direction of the catalogue needs its English answer")
+
 # What makes up three directions when the material points to fewer.
 FALLBACK = ("项目协调与管理", "内容策划与编辑", "产品运营")
 # The preferences a direction's words are compared with, and those only ever related as unknown.
@@ -157,6 +242,7 @@ _SPACE = re.compile(r"\s*")
 def explore(prompt: str) -> str:
     """The answer to one exploration's prompt, as JSON text."""
     material = _material(prompt)
+    catalogue = _english() if _asks_english(prompt) else CATALOGUE
     experiences, preferences = material["experiences"], material["preferences"]
     sent = [item for item in preferences if "preference_id" in item]
     wanted = " ".join(
@@ -165,7 +251,7 @@ def explore(prompt: str) -> str:
     ).casefold()
 
     scored = sorted(
-        ((sum(word in wanted for word in entry.words), index, entry) for index, entry in enumerate(CATALOGUE)),
+        ((sum(word in wanted for word in entry.words), index, entry) for index, entry in enumerate(catalogue)),
         key=lambda scored: (-scored[0], scored[1]),
     )
     chosen = [entry for hits, _, entry in scored if hits][:5]
@@ -174,12 +260,40 @@ def explore(prompt: str) -> str:
         if len(chosen) >= 3:
             break
 
-        if all(entry.name != name for entry in chosen):
-            chosen.append(next(entry for entry in CATALOGUE if entry.name == name))
+        fallback = next(entry for chinese, entry in zip(CATALOGUE, catalogue) if chinese.name == name)
+
+        if all(entry.name != fallback.name for entry in chosen):
+            chosen.append(fallback)
 
     directions = [_direction(entry, experiences, sent, first=index == 0) for index, entry in enumerate(chosen)]
 
     return json.dumps({"directions": directions}, ensure_ascii=False)
+
+
+def _asks_english(prompt: str) -> bool:
+    """Whether the instructions, before the material, ask for English results; the user's words, inside the
+    material, cannot ask it."""
+    head = prompt.split(MATERIAL_START, 1)[0]
+
+    return OUTPUT_LANGUAGE_LINES["en"] in head
+
+
+def _english() -> tuple[_Entry, ...]:
+    """The catalogue in English, in the same order: English texts, the Chinese and English words both matched."""
+    return tuple(
+        _Entry(
+            english.name,
+            entry.words + english.words,
+            english.main_work,
+            english.basis,
+            english.gaps,
+            english.unknowns,
+            english.difference,
+            english.next_steps,
+        )
+        for entry in CATALOGUE
+        for english in (ENGLISH[entry.name],)
+    )
 
 
 def _material(prompt: str) -> dict:

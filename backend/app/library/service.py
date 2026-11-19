@@ -20,10 +20,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.library.content import (
+    BODY,
+    BODY_SOURCES,
     CATEGORY_FIELDS,
     DOCUMENT_KINDS,
     EXPERIENCE_CATEGORIES,
     ExperienceInput,
+    compose_body,
+    split_fields_in,
 )
 from app.library.errors import Conflict, NotFound
 from app.library.models import (
@@ -261,7 +265,7 @@ def save_draft(
     item = active_item(db, owner_id, item_id, kinds=(entry.category,))
     check_revision(item, expected_revision)
 
-    if same_content(item.content, entry.content) and item.private_note == entry.private_note:
+    if same_content(item.content, entry.content, item.category) and item.private_note == entry.private_note:
         return item, False
 
     item.content = dict(entry.content)
@@ -279,15 +283,30 @@ def save_draft(
     return item, True
 
 
-def same_content(stored: dict, submitted: dict) -> bool:
+def same_content(stored: dict, submitted: dict, category: str | None = None) -> bool:
     """Whether two contents say the same, an empty field and a missing one alike.
 
     A record saved before a field existed has no key for it; its form sends
     the field empty. That is no change, so it makes no new version.
+
+    A record still written in the older split fields (plan 5.2) is offered in
+    the form as one text, its fields joined the way compose_body joins them.
+    Sent back as it was shown, it says the same: it stays as it is, with no
+    new version, and what refers to its fields still finds the same text.
     """
-    return {name: value for name, value in stored.items() if value} == {
-        name: value for name, value in submitted.items() if value
-    }
+    if _filled(stored) == _filled(submitted):
+        return True
+
+    if category not in BODY_SOURCES or not split_fields_in(stored, category) or split_fields_in(submitted, category):
+        return False
+
+    as_shown = {**stored, **dict.fromkeys(BODY_SOURCES[category], ""), BODY: compose_body(stored, category)}
+
+    return _filled(as_shown) == _filled(submitted)
+
+
+def _filled(content: dict) -> dict:
+    return {name: value for name, value in content.items() if value}
 
 
 def confirm_experience(

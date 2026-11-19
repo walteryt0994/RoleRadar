@@ -30,7 +30,7 @@ from app.live_structuring.service import (
     start,
 )
 from app.library.models import StructuringState
-from app.library.outbound_resume import MASK_LABELS, WITHHELD_LABELS
+from app.library.outbound_resume import MASK_NAMES, WITHHELD_NAMES
 from app.library.review import (
     INTERRUPTED,
     LIVE_FAILURE_TEXTS,
@@ -45,13 +45,14 @@ from app.library.review import (
 from app.library.sends import sends_text
 from app.library.structuring_runs import Stop, Stopping
 from app.library.web import checked_form, current_user, message_page, render, runtime, see_other
+from app.i18n import MessageMap, lazy, t
 
 # What the progress of a run says, after 正在 (job_analysis.js).
-STEP = "由外部服务整理"
-NOTICES = {
+STEP = lazy("imp.live.step")
+NOTICES = MessageMap({
     # A confirmation is used up by the run it begins: replayed afterwards, it no longer holds either.
-    "changed": "这份确认已经用过，或者要发送的内容、接收方、处理说明有了变化，所以没有开始。下面已按现在的情况重新生成，请再看一遍后确认。",
-}
+    "changed": "imp.live.changed",
+})
 # Where a start or a cancel lands: the review page, with one of its notices (review_web.NOTICES).
 STARTED = {Asked.ALREADY: "already_structured", Asked.RUNNING: "structuring_running", None: "structuring_started"}
 
@@ -81,11 +82,11 @@ def structuring_runtime(request: Request) -> StructuringRuntime:
 def _not_offered(request: Request, user: CurrentUser) -> Response:
     return message_page(
         request,
-        title="没有外部整理服务",
-        message="这个应用没有启用发给外部服务的简历整理；可以在导入页用本机规则整理，什么都不会发送出去。",
+        title=t("imp.live.1"),
+        message=t("imp.live.2"),
         status_code=404,
         user=user,
-        links=[(BASE, "回到导入简历")],
+        links=[(BASE, t("imp.live.3"))],
     )
 
 
@@ -132,11 +133,11 @@ def _confirmation(request: Request, user: CurrentUser, import_id: str, *, notice
             "section": "imports",
             "row": row,
             "draft": draft,
-            "name": row.filename or "粘贴的文字",
+            "name": row.filename or t("imp.live.4"),
             "recipient": recipient,
             "notice_lines": NOTICE,
-            "masked": [(label, sent.masked[kind]) for kind, label in MASK_LABELS.items() if sent.masked.get(kind)],
-            "withheld": [(label, sent.withheld[kind]) for kind, label in WITHHELD_LABELS.items() if sent.withheld.get(kind)],
+            "masked": [(label, sent.masked[kind]) for kind, label in MASK_NAMES.items() if sent.masked.get(kind)],
+            "withheld": [(label, sent.withheld[kind]) for kind, label in WITHHELD_NAMES.items() if sent.withheld.get(kind)],
             "segments": [(locator(row.segments[number - 1]), text) for number, text in sent.sent],
             "offer": offer,
             "refusal": LIVE_FAILURE_TEXTS[f"gate_{refusal.value}"] if refusal is not None else None,
@@ -260,5 +261,5 @@ def structuring_status(import_id: str, request: Request, user: CurrentUser = Dep
         return JSONResponse({"stage": "done"})
 
     # What the page says after 已交给服务的请求：counts and generations, one still out as maybe.
-    return JSONResponse({"stage": "running", "step": STEP, "sends": sends_text(handed)})
+    return JSONResponse({"stage": "running", "step": str(STEP), "sends": sends_text(handed)})
 

@@ -19,7 +19,7 @@ model sends; saving it (app.directions.records) checks every part against the li
 import unicodedata
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated
+from typing import Literal, Annotated
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -170,6 +170,9 @@ class Generation(_Contract):
     notice_version: _text(40)
     input_fingerprint: Sha256
     generated_at: Annotated[datetime, AfterValidator(_aware)]
+    # The language its explanatory text was asked for, confirmed with the task (UI bilingual batch, plan 6.3). Records
+    # made before have none, and are shown as they are: never guessed, filled in or written again.
+    result_language: Literal["zh-CN", "en"] | None = None
 
 
 class TrustedExploration(_Contract):

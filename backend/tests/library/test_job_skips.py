@@ -80,7 +80,8 @@ def test_a_skipped_posting_is_not_listed_again_and_the_pages_say_so(app, browser
     assert result.ref not in listed(task) and task.finished.outcome.skipped == 1
     calls = registers[-1].adapter(result.ref.source_id).calls
     assert not [call for call in calls if call[0] in ("read", "check") and call[1] == result.ref.posting_id]
-    assert "这次又遇到 1 个" in text_of(browser_a.get(f"/discover/tasks/{task.id}").text)
+    # Counted where the search keeps it (above); the result page no longer lists what was left out (plan 5.3).
+    assert "这次又遇到" not in text_of(browser_a.get(f"/discover/tasks/{task.id}").text)
     # The search it was skipped from still shows it, marked: a decision after a search starts counts from the next.
     assert "已加入我的岗位：跳过" in text_of(browser_a.get(url).text)
 
@@ -260,6 +261,7 @@ def test_reasons_and_notes_never_reach_a_decision_or_an_analysis(app, browser_a,
     outcome = stored(app, browser_a, url).finished.outcome
     first, second = outcome.results[0], outcome.results[1]
     code, words = REASONS[JobDecision.SKIP][0]
+    words = str(words)
     assert keep(browser_a, url, first, action="decide", decision="skip", reason=code, note=f"跳过{SENTINEL}").status_code == 303
     assert keep(browser_a, url, second, action="decide", decision="favorite", note=f"收藏{SENTINEL}").status_code == 303
     decisions, analyses = [], []
@@ -308,5 +310,6 @@ def test_the_pages_say_what_a_skip_does(app, browser_a, library, inline):
 
     assert "跳过不会影响以后的查找" not in keep_page and "跳过以后，下次查找不再列出这个岗位" in keep_page
     assert "收藏、暂缓只是标记，不影响以后的查找" in keep_page and "原因和备注只存在本机" in keep_page
-    assert "不影响以后的查找" not in records_page and "跳过的岗位，下次查找不再列出" in records_page
+    # 我的岗位 lost its long rules at the top (owner feedback, journey 3); what a skip does is said where one is made.
+    assert "不影响以后的查找" not in records_page and "跳过的岗位，下次查找不再列出" not in records_page
     assert "下次查找不再列出这个岗位" in posting_page

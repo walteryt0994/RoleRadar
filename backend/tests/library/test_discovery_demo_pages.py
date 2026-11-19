@@ -93,19 +93,21 @@ def test_the_demo_runs_from_the_pages_to_a_result_that_says_what_it_is(app, brow
     shown = text_of(page)
     outcome = stored(app, browser_a, url).finished.outcome
 
-    # A list read in part, said at the top of the result and among what was searched: never all of it.
+    # A list read in part, said at the top of the result: never all of it. (What was searched is no longer listed
+    # below it, owner redesign plan 5.3; the search keeps it.)
     (read,) = outcome.partial
     assert (read.source, read.read) == (LONG_NAME, lever_demo.LONG_COUNT)
     assert f"{LONG_NAME}的职位列表只读了前 300 个，没有读完：在它上面查的条件不算查过，这里的结果不是全量。" in shown
-    assert "只读了一部分" in shown and "列表只读了前 300 个，没有读完，这个条件不算查过" in shown
+    assert "只读了一部分" not in shown and any(record.partial for record in outcome.searches)
     assert outcome.end is not EndReason.SCOPE_DONE and "范围内查完了" not in shown
     # Every page an offline demo; a check says still published when checked, at the simulated time.
     assert "离线演示（合成预览）" in shown and "核对时间和结果由本机模拟，不是实时信息" in shown
     assert "核对时仍公开发布 ·" in shown and "合成来源在本机回答，不是真实核验" in shown and "仍在招聘" not in shown
-    # A replay says what it is: its postings synthetic samples, its requests a simulation that went nowhere.
-    assert "官方原始发布的合成样例" in shown and "本机模拟服务处理的请求" in shown and "（模拟，没有联网，不产生费用）" in shown
-    # Candidates before analysis are only that, and facts not known are told as they are.
-    assert "初筛候选" in shown and "未分析线索" not in shown and "还没有分析，不是匹配结论" in shown
+    # A replay says what it is: its postings synthetic samples (its requests, a simulation that went nowhere, are
+    # the task's count, no longer listed on the result page, plan 5.3).
+    assert "官方原始发布的合成样例" in shown and "本机模拟服务处理的请求" not in shown
+    # Candidates before analysis are only that, said in their row, and facts not known are told as they are.
+    assert "尚未分析" in shown and "未分析线索" not in shown and "没有分析的原因" in shown
     assert "地点写了但没有认出：London, United Kingdom" in shown and "地点来源没有提供" in shown
     # A type that only says the hours is told as that (U3-D2-E3), and a full-time internship is no conflict.
     assert "类型只写了工时或合同：Full-time（没有说明是不是实习）" in shown
@@ -131,7 +133,8 @@ def test_the_demo_sends_only_what_the_outbound_rules_let_through(app, browser_a,
     assert outcome.blocked == (("address,confidential", 1),)
     shown = text_of(browser_a.get(url).text)
     line = "岗位原文里有疑似地址、标明不公开的内容，什么都没有发送：1 个"
-    assert "分析被拦下或原文不能外发：1 个" in shown and line in shown and presentation.blocked_lines(outcome.blocked) == [line]
+    # Said short at the top (the list of what was left out is gone, plan 5.3), each reason as it was.
+    assert "分析被拦下或原文不能外发" not in shown and line in shown and presentation.blocked_lines(outcome.blocked) == [line]
     assert "含疑似地址或标明不公开的内容" not in shown
 
 

@@ -137,9 +137,12 @@ def test_what_is_kept_is_the_searchs_analysis_by_whitelist_never_the_forms(app, 
 
     assert record.content == records.analysis_content(result) and record.facts["title"] == result.title
     assert not any(word in kept for word in forged.values())
+    # display_metrics: the 岗位要求依据覆盖 count made from these very findings (owner review, plan 7.3), counts only.
     assert set(record.content) == {
-        "version", "category", "first_checks", "notes", "findings", "preferences", "preference_findings", "sources"
+        "version", "category", "first_checks", "notes", "findings", "preferences", "preference_findings", "sources", "display_metrics"
     }
+    assert set(record.content["display_metrics"]) == {"evidence_coverage"}
+    assert set(record.content["display_metrics"]["evidence_coverage"]) <= {"version", "supported", "total", "needs_confirmation", "no_evidence", "none"}
     citations = [citation for finding in record.content["findings"] for citation in finding["citations"]]
     assert citations
     # Each quote with what the analysis read it with then, word for word from its field; never more of the record.
@@ -383,7 +386,7 @@ def test_a_kept_analysis_says_how_its_basis_stands_and_is_never_read_again_from_
     # Changed and confirmed again: marked, and still the words kept then, never the record's words now.
     reconfirm(browser_a, library, actions="后来改写的做法，和当时完全不同。")
     page = text_of(browser_a.get(analysis).text)
-    assert "依据已修改" in page and quote in page and "后来改写的做法" not in page
+    assert "依据已变更" in page and quote in page and "后来改写的做法" not in page
     assert rows(app, JobAnalysis)[0].content == record.content
 
 
@@ -428,7 +431,7 @@ def test_a_deletion_page_older_than_the_analysis_deletes_nothing(app, browser_a,
     ).status_code == 303
 
     refused = browser_a.post(page_url, {**form.fields, "delete_analyses_along": "yes"})
-    assert refused.status_code == 409 and ALONG_CHANGED in text_of(refused.text)
+    assert refused.status_code == 409 and str(ALONG_CHANGED) in text_of(refused.text)
     assert row(app, ExperienceItem, library).deleted_at is None and row(app, JobAnalysis, record.id).deleted_at is None
 
 

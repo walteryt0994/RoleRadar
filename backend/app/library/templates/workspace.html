@@ -1,13 +1,20 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
 {% block layout %}
-{# The overview of the library is the list itself, so it has none beside it. #}
-<div class="workspace{% if focus %} workspace-focus{% endif %}{% if overview %} workspace-overview{% endif %}">
-  {% if not overview %}
-  {{ m.library_nav(sidebar_items, selected_id) }}
-  {% endif %}
-  <main id="main" class="pane" tabindex="-1">
+{#- The library's pages. The list and a record's reading page show the list and one record side by side (md); on
+    narrow screens the list page shows the list and a record's page the record (md_selected), with the way back.
+    The forms are one panel, with the way back to the list they were opened from. -#}
+{% set md = md|default(false) %}
+{% set md_selected = md_selected|default(false) %}
+<div class="workspace{% if md %} workspace-md{% endif %}">
+  <main id="main" class="pane{% if md %} md-page{% if md_selected %} md-has-selection{% endif %}{% endif %}" tabindex="-1">
     <div class="pane-body" data-pane-body>
+      {% if not md %}
+      <p class="back-line">{{ m.back_to_library() }}</p>
+      {% if sidebar_items is none %}
+      <p class="library-unavailable" role="status">{{ t("lib.list_unavailable") }}</p>
+      {% endif %}
+      {% endif %}
       {% if notice %}
       <p class="notice" role="status">{{ notice }}</p>
       {% endif %}

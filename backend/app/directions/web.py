@@ -21,6 +21,7 @@ not current and cannot be saved or decided on; one whose sources were deleted is
 
 C3b is not here: the deletion pages offer no "delete along" yet, and no direction is handed to 找岗位.
 """
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -80,7 +81,16 @@ from app.library.direction_export import SOURCE_STATE_LABELS
 from app.library.errors import ConfigError, NotAllowed, NotFound, RecordConflict, StorageError
 from app.library.identity import CurrentUser
 from app.library.lifecycle import active_direction_record, decision_in_use, trashed_direction_record
-from app.library.models import DecisionState, DirectionDecision, DirectionExploration, ExperienceItem, ExperienceVersion
+from app.library.models import (
+    DecisionState,
+    DirectionDecision,
+    DirectionExploration,
+    DirectionSource,
+    ExperienceItem,
+    ExperienceVersion,
+    SourceHolder,
+    SourceKind,
+)
 from app.library.projection import current_preferences, project_confirmed_library
 from app.library.references import BasisState, SourceState, decision_state, exploration_state
 from app.library.sends import sends_text
@@ -88,13 +98,15 @@ from app.library.service import list_experiences
 from app.library.web import NOTICES as LIBRARY_NOTICES
 from app.library.web import current_user, message_page, render, runtime, safe_next, see_other
 from app.live_gate import LiveBlocked, LiveRefused, Purpose
+from app import i18n
+from app.i18n import lazy, t
 
 BASE = "/directions"
 RECORDS = f"{BASE}/records"
 STATES = {state.value for state in DecisionState}
-WRITING = "这次结果正在保存或记下决定，请稍后再试。"
+WRITING = lazy("dir.web.1")
 CONFLICT = (
-    "你打开这一页之后，这条决定在别处改过（可能是另一个标签页），所以这次没有改。下面是它现在的状态，看过后再选。"
+    lazy("dir.web.2")
 )
 
 router = APIRouter()
@@ -162,19 +174,26 @@ class DirectionsRuntime:
         whether one exploration fits what is left (batch_live.Batch.availability), said without writing, claiming or
         sending anything (D6-1 R3, L3). The review shows it in place of its start button; the batch's begin() asks
         again, under its lock, when the user confirms."""
+        problems = self.start_problems(owner_id)
+
+        return i18n.list_join(problems, "clauses") if problems else None
+
+    def start_problems(self, owner_id: str) -> list[str]:
+        """Every reason the user's exploration may not start now that can be read here (UI bilingual batch, plan
+        4.3): refusal()'s, and under the D6 batch every shortfall of what one exploration would reserve, without
+        writing, claiming or sending anything; the same reason once."""
+        found = []
         refusal = self.refusal()
 
         if refusal is not None:
-            return presentation.REFUSALS.get(refusal)
+            found.append(str(presentation.REFUSALS.get(refusal)))
 
-        if self.live is None or self.batch is None:
-            return None
+        if self.live is not None and self.batch is not None:
+            from app.discovery.batch_live import OperationKind
 
-        from app.discovery.batch_live import OperationKind
+            found.extend(text for _, text in self.batch.availability_all(OperationKind.DIRECTION, owner_id))
 
-        short = self.batch.availability(OperationKind.DIRECTION, owner_id)
-
-        return None if short is None else f"{short[1]}；这次没有开始，什么都没有发送。"
+        return list(dict.fromkeys(found))
 
     def service_status(self) -> dict | None:
         """The approval's figures now, for a real service's pages: all its requests, never one exploration's cost;
@@ -387,8 +406,10 @@ def _skips_preferences(inputs: ExplorationInputs) -> bool:
 
 @router.get(BASE)
 def input_page(request: Request, notice: str = "", user: CurrentUser = Depends(current_user)):
-    inputs = ExplorationInputs()
+    # A new draft asks for results in the interface language of now; the user may change it here (plan 6.3).
+    inputs = ExplorationInputs(result_language=i18n.language())
     origin = request.query_params.get("from", "")
+    again = request.query_params.get("again", "")
 
     if origin:
         task = directions_of(request).store.get(origin, user.id, user.token_hash)
@@ -396,12 +417,86 @@ def input_page(request: Request, notice: str = "", user: CurrentUser = Depends(c
         if task is not None:
             inputs = task.inputs
 
+    if again:
+        # Starting again from a saved exploration (plan 5.5): what it was made from, as it stands now.
+        return _again(request, user, again)
+
     # Saving from the leave dialog of a library form can land here: say what was saved.
     return input_form(request, user, inputs, notice=LIBRARY_NOTICES.get(notice))
 
 
+@dataclass(frozen=True)
+class Again:
+    """What a saved exploration was made from, read again for a new one: never its task, which may be long gone."""
+
+    exploration_id: str
+    saved_at: object
+    # The experiences it used that are still confirmed as they were, ticked again.
+    unchanged: int
+    # Those confirmed again since (by item id): shown, not ticked.
+    changed: frozenset[str]
+    # Those deleted or no longer confirmed: not offered.
+    unavailable: int
+    # Whether it recorded the result language it was made in (records saved before this batch have none).
+    language_recorded: bool
+
+    @property
+    def used(self) -> int:
+        return self.unchanged + len(self.changed) + self.unavailable
+
+
+def _again(request: Request, user: CurrentUser, exploration_id: str) -> Response:
+    """The input page of a new exploration from a saved one: its choice of experiences and preferences and its
+    result language, resolved against the library now. An experience edited and confirmed again since is shown
+    unticked; one deleted or not confirmed is not offered; nothing starts before the user reviews and confirms."""
+    rt = runtime(request)
+    now = rt.now()
+
+    try:
+        with rt.database.transaction() as db:
+            exploration = active_direction_record(db, user.id, DirectionExploration, exploration_id)
+            sources = db.scalars(
+                select(DirectionSource).where(
+                    DirectionSource.owner_id == user.id,
+                    DirectionSource.holder_type == SourceHolder.EXPLORATION,
+                    DirectionSource.holder_id == exploration.id,
+                )
+            ).all()
+            snapshot = project_confirmed_library(db, user.id, now)
+    except NotFound:
+        return _not_found(request, user, t("dir.web.18"))
+
+    offered = {entry.item_id: entry.version_id for entry in snapshot.experiences}
+    used = [(source.item_id, source.version_id) for source in sources if source.kind == SourceKind.EXPERIENCE]
+    chosen = tuple((item_id, version_id) for item_id, version_id in used if offered.get(item_id) == version_id)
+    changed = frozenset(item_id for item_id, version_id in used if item_id in offered and offered[item_id] != version_id)
+    used_preferences = any(source.kind == SourceKind.PREFERENCES for source in sources)
+    recorded = (exploration.generation or {}).get("result_language")
+    inputs = ExplorationInputs(
+        chosen=chosen,
+        left_out=frozenset() if used_preferences else frozenset(f"{PREFERENCES_KEY}:{name}" for name in FIELD_ORDER),
+        result_language=i18n.result_language(recorded),
+    )
+    again = Again(
+        exploration.id,
+        exploration.saved_at,
+        len(chosen),
+        changed,
+        len(used) - len(chosen) - len(changed),
+        i18n.chosen(recorded) is not None,
+    )
+
+    return input_form(request, user, inputs, again=again)
+
+
 def input_form(
-    request: Request, user: CurrentUser, inputs: ExplorationInputs, problem: InputProblem | None = None, *, notice: str | None = None
+    request: Request,
+    user: CurrentUser,
+    inputs: ExplorationInputs,
+    problem: InputProblem | None = None,
+    *,
+    notice: str | None = None,
+    again: Again | None = None,
 ) -> Response:
     """The page to choose from; a choice whose version is gone is not ticked again."""
     rt = runtime(request)
@@ -424,8 +519,12 @@ def input_form(
             "experiences": snapshot.experiences,
             "unconfirmed": unconfirmed,
             "ticked": ticked,
-            "dropped": len(inputs.chosen) - len(ticked) if problem is None else 0,
-            "filled_groups": filled,
+            "dropped": len(inputs.chosen) - len(ticked) if problem is None and again is None else 0,
+            "again": again,
+            "result_language": i18n.result_language(inputs.result_language),
+            "filled_groups": [presentation.group_text(group) for group in filled],
+            # The saved preferences, shown beside the experiences as they are (owner redesign, image 12).
+            "preferences": saved,
             "skip_preferences": _skips_preferences(inputs),
             "problem": problem,
             "notice": notice,
@@ -433,7 +532,6 @@ def input_form(
             # The service a task started from here would go to: the app's, never a fixed text.
             "mode": presentation.input_mode(directions_of(request).recipient),
             "MAX_EXPERIENCES": MAX_EXPERIENCES,
-            "CATEGORY_LABELS": CATEGORY_LABELS,
         },
         user=user,
         status_code=422 if problem else 200,
@@ -457,8 +555,12 @@ def _chosen(values: list[str]) -> tuple[tuple[str, str], ...]:
 @router.post(f"{BASE}/review")
 def review(request: Request, user: CurrentUser = Depends(current_user), form: FormData = Depends(checked_fields)):
     left_out = frozenset(f"{PREFERENCES_KEY}:{name}" for name in FIELD_ORDER) if form.get("skip_preferences") == "yes" else frozenset()
+    # The language asked for, or the interface language if the form says none it knows (plan 6.3).
+    language = i18n.result_language(form.get("result_language"))
 
-    return new_review(request, user, ExplorationInputs(chosen=_chosen(form.getlist("source")), left_out=left_out))
+    return new_review(
+        request, user, ExplorationInputs(chosen=_chosen(form.getlist("source")), left_out=left_out, result_language=language)
+    )
 
 
 def new_review(request: Request, user: CurrentUser, inputs: ExplorationInputs, *, replaces: str | None = None, notice: str = "") -> Response:
@@ -472,18 +574,20 @@ def new_review(request: Request, user: CurrentUser, inputs: ExplorationInputs, *
     except InputProblem as problem:
         return input_form(request, user, inputs, problem)
 
-    exploration_request = build_request(user.id, plan, directions.recipient, directions.notice_version)
+    exploration_request = build_request(
+        user.id, plan, directions.recipient, directions.notice_version, result_language=inputs.result_language
+    )
 
     try:
         task = directions.store.create(user.id, user.token_hash, inputs, plan, exploration_request, fingerprint(exploration_request))
     except TooManyTasks:
         return message_page(
             request,
-            title="暂时不能开始新的探索",
-            message="服务器上正在保留的临时探索太多了。请稍后再试，或先取消你不需要的探索。",
+            title=t("dir.web.4"),
+            message=t("dir.web.5"),
             status_code=503,
             user=user,
-            links=[(BASE, "返回方向探索")],
+            links=[(BASE, t("dir.web.6"))],
         )
 
     if replaces:
@@ -498,14 +602,13 @@ def new_review(request: Request, user: CurrentUser, inputs: ExplorationInputs, *
 def gone_page(request: Request, user: CurrentUser) -> Response:
     return message_page(
         request,
-        title="找不到这次探索",
+        title=t("dir.web.7"),
         message=(
-            f"它可能已经过期（临时结果保留 {TASK_TTL_SECONDS // 60} 分钟）、服务已重启、你已退出登录，或者它属于其他会话。"
-            "需要的话，请重新开始一次探索。"
+            t("dir.web.8", p0=TASK_TTL_SECONDS // 60)
         ),
         status_code=404,
         user=user,
-        links=[(BASE, "返回方向探索")],
+        links=[(BASE, t("dir.web.6"))],
     )
 
 
@@ -573,11 +676,13 @@ def review_page(request: Request, user: CurrentUser, task, *, notice=None, error
             "service": _service_of(request, task),
             # Under the D6 batch also when one exploration does not fit what is left (D6-1 R3, L3).
             "refusal": directions_of(request).start_problem(user.id),
+            "refusals": directions_of(request).start_problems(user.id),
             "SEND": SEND,
             "LEFT_OUT": LEFT_OUT,
             "BLOCKED": BLOCKED,
             "PREFERENCES_KEY": PREFERENCES_KEY,
             "found_labels": analysis_text.found_labels,
+            "group_text": presentation.group_text,
             "preference_label": presentation.condition_label,
         },
         user=user,
@@ -632,7 +737,7 @@ def confirm(task_id: str, request: Request, user: CurrentUser = Depends(current_
         try:
             operation = directions.batch.begin(OperationKind.DIRECTION, user.id, task.id, task.cancel)
         except BatchRefused as refused:
-            return review_page(request, user, task, error=f"{refused}，所以没有开始，什么都没有发送。", status_code=409)
+            return review_page(request, user, task, error=t("dir.web.9", p0=refused), status_code=409)
 
     outcome, started = directions.store.begin(task.id, user.id, user.token_hash, form.get("fingerprint", ""))
 
@@ -664,7 +769,7 @@ def confirm(task_id: str, request: Request, user: CurrentUser = Depends(current_
 
     if outcome is Start.BUSY:
         return review_page(
-            request, user, task, error="你已经有一个探索正在进行。请等它结束，或者取消它之后再开始。", status_code=409
+            request, user, task, error=t("dir.web.10"), status_code=409
         )
 
     if outcome is Start.STALE_FORM:
@@ -672,7 +777,7 @@ def confirm(task_id: str, request: Request, user: CurrentUser = Depends(current_
             request,
             user,
             task,
-            error="这个确认来自旧的核对页面，所以没有开始。请看一遍下面最新的核对内容后再确认。",
+            error=t("dir.web.11"),
             status_code=409,
         )
 
@@ -722,7 +827,7 @@ def task_status(task_id: str, request: Request, user: CurrentUser = Depends(curr
     return JSONResponse(
         {
             "stage": task.stage.value,
-            "step": presentation.STEP if task.stage is Stage.RUNNING else None,
+            "step": str(presentation.STEP) if task.stage is Stage.RUNNING else None,
             "sends": sends_text(task.handed),
         }
     )
@@ -890,7 +995,7 @@ def save(task_id: str, request: Request, user: CurrentUser = Depends(current_use
         trusted = _trusted_of(task)
 
         if trusted is None:
-            return task_view(request, user, task, error="这次结果不能保存。", status_code=409)
+            return task_view(request, user, task, error=t("dir.web.12"), status_code=409)
 
         rt = runtime(request)
 
@@ -924,7 +1029,7 @@ def decide_on_task(task_id: str, request: Request, user: CurrentUser = Depends(c
         trusted = _trusted_of(task)
 
         if trusted is None:
-            return task_view(request, user, task, error="不能根据这次结果做决定。", status_code=409)
+            return task_view(request, user, task, error=t("dir.web.13"), status_code=409)
 
         rt = runtime(request)
 
@@ -938,7 +1043,7 @@ def decide_on_task(task_id: str, request: Request, user: CurrentUser = Depends(c
     finally:
         store.release_write(task.id)
 
-    return see_other(f"{BASE}/tasks/{task.id}?notice=decided")
+    return see_other(f"{BASE}/tasks/{task.id}?notice=decided{_reopen(form)}")
 
 
 # --- the records ----------------------------------------------------------------------------------------------------
@@ -952,6 +1057,13 @@ def records_page(request: Request, notice: str = "", user: CurrentUser = Depends
 def records_view(request: Request, user: CurrentUser, *, notice=None, error=None, status_code=200) -> Response:
     rt = runtime(request)
     now = rt.now()
+    # Results of this session not saved yet and still kept: an empty page offers them first (owner redesign, plan
+    # 4.3); several are listed for the person to choose, none is picked or run again for them.
+    unsaved = [
+        task
+        for task, _ in directions_of(request).store.listed(user.id, user.token_hash)
+        if task.stage is Stage.DONE and task.saved_id is None and task.outcome is not None and task.outcome.result is not None
+    ]
 
     with rt.database.transaction() as db:
         decisions = []
@@ -997,6 +1109,9 @@ def records_view(request: Request, user: CurrentUser, *, notice=None, error=None
             "basis_text": presentation.basis_text,
             "SOURCE_STATE_LABELS": SOURCE_STATE_LABELS,
             "SourceState": SourceState,
+            # 保存的探索 or 方向决定 (owner redesign, plan 4.3), chosen in the address; saved explorations first.
+            "records_tab": "decisions" if request.query_params.get("tab") == "decisions" else "saved",
+            "unsaved_results": unsaved,
         },
         user=user,
         status_code=status_code,
@@ -1019,14 +1134,14 @@ def _saved_places(db, owner_id: str, result: ExplorationResult) -> dict:
     return places
 
 
-def _not_found(request: Request, user: CurrentUser, what: str = "这条记录") -> Response:
+def _not_found(request: Request, user: CurrentUser, what: str | None = None) -> Response:
     return message_page(
         request,
-        title=f"找不到{what}",
-        message="它可能已经删除、恢复期已过，或者不属于你。",
+        title=t("dir.web.15", p0=what or t("dir.web.14")),
+        message=t("dir.web.16"),
         status_code=404,
         user=user,
-        links=[(RECORDS, "回到探索记录")],
+        links=[(RECORDS, t("dir.web.17"))],
     )
 
 
@@ -1047,7 +1162,7 @@ def exploration_view(request: Request, user: CurrentUser, exploration_id: str, *
             decisions = _decisions_for(db, user.id, result)
             places = _saved_places(db, user.id, result)
     except NotFound:
-        return _not_found(request, user, "这次探索")
+        return _not_found(request, user, t("dir.web.18"))
 
     return render(
         request,
@@ -1080,13 +1195,20 @@ def decide_on_exploration(exploration_id: str, request: Request, user: CurrentUs
         with rt.database.transaction() as db:
             decide_on_saved_exploration(db, user.id, exploration_id, form.get("name", ""), state, seen, rt.now())
     except NotFound:
-        return _not_found(request, user, "这次探索")
+        return _not_found(request, user, t("dir.web.18"))
     except NotAllowed as refused:
         return exploration_view(request, user, exploration_id, error=refused.reason, status_code=409)
     except RecordConflict:
         return exploration_view(request, user, exploration_id, error=CONFLICT, status_code=409)
 
-    return see_other(f"{BASE}/explorations/{exploration_id}?notice=decided")
+    return see_other(f"{BASE}/explorations/{exploration_id}?notice=decided{_reopen(form)}")
+
+
+def _reopen(form) -> str:
+    """The direction whose details were open when it was decided on, opened again (owner redesign, plan 4.2)."""
+    opened = form.get("open", "")
+
+    return f"&open={opened}" if re.fullmatch(r"direction-\d{1,2}", opened or "") else ""
 
 
 def _confirm(request: Request, user: CurrentUser, *, title: str, points: list[str], action: str, button: str, cancel: str, hidden: dict) -> Response:
@@ -1110,18 +1232,18 @@ def _confirm(request: Request, user: CurrentUser, *, title: str, points: list[st
 
 def _refused(request: Request, user: CurrentUser, reason: str, back: str = RECORDS) -> Response:
     return message_page(
-        request, title="这个操作现在不能执行", message=reason, status_code=409, user=user, links=[(back, "返回")]
+        request, title=t("dir.web.19"), message=reason, status_code=409, user=user, links=[(back, t("dir.web.20"))]
     )
 
 
 def _conflicted(request: Request, user: CurrentUser, back: str = RECORDS) -> Response:
     return message_page(
         request,
-        title="操作没有执行：这条记录刚刚变了",
-        message="你打开页面之后，这条记录在别处改过（可能是另一个标签页）。为了不处理你没有看到的变化，这次操作没有执行。请先看最新状态。",
+        title=t("dir.web.21"),
+        message=t("dir.web.22"),
         status_code=409,
         user=user,
-        links=[(back, "查看最新状态")],
+        links=[(back, t("dir.web.23"))],
     )
 
 
@@ -1150,20 +1272,20 @@ def exploration_delete_page(exploration_id: str, request: Request, user: Current
         with rt.database.transaction() as db:
             exploration = active_direction_record(db, user.id, DirectionExploration, exploration_id)
     except NotFound:
-        return _not_found(request, user, "这次探索")
+        return _not_found(request, user, t("dir.web.18"))
 
     return _confirm(
         request,
         user,
-        title="删除这次探索",
+        title=t("dir.web.24"),
         points=[
-            "将删除：这次探索保存的方向、引文和生成信息。",
-            "根据它做的决定会保留，标为“依据的方向探索已删除”，之后不能再按它直接修改。",
-            "7 天内可以在回收站恢复，也可以提前永久删除；到期后会被永久删除。",
-            "已经下载到本机的导出文件不受影响，需要你自己处理。",
+            t("dir.web.25"),
+            t("dir.web.26"),
+            t("dir.web.27"),
+            t("dir.web.28"),
         ],
         action=f"{BASE}/explorations/{exploration.id}/delete",
-        button="移到回收站",
+        button=t("dir.web.29"),
         cancel=f"{BASE}/explorations/{exploration.id}",
         hidden={"expected_revision": str(exploration.revision)},
     )
@@ -1198,19 +1320,19 @@ def exploration_purge_page(exploration_id: str, request: Request, user: CurrentU
         with rt.database.transaction() as db:
             exploration = trashed_direction_record(db, user.id, DirectionExploration, exploration_id, rt.now())
     except NotFound:
-        return _not_found(request, user, "这次探索")
+        return _not_found(request, user, t("dir.web.18"))
 
     return _confirm(
         request,
         user,
-        title="永久删除这次探索",
+        title=t("dir.web.30"),
         points=[
-            "这次探索保存的方向、引文和生成信息会被永久删除，不能恢复。",
-            "根据它做的决定会保留，标为“依据的方向探索已永久删除”。",
-            "已经下载到本机的导出文件不受影响，需要你自己处理。",
+            t("dir.web.31"),
+            t("dir.web.32"),
+            t("dir.web.28"),
         ],
         action=f"{BASE}/explorations/{exploration.id}/purge",
-        button="永久删除",
+        button=t("dir.web.33"),
         cancel="/experiences?tab=trash",
         hidden={"expected_revision": str(exploration.revision)},
     )
@@ -1262,7 +1384,7 @@ def own_choice_page(decision_id: str, request: Request, user: CurrentUser = Depe
             decision = active_direction_record(db, user.id, DirectionDecision, decision_id)
             state = decision_state(db, user.id, decision, now)
     except NotFound:
-        return _not_found(request, user, "这条决定")
+        return _not_found(request, user, t("dir.web.34"))
 
     if decision.basis == "personal":
         return see_other(RECORDS)
@@ -1328,18 +1450,18 @@ def decision_purge_page(decision_id: str, request: Request, user: CurrentUser = 
         with rt.database.transaction() as db:
             decision = trashed_direction_record(db, user.id, DirectionDecision, decision_id, rt.now())
     except NotFound:
-        return _not_found(request, user, "这条决定")
+        return _not_found(request, user, t("dir.web.34"))
 
     return _confirm(
         request,
         user,
-        title=f"永久删除决定：{decision.name}",
+        title=t("dir.web.35", p0=decision.name),
         points=[
-            "这条决定会被永久删除，不能恢复。",
-            "已经下载到本机的导出文件不受影响，需要你自己处理。",
+            t("dir.web.36"),
+            t("dir.web.28"),
         ],
         action=f"{BASE}/decisions/{decision.id}/purge",
-        button="永久删除",
+        button=t("dir.web.33"),
         cancel="/experiences?tab=trash",
         hidden={"expected_revision": str(decision.revision)},
     )

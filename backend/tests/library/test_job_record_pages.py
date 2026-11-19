@@ -94,8 +94,10 @@ def test_a_finished_search_keeps_nothing_until_the_user_asks(app, browser_a, lib
 
     # Seeing the results and the keep page writes nothing.
     assert counts(app) == (0, 0, 0, 0) and keep_page.status_code == 200
-    assert keep_link(result) in page and keep_link(lead) in page and "加入我的岗位或做决定…" in page
-    assert "保存这次查找的摘要" in page and "不会自动保存，也不会投递" in text_of(page)
+    # Each posting's details lead with 加入我的岗位, to the keep page (owner redesign, plan 5.3); the results say they
+    # are temporary and never saved by themselves.
+    assert keep_link(result) in page and keep_link(lead) in page and f'{keep_link(result)}">加入我的岗位</a>' in page
+    assert "保存查找摘要" in page and "临时结果：保留 30 分钟，不会自动保存。" in text_of(page)
     assert "只有你点了下面的按钮才会保存" in text_of(keep_page.text)
 
     # Keeping a posting keeps it, not the search's summary; keeping the summary keeps no posting.
@@ -172,8 +174,10 @@ def test_deciding_on_both_pages_names_what_was_seen_and_an_older_page_changes_no
     older = browser_a.post(f"{record}/decide", {"csrf_token": browser_a.csrf_token(), "revision": row.revision, "decision": "defer"})
     assert older.status_code == 409
 
+    # Another decision with its own reasons: the reasons are the ones sent, and the note, not sent, is kept as it was
+    # (owner review: what a form does not send is never taken for empty).
     [row] = rows(app, JobPosting)
-    assert (row.decision, row.reasons, row.note) == ("favorite", ["company"], None)
+    assert (row.decision, row.reasons, row.note) == ("favorite", ["company"], "地点太远")
 
     feedback = browser_a.post(f"{record}/feedback", {"csrf_token": browser_a.csrf_token(), "revision": row.revision, "field": "place", "feedback_reason": "wrong", "note": "合成：其实在上海"})
     assert feedback.status_code == 303
@@ -214,7 +218,7 @@ def test_every_entry_refuses_a_search_whose_sources_may_not_be_kept(make_config,
         result = task.finished.outcome.results[0]
         page = browser.get(url).text
 
-        assert "保存或做决定…" not in page and "保存这次查找的摘要" not in page
+        assert "保存或做决定…" not in page and "保存查找摘要" not in page
         assert "这次查找用到的来源没有保存许可，结果只临时显示" in text_of(page)
         assert browser.get(f"{url}/keep?source={result.ref.source_id}&posting={result.ref.posting_id}").status_code == 403
 
@@ -268,7 +272,7 @@ def test_the_summary_is_a_whitelist_and_is_kept_once(app, browser_a, library, in
     assert set(row.summary) == {
         "version", "mode", "stage", "cancelled_by", "sources", "scope", "experiences", "preference_fields", "recipient",
         "notice_version", "limits", "end", "personalised", "counts", "searches", "partial", "unsearched", "unjudged",
-        "steps", "requests",
+        "steps", "requests", "result_language",
     }
     # Never a decider's own words, a posting's facts, an experience's or a preference's words: names and ids only.
     for step in task.finished.trace.steps:
@@ -448,9 +452,27 @@ def test_a_kept_summary_says_each_search_and_the_whole_scope_as_the_search_did(a
     assert lines[4].endswith("返回 5 个；列表只读了前 300 个，没有读完，这个条件不算查过")
 
 
+def tabs(page):
+    """The second-level navigation of a page's area (UI bilingual batch, plan 2): href, current mark, words."""
+    nav = page[page.index('<nav class="tabs"'): page.index("</nav>", page.index('<nav class="tabs"'))]
+
+    return re.findall(r'<a href="([^"]+)"( aria-current="page")?>([^<]+)</a>', nav)
+
+
+def primary(page):
+    """The first-level places of the side bar: href, current mark, words."""
+    nav = page[page.index('<nav class="primary-nav"'): page.index("</nav>", page.index('<nav class="primary-nav"'))]
+
+    return re.findall(r'<a class="nav-item" href="([^"]+)"( aria-current="(?:true|page)")?>.*?<span>([^<]+)</span></a>', nav)
+
+
 def test_the_jobs_area_has_its_records_beside_the_search(browser_a):
     page = browser_a.get("/job-records").text
-    links = re.findall(r'<a href="([^"]+)"( aria-current="page")?>([^<]+)</a>', page[page.index('<nav class="subnav"'):])[:3]
 
-    assert links == [("/job-analysis", "", "岗位分析"), ("/discover", "", "找岗位"), ("/job-records", ' aria-current="page"', "岗位记录")]
-    assert "还没有加入我的岗位的岗位" in page and "还没有保存的查找摘要" in page
+    assert tabs(page) == [("/discover", "", "发现岗位"), ("/job-records", ' aria-current="page"', "我的岗位"), ("/job-records/history", "", "查找与分析记录")]
+    # The empty state is one short sentence (owner redesign, plan 5.3), with 发现岗位 and 补充岗位.
+    assert "还没有保存的岗位。" in page and 'href="/job-records/supply"' in page
+    # The search summaries are kept apart, in 查找与分析记录 (UI bilingual batch, plan 2).
+    assert "还没有保存的查找摘要" in browser_a.get("/job-records/history?tab=searches").text
+
+

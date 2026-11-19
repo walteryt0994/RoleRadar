@@ -2,7 +2,7 @@
 {% import "_macros.html" as m with context %}
 {% from "_direction_cards.html" import direction_cards with context %}
 {% set area = "directions" %}
-{% block title %}{% if task.stage == "running" %}正在探索方向{% elif task.stage == "cancelled" %}探索已取消{% else %}方向探索结果{% endif %}{% endblock %}
+{% block title %}{% if task.stage == "running" %}{{ t("dir.direction_task.1") }}{% elif task.stage == "cancelled" %}{{ t("dir.direction_task.2") }}{% else %}{{ t("dir.direction_task.3") }}{% endif %}{% endblock %}
 {% block layout %}
 <main id="main" class="job-page job-reading" tabindex="-1"{% if task.stage == "running" %} data-task-running data-task-status="/directions/tasks/{{ task.id }}/status"{% endif %}>
   {% if notice %}
@@ -11,46 +11,60 @@
 
   {% if task.stage == "running" %}
   <header class="job-head">
-    <h1>正在探索方向</h1>
+    <h1>{{ t("dir.direction_task.1") }}</h1>
     <p class="job-mode">{{ mode }}</p>
   </header>
-  <p class="task-status" role="status" data-task-step>正在{{ STEP }}。已交给服务的请求：{{ sends_text(task.handed) }}。</p>
-  <p class="hint">完成后这一页会自动更新；没有更新时可以<a href="/directions/tasks/{{ task.id }}" data-skip-leave-guard>刷新状态</a>。</p>
+  <p class="task-status" role="status" data-task-step>{{ t("dirx.running_step", step=STEP) }}</p>
+  <p class="hint">{{ t("dir.direction_task.5") }}<a href="/directions/tasks/{{ task.id }}" data-skip-leave-guard>{{ t("dir.direction_task.6") }}</a>{{ t("dir.direction_task.7") }}</p>
   <form method="post" action="/directions/tasks/{{ task.id }}/cancel" data-task-cancel>
     {{ m.csrf() }}
     <input type="hidden" name="next" value="">
-    <button type="submit">取消探索</button>
+    <button type="submit">{{ t("dir.direction_task.8") }}</button>
   </form>
-  <p class="hint">取消会停止之后的发送；已经交给服务的请求无法撤回，它的回答不会采用。</p>
+  <p class="hint">{{ t("dir.direction_task.9") }}</p>
   <dialog id="task-leave-dialog" aria-labelledby="task-leave-title">
-    <h2 id="task-leave-title">探索还在进行</h2>
+    <h2 id="task-leave-title">{{ t("dir.direction_task.10") }}</h2>
     <div class="dialog-actions">
-      <button type="button" data-task-choice="stay" class="secondary">继续查看</button>
-      <button type="button" data-task-choice="cancel" class="danger">取消探索并离开</button>
+      <button type="button" data-task-choice="stay" class="secondary">{{ t("dir.direction_task.11") }}</button>
+      <button type="button" data-task-choice="cancel" class="danger">{{ t("dir.direction_task.12") }}</button>
     </div>
   </dialog>
 
   {% elif task.stage == "cancelled" %}
   <header class="job-head">
-    <h1>探索已取消</h1>
+    <h1>{{ t("dir.direction_task.2") }}</h1>
   </header>
   {% if live %}
   <p class="job-mode">{{ mode }}</p>
   {% endif %}
-  <p>{{ cancelled_by }}已交给服务的请求：{{ sends_text(task.handed) }}；它的回答不会采用。{% if live %}已经发出的请求无法撤回，费用照常核算。{% endif %}</p>
+  <p>{{ t("dir.direction_task.13", p0=(cancelled_by), p1=(sends_text(task.handed))) }}{% if live %}{{ t("dir.direction_task.14") }}{% endif %}</p>
   {% include "_direction_service.html" %}
   <div class="actions">
     <form method="post" action="/directions/tasks/{{ task.id }}/again" class="inline">
       {{ m.csrf() }}
-      <button type="submit" class="primary">重新核对</button>
+      <button type="submit" class="primary">{{ t("dir.direction_task.15") }}</button>
     </form>
-    <a href="/directions?from={{ task.id }}">修改选择</a>
+    <a href="/directions?from={{ task.id }}">{{ t("dir.direction_task.16") }}</a>
   </div>
 
   {% else %}
-  <header class="job-head">
-    <h1>方向探索结果</h1>
-    <p class="job-mode">{{ result_mode }}</p>
+  {#- The result (owner redesign, plan 4.2): the directions as cards, opened one at a time; saving the exploration is
+      its own action at the top, apart from the decision on each direction. -#}
+  <header class="page-head">
+    <h1>{{ t("dir.direction_task.3") }}</h1>
+    <div class="page-actions">
+      {% if cards and can_save %}
+      <form method="post" action="/directions/tasks/{{ task.id }}/save" class="inline">
+        {{ m.csrf() }}
+        <button type="submit" class="secondary">{{ t("dir.direction_task.20") }}</button>
+      </form>
+      {% endif %}
+      <form method="post" action="/directions/tasks/{{ task.id }}/again" class="inline">
+        {{ m.csrf() }}
+        <button type="submit" class="secondary">{{ t("dir.direction_task.15") }}</button>
+      </form>
+    </div>
+    <p class="state-line"><span class="job-mode">{{ result_mode }}</span>{% if cards and can_save %}<span>{{ t("dirx.unsaved_until", at=expires_at|shorttime) }}</span>{% endif %}</p>
   </header>
   {% if error %}
   <p class="error" role="alert">{{ error }}</p>
@@ -62,33 +76,27 @@
   <p class="warning" role="alert">{{ CHANGED_SINCE }}</p>
   {% endif %}
   {% if cards %}
-  <p class="hint">这次发出 {{ outcome.experiences_sent }} 段经历、{{ outcome.preferences_sent }} 条偏好{% if not outcome.experiences_sent %}，没有经历依据{% endif %}。下面都是一般性介绍，未经岗位来源核验；没有分数，也不排名。</p>
-  <div class="direction-save" data-reveal>
-    {% if can_save %}
-    <form method="post" action="/directions/tasks/{{ task.id }}/save" class="inline">
-      {{ m.csrf() }}
-      <button type="submit" class="primary">保存这次探索</button>
-    </form>
-    <p class="hint">不保存的话，这次结果在 {{ expires_at|shorttime }} 之后清除。</p>
-    {% elif saved %}
-    <p>已保存。<a href="/directions/explorations/{{ saved.id }}">查看保存的探索</a></p>
-    {% elif saved_in_bin %}
-    <p>这次探索保存过，现在在<a href="/experiences?tab=trash">回收站</a>里。</p>
-    {% elif saved_gone %}
-    <p>{{ SAVED_GONE }}</p>
-    {% endif %}
-  </div>
+  {% if saved %}
+  <p class="notice" role="status">{{ t("dir.direction_task.22") }}{{ t("common.sentence_gap") }}<a href="/directions/explorations/{{ saved.id }}">{{ t("dir.direction_task.23") }}</a></p>
+  {% elif saved_in_bin %}
+  <p class="notice" role="status">{{ t("dir.direction_task.24") }}<a href="/data/trash">{{ t("dir.direction_task.25") }}</a>{{ t("dir.direction_task.26") }}</p>
+  {% elif saved_gone %}
+  <p class="notice" role="status">{{ SAVED_GONE }}</p>
+  {% endif %}
+  {# What it rests on, in one line: what was sent, and that it is a general introduction, unranked and unscored. #}
+  <p class="hint">{{ t("dir.direction_task.17", p0=(outcome.experiences_sent), p1=(outcome.preferences_sent)) }}{% if not outcome.experiences_sent %}{{ t("dir.direction_task.18") }}{% endif %}{{ t("dir.direction_task.19") }}</p>
   {{ direction_cards(cards, "/directions/tasks/" ~ task.id ~ "/decide", can_decide, "/directions/tasks/" ~ task.id) }}
   {% endif %}
-  <p class="hint result-foot">已交给服务的请求：{{ sends_text(task.handed) }}{{ sends_note }}。</p>
+  {#- The requests it handed on, one line, only where no complete result came (failed, refused, unavailable): what
+      went out is then the user's to know. A normal result keeps no such line (owner redesign revision R2): a real
+      service's cost and approval stand in the section below, its recipient in the head. -#}
+  {% if outcome is defined and outcome and outcome.status in ("failed", "rejected", "unavailable", "cancelled") %}
+  <p class="hint">{{ t("dir.direction_task.27", p0=(sends_text(task.handed)), p1=(sends_note)) }}</p>
+  {% endif %}
   {% include "_direction_service.html" %}
-  <div class="actions">
-    <form method="post" action="/directions/tasks/{{ task.id }}/again" class="inline">
-      {{ m.csrf() }}
-      <button type="submit">重新核对</button>
-    </form>
-    <a href="/directions?from={{ task.id }}">修改选择</a>
-    <a href="/directions/records">探索记录</a>
+  <div class="actions result-foot">
+    <a href="/directions?from={{ task.id }}">{{ t("dir.direction_task.16") }}</a>
+    <a href="/directions/records">{{ t("dir.direction_task.28") }}</a>
   </div>
   {% endif %}
 </main>
@@ -96,5 +104,7 @@
 {% block scripts %}
 {% if task.stage == "running" %}
 <script src="/static/job_analysis.js"></script>
+{% else %}
+<script src="/static/directions.js"></script>
 {% endif %}
 {% endblock %}

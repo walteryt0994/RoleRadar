@@ -74,19 +74,20 @@ from app.library.references import (
     usable_for_search,
 )
 from app.library.service import is_expired, new_id, record_event
+from app.i18n import MessageMap, lazy, t
 
-REFUSED = {
-    SourceState.CHANGED: "这次探索用到的资料之后改过，所用的内容和当时不一样了：结果不能作为当前结果保存，也不会换用最新的资料。",
-    SourceState.VERSION_IN_BIN: "这次探索用到的那个版本已经删除：结果不能作为当前结果保存。",
-    SourceState.RECORD_IN_BIN: "这次探索用到的一份资料已经删除：结果不能作为当前结果保存。",
-    SourceState.GONE: "这次探索用到的一份资料找不到了：结果不能保存。",
-}
-UNKNOWN_FIELD = "这次探索的来源里有这份资料没有的栏目：结果不能保存。"
-QUOTE_MISMATCH = "结果里有一条引文和资料原文对不上：结果不能保存。"
-SAVED_IN_BIN = "这次探索结果已经保存过，现在在回收站里；要找回请从回收站恢复。"
-SAVED_AND_PURGED = "这次探索结果以前保存过，已经永久删除；请重新探索后再保存。"
-NO_SUCH_DIRECTION = "这次探索里没有这个方向。"
-BAD_NAME = f"方向名称要写 1 到 {NAME_CHARS} 个字。"
+REFUSED = MessageMap({
+    SourceState.CHANGED: "dir.rec.1",
+    SourceState.VERSION_IN_BIN: "dir.rec.2",
+    SourceState.RECORD_IN_BIN: "dir.rec.3",
+    SourceState.GONE: "dir.rec.4",
+})
+UNKNOWN_FIELD = lazy("dir.rec.5")
+QUOTE_MISMATCH = lazy("dir.rec.6")
+SAVED_IN_BIN = lazy("dir.rec.7")
+SAVED_AND_PURGED = lazy("dir.rec.8")
+NO_SUCH_DIRECTION = lazy("dir.rec.9")
+BAD_NAME = lazy("dir.rec.10", p0=NAME_CHARS)
 
 
 @dataclass(frozen=True)

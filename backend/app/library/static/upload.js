@@ -7,6 +7,24 @@
 // Without JavaScript the form still works, and the server explains.
 (function () {
   "use strict";
+  // The words of this page's language (the html element's data-ui-text, UI bilingual batch); the Chinese is a fallback.
+  var UI_TEXT = null;
+
+  function say(key, fallback, values) {
+    if (UI_TEXT === null) {
+      var root = document.documentElement;
+      try {
+        UI_TEXT = root && root.getAttribute ? JSON.parse(root.getAttribute("data-ui-text") || "{}") : {};
+      } catch (error) {
+        UI_TEXT = {};
+      }
+    }
+    var text = UI_TEXT[key] || fallback;
+    Object.keys(values || {}).forEach(function (name) {
+      text = text.split("{" + name + "}").join(values[name]);
+    });
+    return text;
+  }
 
   const MAX_BYTES = 10 * 1024 * 1024;
   const ALLOWED = /\.(pdf|png|jpe?g)$/i;
@@ -25,19 +43,19 @@
 
     function problemWith(file) {
       if (!file) {
-        return "请先选择一个文件。";
+        return say("js.upload.none", "请先选择一个文件。");
       }
 
       if (!ALLOWED.test(file.name)) {
-        return "只能上传 PDF、PNG 或 JPEG 文件（扩展名 .pdf、.png、.jpg 或 .jpeg），这个文件没有上传。";
+        return say("js.upload.type", "只能上传 PDF、PNG 或 JPEG 文件（扩展名 .pdf、.png、.jpg 或 .jpeg），这个文件没有上传。");
       }
 
       if (file.size === 0) {
-        return "这个文件是空的（0 字节），没有上传。";
+        return say("js.upload.empty", "这个文件是空的（0 字节），没有上传。");
       }
 
       if (file.size > MAX_BYTES) {
-        return "文件超过 10 MB 的上限，没有上传。";
+        return say("js.upload.large", "文件超过 10 MB 的上限，没有上传。");
       }
 
       return "";
@@ -64,9 +82,9 @@
 
       sending = true;
       button.disabled = true;
-      button.textContent = "正在上传…";
+      button.textContent = say("js.upload.uploading", "正在上传…");
       form.setAttribute("aria-busy", "true");
-      status.textContent = "正在上传，请不要关闭这个页面。";
+      status.textContent = say("js.upload.uploading_note", "正在上传，请不要关闭这个页面。");
     });
 
     // Coming back to this page from the back/forward cache shows an old list

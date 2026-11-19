@@ -1,49 +1,66 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
 {% import "_icons.html" as i %}
+{% import "_preferences_overview.html" as prefs with context %}
 {% block title %}{{ CATEGORY_LABELS[kind] }}{% endblock %}
 {% block content %}
-<header class="pane-head">
+{#- The basic profile and the job preferences (owner redesign, plans 3.2 and 3.3): the title with its actions, the last
+    save, then the record. The explanations under the titles are gone (plan 9); the facts and actions stay. -#}
+<header class="page-head">
   <h1>{{ CATEGORY_LABELS[kind] }}</h1>
-  {% if kind == PROFILE %}
-  <p class="lede">记录经历不需要先填这些。保存后不会公开，也不会自动放进每份简历。</p>
-  {% else %}
-  <p class="lede">这里写的是意愿，不代表已经具备；没写的项目显示为“尚未想好”，不代表都能接受。</p>
+  {% if item %}
+  <div class="page-actions">
+    <a class="button primary" href="{{ DOCUMENT_PAGES[kind] }}/edit">{{ i.icon("pencil") }}{{ t("prefs.edit") if kind == PREFERENCES else t("common.edit") }}</a>
+    <a class="button secondary" href="/experiences/{{ item.id }}/history">{{ i.icon("rotate-ccw-clock") }}{{ t("lib.view_history") }}</a>
+    {% call m.more_menu() %}
+    <a class="menu-link" href="/experiences/{{ item.id }}/export.md" download>{{ t("lib.export_markdown") }}</a>
+    <a class="menu-link danger-link" href="/experiences/{{ item.id }}/delete">{{ t("lib.delete_ellipsis") }}</a>
+    {% endcall %}
+  </div>
+  <p class="state-line"><span>{{ t("prefs.saved_at", at=item.updated_at|shorttime) if kind == PREFERENCES else t("lib.saved_at", at=item.updated_at|shorttime) }}</span></p>
   {% endif %}
 </header>
 {% if item %}
-<p class="state-line"><span>最近保存 {{ item.updated_at|shorttime }}</span></p>
-<div class="actions record-actions">
-  <a class="button primary" href="{{ DOCUMENT_PAGES[kind] }}/edit">编辑</a>
-  <a class="button secondary" href="/experiences/{{ item.id }}/history">{{ i.icon("rotate-ccw-clock") }}查看历史</a>
-  <a class="button secondary" href="/experiences/{{ item.id }}/export.md" download>导出为 Markdown</a>
-  <a class="danger-link" href="/experiences/{{ item.id }}/delete">删除…</a>
-</div>
 <div class="document-body">
-  {{ m.content_block(item.content, kind) }}
+  {% if kind == PROFILE %}
+  {# Reading hides what was never filled in (P08); the form shows every field. #}
+  <dl class="fields profile-fields">
+    {% for field in CATEGORY_FIELDS[kind] %}
+    {% if item.content.get(field.name) %}
+    <div><dt>{{ label_of(kind, field.name) }}</dt><dd>{{ m.field_value(field, item.content[field.name]) }}</dd></div>
+    {% endif %}
+    {% endfor %}
+  </dl>
+  {% else %}
+  {{ prefs.overview(item.content) }}
+  {% endif %}
 </div>
 {% else %}
-<div class="actions">
-  <a class="button primary" href="{{ DOCUMENT_PAGES[kind] }}/edit">{{ "填写基本资料" if kind == PROFILE else "填写求职偏好" }}</a>
+<div class="empty-panel">
+  <div class="actions">
+    <a class="button primary" href="{{ DOCUMENT_PAGES[kind] }}/edit">{{ t("doc.fill_profile") if kind == PROFILE else t("doc.fill_preferences") }}</a>
+  </div>
+  {% if in_bin %}
+  <p class="muted">{{ t("doc.in_bin_before", what=CATEGORY_LABELS[kind]) }}<a href="/data/trash">{{ t("doc.go_restore") }}</a>{{ t("doc.in_bin_after") }}</p>
+  {% endif %}
 </div>
-{% if in_bin %}
-<p class="muted">回收站里有之前删除的{{ CATEGORY_LABELS[kind] }}，恢复期限内可以<a href="/experiences?tab=trash">去回收站恢复</a>。</p>
-{% endif %}
 {% endif %}
 {% if kind == PROFILE %}
 {# School, major, stage and graduation are kept in the education experiences only. #}
 <section class="profile-education" aria-labelledby="profile-education">
-  <h2 id="profile-education">教育经历</h2>
-  <p class="muted small">学校、专业和毕业时间记在教育经历里，点开即可修改。</p>
+  <div class="section-head">
+    <h2 id="profile-education">{{ t("doc.education") }}</h2>
+    <a href="/experiences/new?kind={{ EDUCATION }}">{{ i.icon("plus") }}{{ t("heading.new.education") }}</a>
+  </div>
+  <p class="muted small">{{ t("doc.education_note") }}</p>
   {% if education %}
   <ul class="item-list">
     {% for entry in education %}
     {% set summary = summary_line(entry.content, entry.category) %}
-    <li><a href="/experiences/{{ entry.id }}">{{ display_title(entry.content, entry.category) }}</a>{% if summary %}<span class="muted small">{{ summary }}</span>{% endif %}</li>
+    <li><a href="/experiences/{{ entry.id }}">{{ display_title(entry.content, entry.category) }}</a>{% if summary %}<span class="muted small">{{ summary }}</span>{% endif %}<span class="muted small">{{ state_label(entry) }}</span></li>
     {% endfor %}
   </ul>
   {% endif %}
-  <p><a href="/experiences/new?kind={{ EDUCATION }}">记录一段教育经历</a></p>
 </section>
 {% endif %}
 {% endblock %}

@@ -143,7 +143,8 @@ def test_from_exactly_seven_days_on_it_cannot_come_back_and_its_file_is_removed(
     assert rows(app) == []
     assert not kept_file(app, row).exists()
     assert [job.status for job in attachment_jobs(app)] == [JobStatus.DONE]
-    assert "一个附件已清理完成（文件已删除）" in browser_a.get(f"/experiences/{item_id}/history").text
+    # The events are the history page's second tab (owner redesign, plan 3.1).
+    assert "一个附件已清理完成（文件已删除）" in browser_a.get(f"/experiences/{item_id}/history?tab=events").text
 
 
 def test_permanent_deletion_says_done_only_once_the_file_is_gone(app, browser_a):

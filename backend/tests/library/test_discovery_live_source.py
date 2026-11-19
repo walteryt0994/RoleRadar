@@ -333,8 +333,10 @@ def test_a_search_reads_the_real_source_once_confirmed_and_says_what_it_read(app
     assert not re.search(r'href="https?://(?:jobs|api)\.lever\.co', page)
     # The real source is never called a synthetic sample, and nothing says the search stayed offline; the simulated
     # requests are said to be decisions and analyses only, sent to no model, here and on the running page's line.
-    assert "证据 官方原始发布" in " ".join(shown.split()) and not SYNTHETIC_WORDS.search(shown)
-    assert "本机模拟服务处理的请求：" in shown and REAL_REQUESTS in shown and "没有联网" not in shown
+    assert "官方原始发布" in " ".join(shown.split()) and not SYNTHETIC_WORDS.search(shown)
+    # The result page no longer lists request counts (owner redesign, plan 5.3): its banner says the decisions and
+    # analyses are simulated; the running page's line still counts them with REAL_REQUESTS.
+    assert "本机模拟服务处理的请求：" not in shown and "决策和分析仍由本机固定规则模拟" in shown and "没有联网" not in shown
     assert REAL_REQUESTS in browser_a.get(f"{url}/status").json()["status"]
     # Another user opens nothing of it.
     assert browser_b.get(url).status_code == 404
@@ -883,8 +885,9 @@ def test_a_failure_is_told_as_it_was_on_the_page(make_config, clock, run_dir, ti
     assert len(routed.requests) - sent == {"live_stop": 1, "approval_used": 0, "too_many_requests": 2, "robots_changed": 1}[case]
 
     if case in ("live_stop", "approval_used"):
-        # Kept back before it left: told as not sent, never as something the source returned.
-        assert "发送前停下，没有发出请求" in shown and "返回了不符合要求的内容" not in shown
+        # Kept back before it left: told as not sent, never as something the source returned. (The steps that said
+        # "发送前停下" are no longer listed on the result page, plan 5.3; the search's own line says it was not sent.)
+        assert "没有发出" in shown and "返回了不符合要求的内容" not in shown
 
 
 def test_a_failure_is_told_in_fixed_words_never_in_a_source_s_own():

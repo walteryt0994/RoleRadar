@@ -76,6 +76,7 @@ from app.discovery.lever import (
     TransportTooLarge,
 )
 from app.discovery.sources import HeldBack, Permission, Register, SourceAnomaly, SourceEntry
+from app.i18n import t
 
 KEY = "lever-palantir"
 BOARD = LeverBoard("palantir", "Palantir")
@@ -655,7 +656,7 @@ class ControlledLeverSource(LeverSource):
 
     def _open(self, kind: str, call, timeout: float):
         if self.halted is not None:
-            raise SourceHalted(f"这个来源这次查找已经停止（{self.halted}），之后不再发请求")
+            raise SourceHalted(t("disc.live.halted", why=self.halted))
 
         try:
             self._robots(timeout)
@@ -675,10 +676,10 @@ class ControlledLeverSource(LeverSource):
         reply = self.guard.get(self._transport, ROBOTS_URL, self.guard.monotonic() + timeout)
 
         if reply.status != 200:
-            raise RobotsChanged(f"robots 回应 {reply.status}（跳转不跟随）：规则拿不到，不发岗位请求")
+            raise RobotsChanged(t("disc.live.robots_status", status=reply.status))
 
         if robots_rules(reply.body) != list(ROBOTS_RULES):
-            raise RobotsChanged(f"robots 规则和 {ROBOTS_CHECKED_ON} 核对时不同，不发岗位请求")
+            raise RobotsChanged(t("disc.live.robots_changed", day=ROBOTS_CHECKED_ON))
 
         self.robots_checked = True
 

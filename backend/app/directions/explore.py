@@ -108,6 +108,7 @@ from app.library.projection import SelectionProblem, read_selected_confirmations
 from app.library.references import SourceState, state_of, worst
 from app.library.service import current_document, is_expired, new_id
 from app.outbound_review import review
+from app.i18n import lazy, t
 
 # What a direction exploration is, in a request and its fingerprint.
 PURPOSE = "direction_exploration"
@@ -162,10 +163,23 @@ TAKEN_BASES = ("practice", "fact")
 # U2's flag for words of someone else's work (app.experience_analysis.QUOTE_FLAGS): it reads a whole sentence, so
 # here whose doing a quote is is read clause by clause instead (app.directions.attribution), as the module says.
 OTHERS_FLAG = "other_person"
+# Written into a result in the task's result language (plan 6.3); the Chinese stays as it was.
 SET_ASIDE_NOTE = "RoleRadar 核对：有 {} 条经历引文写的是计划、他人完成、没有做或只说熟悉，没有算作已有基础"
+SET_ASIDE_NOTES = {
+    "zh-CN": SET_ASIDE_NOTE,
+    "en": "RoleRadar check: {} quotes from your experiences describe a plan, someone else's work, something not done or "
+    "only familiarity, so they are not counted as a basis",
+}
+# Added to the prompt only when a task asks for English results (plan 6.3): only the explanatory free text changes
+# language; the structure, quotes and checks stay as they are. A Chinese task's prompt is unchanged, word for word.
+OUTPUT_LANGUAGE_LINES = {
+    "en": "OUTPUT LANGUAGE: English. Write every explanatory text field (name, main_work, gaps, unknowns, difference, "
+    "next_steps and the basis of an ideal link) in English. Quotes (evidence and ideal quotes) must stay word for word "
+    "as they are written in the material, in its own language; never translate them.",
+}
 # How a relation the user should weigh is labelled where results are shown (derived, never stored).
-FIRM_CONFLICT = "可能和你写的“不能接受”冲突，需谨慎考虑"
-SOFT_CONFLICT = "可能和你的理想不一致"
+FIRM_CONFLICT = lazy("dir.firm_conflict")
+SOFT_CONFLICT = lazy("dir.soft_conflict")
 
 INSTRUCTIONS = """你在帮一位学生了解可以考虑的职业方向。根据资料，给出 3 到 5 个可以互相对比的方向，按给定的 JSON 结构返回。
 
@@ -239,6 +253,8 @@ class ExplorationInputs:
     chosen: tuple[tuple[str, str], ...] = ()
     # "<experience id>:<field>" or "preferences:<field>" the user chose to leave out.
     left_out: frozenset[str] = field(default_factory=frozenset)
+    # The language the results are asked for (plan 6.3); a new draft starts from the interface language then.
+    result_language: str = "zh-CN"
 
 
 @dataclass(frozen=True)
@@ -275,16 +291,16 @@ def build_plan(db: Session, owner_id: str, inputs: ExplorationInputs, now: datet
     chosen = inputs.chosen
 
     if len(chosen) > MAX_EXPERIENCES:
-        raise InputProblem(f"一次最多选择 {MAX_EXPERIENCES} 段经历，现在选了 {len(chosen)} 段。", "sources")
+        raise InputProblem(t("dir.exp.1", p0=MAX_EXPERIENCES, p1=len(chosen)), "sources")
 
     if len({item_id for item_id, _ in chosen}) != len(chosen):
-        raise InputProblem("同一段经历只能选择一次，请重新选择。", "sources")
+        raise InputProblem(t("dir.exp.2"), "sources")
 
     entries, problems = read_selected_confirmations(db, owner_id, dict(chosen))
 
     if problems:
         raise InputProblem(
-            f"你选择的经历里有 {len(problems)} 段已经修改、重新确认或删除，不能按原来的版本使用。请重新选择。", "sources"
+            t("dir.exp.3", p0=len(problems)), "sources"
         )
 
     sources = tuple(source_plan(entry, inputs.left_out) for entry in entries)
@@ -292,7 +308,7 @@ def build_plan(db: Session, owner_id: str, inputs: ExplorationInputs, now: datet
     for source in sources:
         if not source.sent:
             raise InputProblem(
-                f"“{source.title}”没有可以发送的栏目（都被排除或含有疑似敏感信息）。请取消选择它，或修改这段经历后重新确认。",
+                t("dir.exp.4", p0=source.title),
                 "sources",
             )
 
@@ -312,7 +328,7 @@ def build_plan(db: Session, owner_id: str, inputs: ExplorationInputs, now: datet
 
     if outbound > MAX_OUTBOUND_CHARS:
         raise InputProblem(
-            f"这次要发送的内容共 {outbound} 字，超过了 {MAX_OUTBOUND_CHARS} 字的上限。请少选几段经历，或排除一些栏目。", "sources"
+            t("dir.exp.5", p0=outbound, p1=MAX_OUTBOUND_CHARS), "sources"
         )
 
     return ExplorationPlan(
@@ -388,9 +404,9 @@ def _no_version(db: Session, owner_id: str, record: ExperienceItem | None, field
     )
 
     if in_bin:
-        return "求职偏好里和现在内容一致的那次保存记录在回收站里。可以先在回收站恢复它；或者这次不发送偏好，重新核对。"
+        return t("dir.exp.6")
 
-    return "求职偏好的保存记录里，没有一份和现在的内容一致（可能已被删除）。这次可以不发送偏好，重新核对。"
+    return t("dir.exp.7")
 
 
 # --- the request and its fingerprint ----------------------------------------------------------------
@@ -422,6 +438,8 @@ class ExplorationRequest:
     prompt_version: str = PROMPT_VERSION
     purpose: str = PURPOSE
     mode: str = SINGLE_REQUEST
+    # Confirmed with the task (plan 6.3): the explanatory text of the results is asked for in this language.
+    result_language: str = "zh-CN"
 
 
 def no_preferences() -> PreferenceUse:
@@ -429,7 +447,13 @@ def no_preferences() -> PreferenceUse:
     return PreferenceUse(None, None, None, tuple((name, UNFILLED) for name in FIELD_ORDER))
 
 
-def build_request(owner_id: str, plan: ExplorationPlan, recipient: Recipient, notice_version: str = NOTICE_VERSION) -> ExplorationRequest:
+def build_request(
+    owner_id: str,
+    plan: ExplorationPlan,
+    recipient: Recipient,
+    notice_version: str = NOTICE_VERSION,
+    result_language: str = "zh-CN",
+) -> ExplorationRequest:
     """The request of exactly what the review shows: experiences in one order whatever order they were chosen in."""
     record_id, revision = plan.preference_record or (None, None)
 
@@ -450,6 +474,7 @@ def build_request(owner_id: str, plan: ExplorationPlan, recipient: Recipient, no
         ),
         recipient=recipient,
         notice_version=notice_version,
+        result_language=result_language if result_language in OUTPUT_LANGUAGE_LINES else "zh-CN",
     )
 
 
@@ -475,6 +500,11 @@ def fingerprint(request: ExplorationRequest) -> str:
         "notice_version": request.notice_version,
         "prompt_version": request.prompt_version,
     }
+
+    if request.result_language != "zh-CN":
+        # Another result language is another confirmation; a Chinese task's fingerprint is as it always was.
+        scope["result_language"] = request.result_language
+
     encoded = json.dumps(scope, sort_keys=True, ensure_ascii=False).encode("utf-8")
 
     return hashlib.sha256(encoded).hexdigest()
@@ -635,7 +665,7 @@ def run_exploration(
 
     try:
         task.check_recipient()
-        generation = task.call(build_prompt(material))
+        generation = task.call(build_prompt(material, request.result_language))
     except _Refused as refused:
         return task.outcome(ExplorationStatus.REJECTED, problem=refused.problem.value)
     except _Failed as failed:
@@ -646,7 +676,7 @@ def run_exploration(
 
     try:
         task.check_answer(generation)
-        result, set_aside = checked_result(generation.text, material)
+        result, set_aside = checked_result(generation.text, material, request.result_language)
     except _Failed as failed:
         return task.outcome(ExplorationStatus.FAILED, problem=failed.failure.value)
 
@@ -674,6 +704,7 @@ def run_exploration(
                 notice_version=request.notice_version,
                 input_fingerprint=task.fingerprint,
                 generated_at=clock.now(),
+                result_language=request.result_language,
             ),
         )
     except ValidationError:
@@ -903,8 +934,9 @@ def _state_after(db: Session, request: ExplorationRequest, material: _Material, 
 # --- the prompt ---------------------------------------------------------------------------------------
 
 
-def build_prompt(material: _Material) -> str:
-    """The instructions, then the material as JSON data, in the stable order of the material."""
+def build_prompt(material: _Material, result_language: str = "zh-CN") -> str:
+    """The instructions, then the material as JSON data, in the stable order of the material. A task asking for
+    English results gets one line about the output language before the material; nothing else changes."""
     experiences = [
         {"source_id": source.alias, "category": CATEGORY_LABELS[source.category], "fields": dict(source.content)}
         for source in material.sources
@@ -924,13 +956,18 @@ def build_prompt(material: _Material) -> str:
 
     data = json.dumps({"experiences": experiences, "preferences": preferences}, ensure_ascii=False, indent=1)
 
+    language = OUTPUT_LANGUAGE_LINES.get(result_language)
+
+    if language:
+        return f"{INSTRUCTIONS}\n\n{language}\n\n{MATERIAL_START}\n{data}\n{MATERIAL_END}"
+
     return f"{INSTRUCTIONS}\n\n{MATERIAL_START}\n{data}\n{MATERIAL_END}"
 
 
 # --- checking an answer -----------------------------------------------------------------------------
 
 
-def checked_result(text: str, material: _Material) -> tuple[ExplorationResult, tuple[int, ...]]:
+def checked_result(text: str, material: _Material, result_language: str = "zh-CN") -> tuple[ExplorationResult, tuple[int, ...]]:
     """The answer as a result, once every part of it has been checked; and, for each direction, how many quotes
     the local rules set aside. Anything that does not hold fails the whole answer (_Failed)."""
     try:
@@ -953,7 +990,8 @@ def checked_result(text: str, material: _Material) -> tuple[ExplorationResult, t
     for given in output.directions:
         try:
             evidence, aside = _evidence(given.evidence, material)
-            unknowns = list(given.unknowns) + ([SET_ASIDE_NOTE.format(aside)] if aside else [])
+            note = SET_ASIDE_NOTES.get(result_language, SET_ASIDE_NOTE)
+            unknowns = list(given.unknowns) + ([note.format(aside)] if aside else [])
             directions.append(
                 Direction(
                     name=given.name,

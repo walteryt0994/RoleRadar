@@ -1,124 +1,141 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
+{% import "_icons.html" as i %}
 {% block title %}{{ name }}{% endblock %}
 {% block content %}
-<p class="crumbs"><a href="/imports">导入简历</a></p>
-<header class="pane-head" data-reveal>
-  <h1 class="import-title">{{ name }}</h1>
-  <p class="import-meta">{% if row.filename %}{{ SOURCE_LABELS[row.source] }} · {% endif %}{{ STATE_LABELS[row.state] }} · {% if draft %}已保存的待核对草稿（{{ draft.saved_at|localtime }} 保存，不会到期）{% else %}保留到 {{ row.expires_at|localtime }}（{{ format_remaining(row.expires_at, now) }}）{% endif %}</p>
+{#- What was read from a resume (owner redesign, plan 3.4, image 10): the text first; the file actions apart from it;
+    整理为待核对条目 as the clear next step. The long notes on what reading, keeping and structuring do are gone; what
+    went wrong, how long it is kept and a needed confirmation before anything leaves stay. -#}
+<p class="back-line"><a class="library-back" href="/imports">{{ i.icon("arrow-left") }}{{ t("imp.back") }}</a></p>
+<header class="page-head import-read-head">
+  <div class="import-read-title">
+    <h1>{{ t("imp.preview_title") }}</h1>
+    <p class="import-file"><span class="import-name">{{ name }}</span><span class="badge state-{{ row.state }}">{{ STATE_LABELS[row.state] }}</span></p>
+  </div>
+  <div class="page-actions">
+    {#- The next step first (image 10): 整理为待核对条目, or, once structured, 核对整理出的条目; a draft to keep it longer
+        beside it. Structuring that needs a confirmation before anything leaves goes through that confirmation. -#}
+    {% if structurable and structuring and structuring.state == "done" %}
+    <a class="button primary" href="/imports/{{ row.id }}/review">{{ t("imp.import.11") }}</a>
+    {% elif structurable and not (structuring and structuring.state == "running" and not can_structure) and not live_offer %}
+    <form method="post" action="/imports/{{ row.id }}/structure" class="inline">
+      {{ m.csrf() }}
+      <button type="submit" class="primary">{{ t("imp.restructure") if structuring else t("imp.structure_into_items") }}</button>
+    </form>
+    {% endif %}
+    {% if not draft %}
+    <form method="post" action="/imports/{{ row.id }}/save" class="inline">
+      {{ m.csrf() }}
+      <button type="submit" class="secondary">{{ t("imp.import.39") }}</button>
+    </form>
+    {% endif %}
+    {% call m.more_menu() %}
+    {% if keepable %}<a class="menu-link" href="/imports/{{ row.id }}/keep-file">{{ t("imp.import.35") }}</a>{% endif %}
+    <a class="menu-link danger-link" href="/imports/{{ row.id }}/finish">{{ t("imp.import.36") }}</a>
+    {% endcall %}
+  </div>
 </header>
+<p class="kept-until">{{ i.icon("clock") }}<span>{% if draft %}{{ t("imp.import.2", p0=(draft.saved_at|localtime)) }}{% else %}{{ t("imp.import.3", p0=(row.expires_at|localtime), p1=(format_remaining(row.expires_at, now))) }}{% endif %}</span></p>
 {% if row.state == "reading" %}
-<p class="notice" role="status">正在读取。稍后<a href="/imports/{{ row.id }}">刷新</a>查看结果。</p>
+<p class="notice" role="status">{{ t("imp.import.4") }}<a href="/imports/{{ row.id }}">{{ t("imp.import.5") }}</a>{{ t("imp.import.6") }}</p>
 {% elif row.state == "failed" %}
-<div class="error" role="alert">
-  {% for line in problems %}<p>{{ line }}</p>{% endfor %}
+{#- Reading failed (image 18): what went wrong, with a retry and the other way in. -#}
+<div class="state-card state-failed" role="alert">
+  <p class="state-icon">{{ i.icon("triangle-alert") }}</p>
+  <div class="state-body">
+    <h2>{{ t("state.read_failed") }}</h2>
+    {% for line in problems %}<p>{{ line }}</p>{% endfor %}
+    <div class="actions">
+      {% if can_retry %}
+      <form method="post" action="/imports/{{ row.id }}/retry" class="inline">
+        {{ m.csrf() }}
+        <input type="hidden" name="expected_revision" value="{{ row.revision }}">
+        <button type="submit" class="primary">{{ t("imp.import.34") }}</button>
+      </form>
+      {% endif %}
+      <a class="button secondary" href="/imports?mode=text">{{ t("state.paste_instead") }}</a>
+    </div>
+  </div>
 </div>
 {% elif row.state == "partial" %}
 <div class="warning" role="status">
   {% for line in problems %}<p>{{ line }}</p>{% endfor %}
 </div>
 {% endif %}
-{% if draft %}
-<p class="import-explain">读到的文字还没有加入经历库，也不会自动加入：可以先整理成待核对的条目，再逐条选择加入。这份草稿会一直保留，直到你删除它；保存草稿不代表内容已经核实。删除后 {{ RESTORE_DAYS }} 天内可以在回收站恢复；已经加入的内容不受影响。</p>
-{% else %}
-<p class="import-explain">读到的文字还没有加入经历库，也不会自动加入：可以先整理成待核对的条目，再逐条选择加入。到期后自动清理，不能恢复；已经加入的内容不受影响。</p>
-{% endif %}
 {% if structurable %}
+{#- Where structuring stands, short: counts when done, running, or why it stopped; the real service, when offered,
+    keeps its own confirmation before anything leaves. -#}
+{% if structuring and structuring.state == "done" %}
+<p class="import-status">{{ t("imp.import.10", p0=(candidate_counts.total), p1=(candidate_counts.pending), p2=(candidate_counts.adopted), p3=(candidate_counts.excluded)) }}</p>
+{% elif structuring and structuring.state == "running" and not can_structure %}
+{% if live_running %}
+<p class="notice" role="status">{{ t("imp.import.12") }}<a href="/imports/{{ row.id }}/review">{{ t("imp.import.13") }}</a>{{ t("imp.import.14") }}</p>
+{% else %}
+<p class="notice" role="status">{{ t("imp.import.15") }}<a href="/imports/{{ row.id }}">{{ t("imp.import.5") }}</a>{{ t("imp.import.6") }}</p>
+{% endif %}
+{% else %}
+{% if structuring_failure %}
+<p class="warning" role="status">{{ t("imp.import.16", p0=(structuring_failure)) }}{% if structuring.problems %}<a href="/imports/{{ row.id }}/review">{{ t("imp.import.17") }}</a>{{ t("imp.import.18") }}{% endif %}</p>
+{% elif structuring %}
+<p class="warning" role="status">{{ t("imp.import.19") }}</p>
+{% endif %}
+{% if live_offer %}
 <section class="import-structuring" aria-labelledby="structuring-title">
-  <h2 id="structuring-title">整理成待核对的条目</h2>
-  {% if structuring and structuring.state == "done" %}
-  <p>已整理出 {{ candidate_counts.total }} 条：待核对 {{ candidate_counts.pending }} 条，已加入 {{ candidate_counts.adopted }} 条，不加入 {{ candidate_counts.excluded }} 条。</p>
-  <p class="import-actions"><a class="button primary" href="/imports/{{ row.id }}/review">核对整理出的条目</a></p>
-  {% elif structuring and structuring.state == "running" and not can_structure %}
-  {% if live_running %}
-  <p class="notice" role="status">正在由外部服务整理。可以在<a href="/imports/{{ row.id }}/review">核对页</a>查看进度或取消。</p>
-  {% else %}
-  <p class="notice" role="status">正在整理。稍后<a href="/imports/{{ row.id }}">刷新</a>查看结果。</p>
-  {% endif %}
-  {% else %}
-  {% if structuring_failure %}
-  <p class="warning" role="status">上次没有整理出可以核对的条目：{{ structuring_failure }}{% if structuring.problems %}<a href="/imports/{{ row.id }}/review">查看原因</a>。{% endif %}</p>
-  {% elif structuring %}
-  <p class="warning" role="status">上次整理没有完成（可能是应用重启了），可以重新整理。</p>
-  {% endif %}
-  {% if live_offer %}
-  <p class="muted small">两种方式都会给每一栏标出原文出处，都不会改动经历库：整理出的条目要你逐条核对、选择加入。{% if draft %}条目和你的修改跟这份草稿一起保留。{% else %}条目和你的修改跟这次导入一起暂存到 {{ row.expires_at|shorttime }}，不会延长。{% endif %}</p>
+  <h2 id="structuring-title" class="section-title">{{ t("imp.import.9") }}</h2>
+  <p class="muted small">{{ t("imp.import.20") }}{% if draft %}{{ t("imp.import.21") }}{% else %}{{ t("imp.import.22", p0=(row.expires_at|shorttime)) }}{% endif %}</p>
   <ul class="points">
-    <li>发给外部服务整理：先给你看遮盖联系方式后要发送的全部文字，确认后才发送。</li>
-    <li>用本机规则整理：模拟整理规则（不是 AI），按标题、日期和列表符号拆分，可能拆错或漏掉；什么都不会发送出去。</li>
+    <li>{{ t("imp.import.23") }}</li>
+    <li>{{ t("imp.import.24") }}</li>
   </ul>
   {% if live_offer.over %}
-  <p class="warning" role="status">遮盖之后有 {{ live_offer.request.outbound.size }} 字节，超过了单次 {{ live_offer.limit }} 字节的上限，不能发给外部服务，也不会自动截短。可以只粘贴简历里需要的部分重新导入，或用本机规则整理。</p>
+  <p class="warning" role="status">{{ t("imp.import.25", p0=(live_offer.request.outbound.size), p1=(live_offer.limit)) }}</p>
   {% elif live_offer.empty %}
-  <p class="warning" role="status">遮盖之后没有可以发送的文字，不能发给外部服务；可以用本机规则整理。</p>
+  <p class="warning" role="status">{{ t("imp.import.26") }}</p>
   {% endif %}
   <div class="form-actions">
     {% if live_offer.sendable %}
-    <a class="button primary" href="/imports/{{ row.id }}/structure/confirm">发给外部服务整理…</a>
+    <a class="button primary" href="/imports/{{ row.id }}/structure/confirm">{{ t("imp.import.27") }}</a>
     {% endif %}
     <form method="post" action="/imports/{{ row.id }}/structure" class="inline">
       {{ m.csrf() }}
-      <button type="submit"{% if not live_offer.sendable %} class="primary"{% endif %}>用本机规则整理（不发送）</button>
+      <button type="submit"{% if not live_offer.sendable %} class="primary"{% endif %}>{{ t("imp.import.28") }}</button>
     </form>
   </div>
-  {% else %}
-  <p class="muted small">用本机的模拟整理规则（不是 AI）按标题、日期和列表符号把文字拆成条目，每一栏都标出原文出处，可能拆错或漏掉。什么都不会发送出去，也不会改动经历库。{% if draft %}整理出的条目和你的修改跟这份草稿一起保留。{% else %}整理出的条目和你的修改跟这次导入一起暂存到 {{ row.expires_at|shorttime }}，不会延长。{% endif %}</p>
-  <form method="post" action="/imports/{{ row.id }}/structure">
-    {{ m.csrf() }}
-    <button type="submit" class="primary">{{ "重新整理" if structuring else "整理成待核对的条目" }}</button>
-  </form>
-  {% endif %}
-  {% endif %}
 </section>
 {% endif %}
+{% endif %}
+{% endif %}
+{% if can_retry and row.state != "failed" %}
 <div class="import-actions">
-  {% if row.storage_key %}
-  <a href="/imports/{{ row.id }}/original" download>下载原文件</a>
-  {% endif %}
-  {% if row.segments %}
-  <a href="/imports/{{ row.id }}/text" download>下载读到的文字</a>
-  {% endif %}
-  {% if can_retry %}
   <form method="post" action="/imports/{{ row.id }}/retry" class="inline">
     {{ m.csrf() }}
     <input type="hidden" name="expected_revision" value="{{ row.revision }}">
-    <button type="submit">重新读取</button>
+    <button type="submit">{{ t("imp.import.34") }}</button>
   </form>
-  {% endif %}
-  {% if keepable %}
-  <a href="/imports/{{ row.id }}/keep-file">另存原文件为附件…</a>
-  {% endif %}
-  <a class="danger-link" href="/imports/{{ row.id }}/finish">结束这次导入…</a>
 </div>
-{% if not draft %}
-<section class="import-keep" aria-labelledby="keep-title">
-  <h2 id="keep-title">需要更久？保存为待核对草稿</h2>
-  <p class="muted small">保存后会一起留下原文件、读到的文字、整理出的条目和你的修改、选择，以及已加入内容的去向，不再按 {{ IMPORT_DAYS }} 天到期，可以以后继续核对。保存不是加入经历库，也不代表内容已经核实。删除草稿后 {{ RESTORE_DAYS }} 天内可以在回收站恢复。草稿仍占导入名额（最多 {{ MAX_OPEN_IMPORTS }} 份）。</p>
-  <form method="post" action="/imports/{{ row.id }}/save">
-    {{ m.csrf() }}
-    <button type="submit">保存为待核对草稿</button>
-  </form>
-</section>
 {% endif %}
+<div class="import-read">
 {% if row.segments %}
 {# What was read, as it was found; nothing here is rewritten. #}
-<section class="import-text" aria-label="读到的文字" data-reveal>
+<section class="import-text" aria-labelledby="read-text-title">
+  <h2 class="section-title" id="read-text-title">{{ t("imp.original_text") }}</h2>
+  <div class="import-text-box">
   {% for segment in row.segments %}
   {% if segment.kind == "page" %}
-  <h2>第 {{ segment.number }} 页</h2>
+  <h2>{{ t("imp.import.41", p0=(segment.number)) }}</h2>
   {% if segment.get("unreadable") %}
-  <p class="empty">这一页无法读取。</p>
+  <p class="empty">{{ t("imp.import.42") }}</p>
   {% elif segment.text.strip() %}
   <p class="text">{{ segment.text }}</p>
   {% else %}
-  <p class="empty">这一页没有读到文字。</p>
+  <p class="empty">{{ t("imp.import.43") }}</p>
   {% endif %}
   {% elif segment.kind == "paragraph" %}
-  <div class="import-paragraph"><span class="import-number"><span class="visually-hidden">第 </span>{{ segment.number }}<span class="visually-hidden"> 段</span></span><p class="text">{{ segment.text }}</p></div>
+  <div class="import-paragraph"><span class="import-number"><span class="visually-hidden">{{ t("imp.paragraph_label", n=segment.number) }}</span><span aria-hidden="true">{{ segment.number }}</span></span><p class="text">{{ segment.text }}</p></div>
   {% elif segment.kind == "table" %}
   <div class="import-table-wrap">
     <table class="import-table">
-      <caption>表格 {{ segment.number }}</caption>
+      <caption>{{ t("imp.import.46", p0=(segment.number)) }}</caption>
       {% for cells in segment.rows %}
       <tr>{% for cell in cells %}<td><span class="text">{{ cell }}</span></td>{% endfor %}</tr>
       {% endfor %}
@@ -128,6 +145,16 @@
   <p class="text">{{ segment.text }}</p>
   {% endif %}
   {% endfor %}
+  </div>
 </section>
+{% else %}
+<section class="import-text"><p class="empty">{{ t("imp.import.43") }}</p></section>
 {% endif %}
+<aside class="import-doc-actions" aria-labelledby="doc-actions-title">
+  <h2 class="section-title" id="doc-actions-title">{{ t("imp.doc_actions") }}</h2>
+  {% if row.storage_key %}<a class="doc-action" href="/imports/{{ row.id }}/original" download>{{ i.icon("download") }}{{ t("imp.import.32") }}</a>{% endif %}
+  {% if row.segments %}<a class="doc-action" href="/imports/{{ row.id }}/text" download>{{ i.icon("file-text") }}{{ t("imp.import.33") }}</a>{% endif %}
+  <a class="doc-action" href="/imports/{{ row.id }}/finish">{{ i.icon("circle-x") }}{{ t("imp.give_up") }}</a>
+</aside>
+</div>
 {% endblock %}

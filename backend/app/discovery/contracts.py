@@ -27,6 +27,7 @@ from datetime import date, datetime
 from enum import StrEnum
 
 from app.analysis_contracts import AnalysisResult, Recipient, SelectedPreference, SelectedSource
+from app.i18n import MessageMap, lazy, t_in
 
 
 class Dimension(StrEnum):
@@ -40,6 +41,9 @@ class Dimension(StrEnum):
 # The job preferences each dimension starts from (app.library.content.PREFERENCE_DIMENSIONS).
 DIMENSION_PREFERENCES = {Dimension.CITY: "cities", Dimension.JOB_TYPE: "job_types", Dimension.DIRECTION: "directions"}
 DIMENSION_LABELS = {Dimension.CITY: "城市", Dimension.JOB_TYPE: "求职类型", Dimension.DIRECTION: "岗位方向"}
+# The same, as the pages show them, in the interface language (UI bilingual batch). DIMENSION_LABELS stays as it is:
+# the decision prompt and the local rules' notes are written with it.
+DIMENSION_NAMES = MessageMap({Dimension.CITY: "job.dim.city", Dimension.JOB_TYPE: "job.dim.job_type", Dimension.DIRECTION: "job.dim.direction"})
 
 
 class Others(StrEnum):
@@ -116,6 +120,15 @@ EVIDENCE_LABELS = {
     EvidenceLevel.LEAD: "待核验线索",
     EvidenceLevel.USER_PROVIDED: "用户提供，系统未独立核验",
 }
+# The pages' words for these labels, in the interface language (UI bilingual batch): the labels above stay as they
+# are, for the decision prompt, the tools' summaries and the local rules.
+EVIDENCE_NAMES = MessageMap(
+    {
+        EvidenceLevel.OFFICIAL: "job.evidence.official",
+        EvidenceLevel.LEAD: "job.evidence.lead",
+        EvidenceLevel.USER_PROVIDED: "job.evidence.user_provided",
+    }
+)
 
 
 class Access(StrEnum):
@@ -289,6 +302,7 @@ END_LABELS = {
     EndReason.GATE: "闸门拦下",
     EndReason.REFUSED: "被拒的动作达到上限",
 }
+END_NAMES = MessageMap({reason: f"job.end.{reason.value}" for reason in END_LABELS})
 # What a search may end with by its own choice; the others are for the rules to say.
 CLAIMS = (EndReason.ENOUGH, EndReason.SCOPE_DONE, EndReason.NO_RESULTS)
 
@@ -326,6 +340,7 @@ CATEGORY_LABELS = {
     # Shown as it is, after the others, and never called a recommendation.
     Category.CONFLICT: "有明确冲突，需谨慎考虑",
 }
+CATEGORY_NAMES = MessageMap({category: f"job.category.{category.value}" for category in CATEGORY_LABELS})
 RECOMMENDED = (Category.STRONG, Category.PARTIAL)
 
 
@@ -341,7 +356,10 @@ class Unlisted(StrEnum):
 
 # The outcome of a search with no experience chosen, and why none of its postings was analysed.
 NOT_PERSONALISED = "未进行个性化分析：没有选择经历，只按检索范围查找、读取和核对岗位"
-NOT_PERSONALISED_WHY = "没有选择经历，未进行个性化分析"
+# Why none of its postings was analysed, said in the search's result language; NOT_PERSONALISED_WHY is its Chinese words.
+NOT_PERSONALISED_WHY_KEY = "disc.tool.not_personalised_why"
+NOT_PERSONALISED_WHY = t_in("zh-CN", NOT_PERSONALISED_WHY_KEY)
+NOT_PERSONALISED_TEXT = lazy("job.not_personalised")
 
 
 @dataclass(frozen=True)
@@ -546,6 +564,9 @@ class ParentConfirmation:
     # The D6 batch as it stood when the search was reviewed (app.discovery.batch_live.state_of): what its approvals had
     # used and had left. Empty for every other set; when given, a confirmation holds only while the batch stands so.
     batch_state: str = ""
+    # The language its explanatory text is asked for (UI bilingual batch, plan 6.3): the decisions' notes, and every
+    # analysis of the search inherits it. Confirmed with the search; a Chinese search's fingerprint is as it was.
+    result_language: str = "zh-CN"
 
 
 def search_fingerprint(confirmation: ParentConfirmation) -> str:
@@ -583,6 +604,10 @@ def search_fingerprint(confirmation: ParentConfirmation) -> str:
     if confirmation.batch_state:
         # Only a D6 batch's: every other confirmation's fingerprint is as it was before D6.
         payload["batch_state"] = confirmation.batch_state
+
+    if confirmation.result_language != "zh-CN":
+        # Another result language is another confirmation (plan 6.3).
+        payload["result_language"] = confirmation.result_language
 
     encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
 

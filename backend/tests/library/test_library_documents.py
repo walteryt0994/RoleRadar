@@ -8,6 +8,7 @@ any other record. Education lives in the education experiences only.
 import hashlib
 import io
 import json
+import re
 import sqlite3
 import zipfile
 
@@ -47,7 +48,8 @@ def save_preferences(browser, **values):
 def _post_forms(html):
     from library_helpers import forms_in
 
-    return [form for form in forms_in(html) if form.method == "post" and form.action not in ("/logout",)]
+    # The page frame's own forms (sign out, and the language menu of the bilingual UI) are not the page's.
+    return [form for form in forms_in(html) if form.method == "post" and form.action not in ("/logout", "/language")]
 
 
 def document(app, kind):
@@ -95,7 +97,8 @@ def test_experiences_need_no_profile_or_preferences(browser_a):
     profile_page = browser_a.get("/basic-profile").text
 
     assert browser_a.get(f"/experiences/{item_id}").status_code == 200
-    assert "记录经历不需要先填这些" in profile_page
+    # The note under the title is gone (owner redesign, plan 9); the way to fill it in stays.
+    assert "记录经历不需要先填这些" not in profile_page
     assert '<a class="button primary" href="/basic-profile/edit">填写基本资料</a>' in profile_page
     assert '<a class="button primary" href="/job-preferences/edit">填写求职偏好</a>' in browser_a.get("/job-preferences").text
 
@@ -173,7 +176,7 @@ def test_unanswered_preferences_read_as_not_decided_never_as_acceptable(app, bro
     page = browser_a.get("/job-preferences").text
     markdown = browser_a.get(f"/experiences/{document(app, 'preferences').id}/export.md").content.decode("utf-8")
 
-    answers = page.split('<div class="preferences">', 1)[1]
+    answers = page.split('<div class="pref-overview">', 1)[1]
 
     # Four of the five three-way preferences and both single ones are unanswered.
     current = markdown.split("## 当前内容", 1)[1].split("## 历史版本", 1)[0]
@@ -191,28 +194,37 @@ def test_ideal_acceptable_and_unacceptable_stay_distinct(browser_a):
     save_preferences(browser_a, cities_ideal="理想城-合成", cities_ok="可接受城-合成", cities_no="不能接受城-合成")
     page = browser_a.get("/job-preferences").text
 
-    assert "<dt>理想</dt><dd class=\"text\">理想城-合成</dd>" in page
-    assert "<dt>也可以接受</dt><dd class=\"text\">可接受城-合成</dd>" in page
-    assert "<dt>不能接受</dt><dd class=\"text\">不能接受城-合成</dd>" in page
+    # Each value beside its own stance (owner redesign, plan 3.3), told by its words.
+    assert '<span class="stance-tag stance-ideal">理想</span><span class="value-text">理想城-合成</span>' in page
+    assert '<span class="stance-tag stance-ok">也可以接受</span><span class="value-text">可接受城-合成</span>' in page
+    assert '<span class="stance-tag stance-no">不能接受</span><span class="value-text">不能接受城-合成</span>' in page
 
 
 def test_no_demo_or_owner_values_are_filled_in(browser_a):
     for path in ("/basic-profile/edit", "/job-preferences/edit"):
         page = browser_a.get(path).text
         [form] = [form for form in _post_forms(page)]
+        # The preferences editor's own marks: that it posts rows, and each empty row's stance list (理想 at first).
+        own = ("csrf_token", "next", "after_save", "pref_rows")
 
-        assert all(value == "" for name, value in form.fields.items() if name not in ("csrf_token", "next", "after_save"))
+        assert all(value == "" for name, value in form.fields.items() if name not in own and not name.endswith("_stance"))
+
+        # The cities offered as choices to pick from (plan 3.3) are not values filled in.
+        unfilled = re.sub(r"<datalist.*?</datalist>", "", page, flags=re.S)
 
         for word in ("北京", "FDE", "AI 应用"):
-            assert word not in page, (path, word)
+            assert word not in unfilled, (path, word)
 
 
-def test_the_preference_folds_open_for_what_they_hold(browser_a):
+def test_the_preference_rows_show_what_they_hold_with_its_stance(browser_a):
+    # Owner redesign (plan 3.3): each stance held is one row with its own stance; each dimension offers one empty row.
     save_preferences(browser_a, cities_ideal="合成城", job_types_no="不考虑的类型")
     page = browser_a.get("/job-preferences/edit").text
 
-    assert page.count('<details class="fold" open>') == 1
-    assert page.count('<details class="fold">') == 4
+    assert 'name="cities_r0" value="合成城"' in page and 'name="job_types_r0" value="不考虑的类型"' in page
+    assert re.search(r'name="cities_r0_stance".*?<option value="ideal" selected>', page, re.S)
+    assert re.search(r'name="job_types_r0_stance".*?<option value="no" selected>', page, re.S)
+    assert '<details class="fold"' not in page.split('<form', 1)[1].split("</form>", 1)[0]
 
 
 # --- saving: versions, unchanged saves and conflicts ------------------------------
@@ -233,8 +245,9 @@ def test_every_changing_save_is_kept_as_a_version(app, browser_a):
     history = browser_a.get(f"/experiences/{item.id}/history").text
 
     assert "第 1 次保存" in history and "第 2 次保存" in history
-    assert "每次保存有变化时都会留一份历史版本" in history
-    assert "确认" not in history.split("<h2>操作记录</h2>")[0].split("</h1>")[1]
+    # The note on how versions are kept is gone (owner redesign, plan 9); nothing in the versions is a confirmation.
+    assert "每次保存有变化时都会留一份历史版本" not in history
+    assert "确认" not in history[history.index('class="history-list"'):]
 
 
 def test_a_stale_page_cannot_overwrite_a_newer_save(app, browser_a):

@@ -33,4 +33,27 @@
       }
     });
   });
+
+  // A "more" menu opens under its button, aligned to the button's right edge; where the button sits at the left of a
+  // narrow screen, that would reach past the screen's left edge, so it opens rightwards instead (owner redesign
+  // revision, 2026-11-18). Without JavaScript it keeps its right alignment.
+  document.addEventListener("toggle", function (event) {
+    const menu = event.target;
+
+    if (!(menu instanceof HTMLDetailsElement) || !menu.matches("details.more-menu") || !menu.open) {
+      return;
+    }
+
+    const panel = menu.querySelector(".menu-panel");
+
+    if (!panel) {
+      return;
+    }
+
+    panel.classList.remove("menu-panel-start");
+
+    if (panel.getBoundingClientRect().left < 8) {
+      panel.classList.add("menu-panel-start");
+    }
+  }, true);
 })();

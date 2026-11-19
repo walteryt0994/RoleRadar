@@ -1,47 +1,189 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
-{% block title %}岗位记录{% endblock %}
+{% import "_job_forms.html" as jf with context %}
+{% import "_icons.html" as i %}
+{% block title %}{{ t("jobx.mine_title") }}{% endblock %}
+{% block scripts %}<script src="/static/results.js"></script>{% endblock %}
 {% block layout %}
 <main id="main" class="job-page job-reading" tabindex="-1">
   {% if notice %}
   <p class="notice" role="status">{{ notice }}</p>
   {% endif %}
-  <header class="job-head">
-    <h1>岗位记录</h1>
-    <p class="job-mode">我的岗位，是你在找岗位结果里，或者用“补充岗位”自己加入的岗位；另有你在查找时勾选的“临时留存跟踪”的推荐，到期自动删除，不是我的岗位。分析和查找摘要也只在你保存时才会出现在这里。跳过的岗位，下次查找不再列出（只按同一来源、同一岗位编号）；撤销、改决定或删除记录后会重新列出。你提供原文的岗位不来自任何来源，跳过它不影响查找。</p>
+  {#- 我的岗位 (owner redesign, plan 5.3): the saved jobs as a list beside one job (its decision, its four choices
+      shown at once, the way to its full page); a search and two filters over the list (nothing fetched); 更新已保存岗位
+      names what it refreshes. Recommendations kept for a while, daily checks and how refreshing works stay apart
+      below, as they were. -#}
+  <header class="page-head">
+    <h1>{{ t("jobx.mine_title") }}</h1>
+    <div class="page-actions">
+      {# Only with something to refresh: the jobs tracked, current recommendations included (plan 5.3). #}
+      {% if refresh.tracked %}
+      <form method="post" action="/job-records/refresh" class="inline">
+        {{ m.csrf() }}
+        <button type="submit" class="secondary">{{ t("jobx.refresh_saved") }}</button>
+      </form>
+      {% endif %}
+      <a class="button secondary" href="/job-records/supply">{{ i.icon("file-plus") }}{{ t("job.job_supply.1") }}</a>
+    </div>
   </header>
+  {% if has_postings %}
+  {% set rows = namespace(items=[]) %}
+  {% for label, entries in groups %}{% for record in entries %}{% set rows.items = rows.items + [(record, label)] %}{% endfor %}{% endfor %}
+  {% set chosen = request.query_params.get("item", "1") %}
+  {% set chosen = chosen if chosen.isdigit() and 1 <= chosen|int <= rows.items|length else "1" %}
+  {# A job named by its record (after a decision made here) is the one shown, wherever its row now is. #}
+  {% set pick = namespace(index=chosen) %}
+  {% for record, label in rows.items %}{% if record.id == request.query_params.get("job", "") %}{% set pick.index = loop.index|string %}{% endif %}{% endfor %}
+  {% set chosen = pick.index %}
+  {#- The filters (shown by results.js): words in the title or company, my decision, the job's status where its
+      source left it; each over what the list holds, nothing fetched. Kept short so they fit a narrow screen. -#}
+  {% set present = namespace(statuses=[]) %}
+  {% for record, label in rows.items %}{% if status_keys[record.id] not in present.statuses %}{% set present.statuses = present.statuses + [status_keys[record.id]] %}{% endif %}{% endfor %}
+  <div class="result-filters" data-result-filters hidden>
+    <span class="city-search">{{ i.icon("search") }}<input type="search" aria-label="{{ t('jobx.filter_words') }}" placeholder="{{ t('jobx.filter_words') }}" data-filter-words></span>
+    <select aria-label="{{ t('jobx.filter_decision') }}" data-filter="decision">
+      <option value="">{{ t("jobx.filter_decision") }}{{ t("common.colon") }}{{ t("jobx.all") }}</option>
+      {% for value, label, reasons in DECISIONS %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+      <option value="none">{{ decision_label(none) }}</option>
+    </select>
+    <select aria-label="{{ t('jobx.filter_status') }}" data-filter="status">
+      <option value="">{{ t("jobx.filter_status") }}{{ t("common.colon") }}{{ t("jobx.all") }}</option>
+      {% for key in ("open", "unconfirmed", "closed", "unchecked") %}{% if key in present.statuses %}<option value="{{ key }}">{{ STATUS_WORDS[key] }}</option>{% endif %}{% endfor %}
+    </select>
+  </div>
+  <div class="md results-md{% if request.query_params.get('item') or request.query_params.get('job') %} md-chosen{% endif %}" data-results="mine">
+    <nav class="md-list" aria-label="{{ t('jobx.mine_list') }}">
+      <ul class="md-items" data-result-list>
+        {% for record, label in rows.items %}
+        {% set facts = record.facts %}
+        <li data-result-row data-words="{{ facts.title }} {{ facts.company }}" data-decision="{{ record.decision or 'none' }}" data-status="{{ status_keys[record.id] }}">
+          <a class="md-item result-row" href="?item={{ loop.index }}#job-{{ loop.index }}" data-result-link="{{ loop.index }}"{% if loop.index|string == chosen %} aria-current="true"{% endif %}>
+            <span class="md-item-main">
+              <span class="md-item-title">{{ facts.title }}</span>
+              <span class="md-item-meta">{{ facts.company }}<span class="sep" aria-hidden="true"></span>{% if record.id in pasted %}{{ t("job.job_records.33") }}{% else %}{{ list_join(facts.cities) or t("job.place_unrecognised") }}{% endif %}</span>
+              <span class="md-item-line">{{ label }}</span>
+            </span>
+            <span class="chevron">{{ i.icon("chevron-right") }}</span>
+          </a>
+        </li>
+        {% endfor %}
+      </ul>
+      <div class="md-empty" data-filter-empty hidden>
+        <p>{{ t("jobx.filter_none") }}</p>
+        <button type="button" class="secondary" data-filter-clear hidden>{{ t("jobx.clear_filters") }}</button>
+      </div>
+      <button type="button" class="secondary load-more" data-load-more hidden>{{ t("jobx.load_more") }}</button>
+    </nav>
+    <div class="md-detail">
+      {% for record, label in rows.items %}
+      {% set facts = record.facts %}
+      {% set n = loop.index %}
+      {% set is_pasted = record.id in pasted %}
+      <article class="result-detail" id="job-{{ n }}" data-result-detail="{{ n }}" aria-labelledby="job-{{ n }}-title"{% if n|string != chosen %} hidden{% endif %}>
+        <p class="md-back"><a href="?" data-md-back>{{ i.icon("arrow-left") }}{{ t("jobx.back_to_list") }}</a></p>
+        <h2 id="job-{{ n }}-title">{{ facts.title }}</h2>
+        <p class="result-company">{{ facts.company }}</p>
+        <p class="result-tags">{% if is_pasted %}<span class="badge">{{ t("jobx.added_by_hand") }}</span><span>{{ t("jobx.status_unchecked") }}</span>{% else %}<span>{{ list_join(facts.cities) or t("job.place_unrecognised") }}</span><span class="badge">{{ type_word(facts.job_type) or t("job.type_unrecognised") }}</span>{% endif %}</p>
+        <p class="result-check">{{ t("job.job_records.35", p0=(record.kept_at|shorttime), p1=(check_texts[record.id])) }}</p>
+        {#- Beside the list as on its own page (owner redesign revision R2, the 我的岗位 image): 分析岗位 where a text is
+            kept, 补充岗位原文 for a job from a source (its facts only are kept; nothing is read from the source here),
+            the full page as the second way; the four decisions; then 岗位概览 (or 岗位原文) and 已保存分析, read only. -#}
+        {% set text = user_texts.get(record.id) %}
+        {% set kept_analyses = posting_analyses.get(record.id, []) %}
+        {% set supply_href = "/job-records/supply?title=" ~ (facts.title|urlencode) ~ "&company=" ~ (facts.company|urlencode) %}
+        <div class="result-actions">
+          {% if is_pasted and text %}
+          <a class="button primary" href="/job-analysis?record={{ record.id }}">{{ t("jobx.analyse") }}</a>
+          {% elif not is_pasted %}
+          <a class="button secondary" href="{{ supply_href }}">{{ t("jobx.supply_text") }}</a>
+          {% endif %}
+          <a class="button secondary" href="/job-records/postings/{{ record.id }}">{{ t("jobx.open_full") }}</a>
+        </div>
+        {{ jf.decision_panel(record, "/job-records/postings/" ~ record.id ~ "/decide", n="-" ~ n, from_list=True, pasted=is_pasted, level=3) }}
+        {% set about_label = t("job.job_supply.17") if is_pasted else t("jobx.overview") %}
+        <div class="detail-tabs" role="tablist" data-detail-tabs hidden>
+          <button type="button" role="tab" aria-selected="true" data-tab="about">{{ about_label }}</button>
+          <button type="button" role="tab" aria-selected="false" data-tab="analyses">{{ t("jobx.tab_analyses") }}<span class="chip-count">{{ kept_analyses|length }}</span></button>
+        </div>
+        <section class="detail-panel" data-panel="about" aria-label="{{ about_label }}">
+          <h3 class="section-title">{{ about_label }}</h3>
+          {% if is_pasted %}
+          {% if text %}
+          <p class="hint">{{ t("jobx.chars", n=text|length) }}</p>
+          <div class="quote posting-text posting-text-short" tabindex="0" aria-label="{{ about_label }}">{{ text }}</div>
+          {% else %}
+          <p class="empty">{{ t("job.job_record.31") }}</p>
+          {% endif %}
+          {% else %}
+          <p class="hint">{{ about_hints[record.id] }}</p>
+          <dl class="facts compact-facts">
+            <div><dt>{{ t("job.job_record.33") }}</dt><dd>{{ list_join(facts.cities) or t("job.unrecognised") }}{% if facts.places_stated %}{{ t("job.job_record.34") }}{{ list_join(facts.places_stated) }}{{ t("job.job_record.35") }}{% endif %}</dd></div>
+            <div><dt>{{ t("job.job_record.36") }}</dt><dd>{{ type_word(facts.job_type) or t("job.unrecognised") }}{% if facts.type_stated %}{{ t("job.job_record.37", p0=(facts.type_stated)) }}{% endif %}</dd></div>
+            <div><dt>{{ t("job.job_record.38") }}</dt><dd>{{ facts.posted_on or t("job.not_provided") }}</dd></div>
+            <div><dt>{{ t("job.job_record.39") }}</dt><dd>{% for entry in facts.deadlines %}{{ entry.deadline or t("job.not_provided") }}{% if facts.deadlines|length > 1 %}{{ t("job.job_record.40", p0=(entry.source_id), p1=(entry.posting_id)) }}{% endif %}{% if not loop.last %}{{ t("job.job_record.41") }}{% endif %}{% endfor %}</dd></div>
+          </dl>
+          {% endif %}
+        </section>
+        <section class="detail-panel" data-panel="analyses" aria-label="{{ t('jobx.tab_analyses') }}">
+          <h3 class="section-title">{{ t("jobx.tab_analyses") }}</h3>
+          {% if kept_analyses %}
+          <ul class="md-items analysis-rows">
+            {% for analysis in kept_analyses %}
+            <li><a class="md-item" href="/job-records/analyses/{{ analysis.id }}"><span class="md-item-main"><span class="md-item-title">{{ t("job.job_record.78", p0=(analysis.saved_at|shorttime)) }}</span>{% if analysis.id in stale_analyses %}<span class="md-item-line warning-text">{{ t("job.job_record.79") }}</span>{% endif %}</span><span class="chevron">{{ i.icon("chevron-right") }}</span></a></li>
+            {% endfor %}
+          </ul>
+          {% else %}
+          <p class="empty">{{ t("jobx.no_analyses") }}</p>
+          {% endif %}
+          {% if not is_pasted %}
+          <p class="hint">{{ t("jobx.no_text_kept") }}</p>
+          {% endif %}
+        </section>
+      </article>
+      {% endfor %}
+    </div>
+  </div>
+  {% else %}
+  <div class="empty-panel">
+    <p class="empty-icon">{{ i.icon("briefcase") }}</p>
+    <p class="empty-sentence">{{ t("jobx.mine_empty") }}</p>
+    <div class="actions">
+      <a class="button primary" href="/discover">{{ t("jobx.title") }}</a>
+      <a class="button secondary" href="/job-records/supply">{{ t("job.job_supply.1") }}</a>
+    </div>
+  </div>
+  {% endif %}
 
-  <p class="actions"><a href="/job-records/supply">补充岗位…</a><span class="hint">在别处看到的岗位：贴链接或原文，先看一遍再决定加不加入。</span></p>
-
-  <section class="review-section" aria-labelledby="refresh-title">
-    <h2 id="refresh-title">核对跟踪中的岗位</h2>
-    <p>跟踪中的岗位：我的岗位里没跳过、也没有明确关闭的（收藏、准备申请、暂缓和还没做决定的），加上当前推荐（临时留存跟踪），{{ refresh.scope }}。现在跟踪 {{ refresh.tracked }} 个{% if refresh.recommended %}（其中当前推荐 {{ refresh.recommended }} 个）{% endif %}。</p>
-    <p>{% if refresh.due %}现在有 {{ refresh.due }} 个超过 24 小时没有核对{% if refresh.never %}（其中 {{ refresh.never }} 个从来没有核对过）{% endif %}。{% else %}现在没有超过 24 小时没核对的岗位。{% endif %}{% if refresh.running %}正在核对…{% endif %}</p>
-    <p class="hint">{% if refresh.auto %}每 24 小时的自动检查已开启：本机应用运行时，每 {{ refresh.every }} 分钟看一次哪些岗位到期。{% else %}每 24 小时的自动检查没有开启。{% endif %}应用关闭期间不会检查，也不会更新；本机检查不等于已经上线的服务。</p>
-    <form method="post" action="/job-records/refresh" class="inline">
-      {{ m.csrf() }}
-      <button type="submit" class="secondary">现在核对</button>
-    </form>
-    <p class="hint">只读公开岗位信息：{{ refresh.limits }}，不重试；跳过 10 分钟内刚核对过的。不发送你的经历和偏好，不调用 AI，不改你的决定。没轮到的岗位保持原来的状态，留到下一轮。</p>
+  {% if has_postings or current %}
+  <details class="fold refresh-fold">
+    {{ m.fold_summary(t("jobx.refresh_details")) }}
+    <p>{{ t("job.job_records.6", p0=(refresh.scope), p1=(refresh.tracked)) }}{% if refresh.recommended %}{{ t("job.job_records.7", p0=(refresh.recommended)) }}{% endif %}{{ t("job.job_records.8") }}</p>
+    <p>{% if refresh.due %}{{ t("job.job_records.9", p0=(refresh.due)) }}{% if refresh.never %}{{ t("job.job_records.10", p0=(refresh.never)) }}{% endif %}{{ t("job.job_records.8") }}{% else %}{{ t("job.job_records.11") }}{% endif %}{% if refresh.running %}{{ t("job.job_records.12") }}{% endif %}</p>
+    <p class="hint">{% if refresh.auto %}{{ t("job.job_records.13", p0=(refresh.every)) }}{% else %}{{ t("job.job_records.14") }}{% endif %}{{ t("job.job_records.15") }}</p>
+    {% if refresh.next_at %}
+    <p class="hint">{{ t("job.refresh.next_at", when=(refresh.next_at|localtime)) }}</p>
+    {% endif %}
+    <p class="hint">{{ t("job.job_records.17", p0=(refresh.limits)) }}</p>
     {% if refresh.last %}
-    <p class="result-label">上一轮</p>
+    <p class="result-label">{{ t("job.job_records.18") }}</p>
     <ul class="points">
       {% for line in refresh.last %}
       <li>{{ line }}</li>
       {% endfor %}
     </ul>
     {% endif %}
-  </section>
+  </details>
+  {% endif %}
 
   {% if watched %}
   <section class="review-section" aria-labelledby="watched-title" data-reveal>
-    <h2 id="watched-title">每日查新的新增岗位</h2>
-    <p class="hint">{{ watch_auto }} 新增岗位只记公开信息，从第一次读到起保留 {{ KEEP_NEW_DAYS }} 天，不会自动加入我的岗位；打开摘要查看和处理。</p>
+    <h2 id="watched-title">{{ t("job.job_records.19") }}</h2>
+    <p class="hint">{{ t("job.job_records.20", p0=(watch_auto), p1=(KEEP_NEW_DAYS)) }}</p>
     <ul class="lead-list">
       {% for summary, watch, count in watched %}
       <li class="lead">
-        <p class="pick-title"><a href="/job-records/searches/{{ summary.id }}#watch">{{ summary.summary.scope.targets|join("、") or "没有填写岗位名称" }}</a></p>
-        <p class="lead-times">新增 {{ count }} 个 · 开启于 {{ watch.created_at|shorttime }}{% if watch.last_started_at %} · 上次查新开始于 {{ watch.last_started_at|shorttime }}{% else %} · 还没有运行过{% endif %}</p>
+        <p class="pick-title"><a href="/job-records/searches/{{ summary.id }}#watch">{{ list_join(summary.summary.scope.targets) or t("job.no_target") }}</a></p>
+        <p class="lead-times">{{ t("job.job_records.21", p0=(count), p1=(watch.created_at|shorttime)) }}{% if watch.last_started_at %} {{ t("job.job_records.22", p0=(watch.last_started_at|shorttime)) }}{% else %} {{ t("job.job_records.23") }}{% endif %}</p>
       </li>
       {% endfor %}
     </ul>
@@ -50,32 +192,32 @@
 
   {% if current or closed %}
   <section class="review-section" aria-labelledby="held-title" data-reveal>
-    <h2 id="held-title">当前推荐（临时留存跟踪）</h2>
-    <p class="hint">按你在查找时的勾选，系统临时留存了这些推荐的公开信息和核对结果，每条到期自动删除，不进回收站；被下一次勾选、更晚开始并且有推荐的查找替换时提前删除。它们还没加入我的岗位：保存、做决定或指出不准，才会加入。</p>
+    <h2 id="held-title">{{ t("job.job_records.24") }}</h2>
+    <p class="hint">{{ t("job.job_records.25") }}</p>
     {% if current %}
     <ul class="lead-list">
       {% for record, hold in current %}
       {% set facts = record.facts %}
       <li class="lead">
         <p class="pick-title"><a href="/job-records/postings/{{ record.id }}">{{ facts.title }}</a></p>
-        <p class="review-meta"><span>{{ facts.company }}</span><span>{{ facts.cities|join("、") or "地点未认出" }}</span><span>{{ facts.job_type or "类型未认出" }}</span><span>{{ facts.source_name }}</span></p>
-        <p class="lead-times">临时留存于 {{ hold.recommended_at|shorttime }} · 到 {{ hold.until|shorttime }} 自动删除 · {{ check_texts[record.id] }}</p>
+        <p class="review-meta"><span>{{ facts.company }}</span><span>{{ list_join(facts.cities) or t("job.place_unrecognised") }}</span><span>{{ type_word(facts.job_type) or t("job.type_unrecognised") }}</span><span>{{ posting_source(facts, record.source_id) }}</span></p>
+        <p class="lead-times">{{ t("job.job_records.26", p0=(hold.recommended_at|shorttime), p1=(hold.until|shorttime), p2=(check_texts[record.id])) }}</p>
       </li>
       {% endfor %}
     </ul>
     {% else %}
-    <p class="empty-state">现在没有跟踪中的推荐。</p>
+    <p class="empty-state">{{ t("job.job_records.27") }}</p>
     {% endif %}
     {% if closed %}
-    <p class="result-group">已关闭的推荐（临时留存，到期删除）<span>{{ closed|length }} 个</span></p>
-    <p class="hint">来源已明确关闭：不再跟踪，也不算当前推荐。</p>
+    <p class="result-group">{{ t("job.job_records.28") }}<span>{{ t("job.job_records.29", p0=(closed|length)) }}</span></p>
+    <p class="hint">{{ t("job.job_records.30") }}</p>
     <ul class="lead-list">
       {% for record, hold in closed %}
       {% set facts = record.facts %}
       <li class="lead">
         <p class="pick-title"><a href="/job-records/postings/{{ record.id }}">{{ facts.title }}</a></p>
-        <p class="review-meta"><span>{{ facts.company }}</span><span>{{ facts.source_name }}</span></p>
-        <p class="lead-times">{{ check_texts[record.id] }} · 到 {{ hold.until|shorttime }} 删除</p>
+        <p class="review-meta"><span>{{ facts.company }}</span><span>{{ posting_source(facts, record.source_id) }}</span></p>
+        <p class="lead-times">{{ t("job.job_records.31", p0=(check_texts[record.id]), p1=(hold.until|shorttime)) }}</p>
       </li>
       {% endfor %}
     </ul>
@@ -83,69 +225,5 @@
   </section>
   {% endif %}
 
-  <section class="review-section" aria-labelledby="postings-title" data-reveal>
-    <h2 id="postings-title">我的岗位</h2>
-    {% if has_postings %}
-    {% for label, entries in groups %}
-    {% if entries %}
-    <p class="result-group">{{ label }}<span>{{ entries|length }} 个</span></p>
-    <ul class="lead-list">
-      {% for record in entries %}
-      {% set facts = record.facts %}
-      <li class="lead">
-        <p class="pick-title"><a href="/job-records/postings/{{ record.id }}">{{ facts.title }}</a></p>
-        {% if record.id in pasted %}
-        <p class="review-meta"><span>{{ facts.company }}</span><span>你提供的原文</span><span>用户提供，系统未独立核验</span></p>
-        {% else %}
-        <p class="review-meta"><span>{{ facts.company }}</span><span>{{ facts.cities|join("、") or "地点未认出" }}</span><span>{{ facts.job_type or "类型未认出" }}</span><span>{{ facts.source_name }}</span></p>
-        {% endif %}
-        <p class="lead-times">保存于 {{ record.kept_at|shorttime }} · {{ check_texts[record.id] }}</p>
-        {% if record.decision and record.reasons %}
-        <p class="hint">原因：{{ reason_labels(record.decision, record.reasons)|join("、") }}</p>
-        {% endif %}
-      </li>
-      {% endfor %}
-    </ul>
-    {% endif %}
-    {% endfor %}
-    {% else %}
-    <p class="empty-state">还没有加入我的岗位的岗位。在找岗位的结果里，点岗位下面的“加入我的岗位或做决定…”，就会记在这里。</p>
-    {% endif %}
-  </section>
-
-  <section class="review-section" aria-labelledby="analyses-title" data-reveal>
-    <h2 id="analyses-title">已保存的分析</h2>
-    {% if analyses %}
-    <ul class="lead-list">
-      {% for record in analyses %}
-      {% set facts = record.facts %}
-      <li class="lead">
-        <p class="pick-title"><a href="/job-records/analyses/{{ record.id }}">{{ facts.title }}</a></p>
-        <p class="review-meta"><span>{{ facts.company }}</span><span>{{ CATEGORY_WORDS.get(record.content.category, record.content.category) }}</span><span>{{ facts.source_name }}</span></p>
-        <p class="lead-times">保存于 {{ record.saved_at|shorttime }} · {{ basis_texts[record.id] }}</p>
-      </li>
-      {% endfor %}
-    </ul>
-    {% else %}
-    <p class="empty-state">还没有保存的分析。在找岗位的结果里，点岗位下面的“保存或做决定…”，再点“保存这份分析”。</p>
-    {% endif %}
-  </section>
-
-  <section class="review-section" aria-labelledby="summaries-title" data-reveal>
-    <h2 id="summaries-title">查找摘要</h2>
-    {% if summaries %}
-    <ul class="lead-list">
-      {% for record in summaries %}
-      <li class="lead">
-        <p class="pick-title"><a href="/job-records/searches/{{ record.id }}">{{ record.summary.scope.targets|join("、") or "没有填写岗位名称" }}</a></p>
-        <p class="review-meta"><span>{{ record.summary.sources|map(attribute="name")|join("、") }}</span><span>完整分析结果 {{ record.summary.counts.results }} 个</span><span>初筛候选 {{ record.summary.counts.leads }} 个</span></p>
-        <p class="lead-times">保存于 {{ record.kept_at|shorttime }}</p>
-      </li>
-      {% endfor %}
-    </ul>
-    {% else %}
-    <p class="empty-state">还没有保存的查找摘要。在找岗位的结果页底部，点“保存这次查找的摘要”。</p>
-    {% endif %}
-  </section>
 </main>
 {% endblock %}

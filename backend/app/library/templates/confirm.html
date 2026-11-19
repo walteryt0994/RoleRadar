@@ -1,40 +1,49 @@
 {% extends "base.html" %}
+{% import "_icons.html" as i %}
 {% block title %}{{ title }}{% endblock %}
 {% block content %}
-<h1>{{ title }}</h1>
-{% if error %}
-<p class="error" role="alert">{{ error }}</p>
-{% endif %}
-<ul class="points">
-  {% for point in points %}
-  <li>{{ point }}</li>
-  {% endfor %}
-</ul>
-<form method="post" action="{{ action }}">
-  <input type="hidden" name="csrf_token" value="{{ user.csrf_token }}">
-  {% for name, value in hidden.items() %}
-  <input type="hidden" name="{{ name }}" value="{{ value }}">
-  {% endfor %}
-  {# U3-C3b, D3b: never ticked when shown; only the explorations, or the kept analyses, listed here, as listed, can go
-     along, each under its own names. Pages that pass nothing for them (other modules' confirmations) show no such block. #}
-  {% for choice in [along if along is defined else none, along_analyses if along_analyses is defined else none] if choice %}
-  <fieldset class="along-choice">
-    <legend>{{ choice.legend }}</legend>
-    <ul class="points">
-      {% for line in choice.lines %}
-      <li>{{ line }}</li>
-      {% endfor %}
-    </ul>
-    <input type="hidden" name="{{ choice.value_name }}" value="{{ choice.value }}">
-    <label class="check"><input type="checkbox" name="{{ choice.toggle_name }}" value="yes"> {{ choice.label }}</label>
-  </fieldset>
-  {% endfor %}
-  {% if acknowledge %}
-  <label class="ack"><input type="checkbox" name="acknowledge" value="yes" required> {{ acknowledge }}</label>
-  {% endif %}
-  <div class="form-actions">
-    <button type="submit" class="danger">{{ button }}</button>
-    <a href="{{ cancel }}">取消</a>
+{#- A destructive step asked once more (owner redesign, plan 8.2, images 13 and 17): what it is and what goes with it,
+    short; whatever may go along offered unticked; an acknowledgment to tick where the step cannot be undone; then
+    cancel and the step itself, apart. Nothing happens until the button. -#}
+<div class="confirm-dialog" role="group" aria-labelledby="confirm-title">
+  <div class="confirm-dialog-head">
+    <p class="state-icon danger-icon">{{ i.icon("triangle-alert") }}</p>
+    <h1 id="confirm-title">{{ title }}</h1>
   </div>
-</form>
+  {% if error %}
+  <p class="error" role="alert">{{ error }}</p>
+  {% endif %}
+  <ul class="points">
+    {% for point in points %}
+    <li>{{ point }}</li>
+    {% endfor %}
+  </ul>
+  <form method="post" action="{{ action }}">
+    <input type="hidden" name="csrf_token" value="{{ user.csrf_token }}">
+    {% for name, value in hidden.items() %}
+    <input type="hidden" name="{{ name }}" value="{{ value }}">
+    {% endfor %}
+    {# U3-C3b, D3b: never ticked when shown; only the explorations, or the kept analyses, listed here, as listed, can go
+       along, each under its own names. Pages that pass nothing for them (other modules' confirmations) show no such block. #}
+    {% for choice in [along if along is defined else none, along_analyses if along_analyses is defined else none] if choice %}
+    <fieldset class="along-choice">
+      <legend>{{ choice.legend }}</legend>
+      <ul class="points">
+        {% for line in choice.lines %}
+        <li>{{ line }}</li>
+        {% endfor %}
+      </ul>
+      <input type="hidden" name="{{ choice.value_name }}" value="{{ choice.value }}">
+      <label class="check"><input type="checkbox" name="{{ choice.toggle_name }}" value="yes"> {{ choice.label }}</label>
+    </fieldset>
+    {% endfor %}
+    {% if acknowledge %}
+    <label class="ack"><input type="checkbox" name="acknowledge" value="yes" required> {{ acknowledge }}</label>
+    {% endif %}
+    <div class="form-actions confirm-dialog-actions">
+      <a class="button secondary" href="{{ cancel }}">{{ t("common.cancel") }}</a>
+      <button type="submit" class="danger">{{ button }}</button>
+    </div>
+  </form>
+</div>
 {% endblock %}

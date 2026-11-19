@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
 {% from "_findings.html" import finding_row, analysis_body with context %}
-{% block title %}{{ facts.title }}：已保存的分析{% endblock %}
+{% block title %}{{ t("job.job_analysis.1", p0=(facts.title or t("job.standalone.untitled"))) }}{% endblock %}
 {# A kept analysis (U3-D3b): as its result page showed it, from what was kept, never read again from the experiences as
    they are now; how what it rests on stands now is said apart, and it is only looked at, never used for anything new. #}
 {% block layout %}
@@ -10,33 +10,33 @@
   <p class="notice" role="status">{{ notice }}</p>
   {% endif %}
   <header class="job-head">
-    <h1>{{ facts.title }}</h1>
-    <p class="job-mode">{% if synthetic %}本机合成数据，不是真实招聘。{% endif %}这是你保存的一份分析：按保存时那次查找里的岗位和你当时的经历得出，不是最新情况，只供回看，不会用于新的分析或找岗。</p>
+    <h1>{{ facts.title or t("job.standalone.untitled") }}</h1>
+    <p class="job-mode">{% if synthetic %}{{ t("job.job_analysis.2") }}{% endif %}{{ t("job.job_analysis.3") }}</p>
   </header>
   {% if error %}
   <p class="error" role="alert">{{ error }}</p>
   {% endif %}
 
   {% if stale_since %}
-  <p class="warning" role="status">这个岗位在 {{ stale_since }} 从岗位记录再核对时，读到的正文和这份分析用的版本不同，结论可能过时。分析本身没有改；要重新分析，请重新查找这个岗位，会再次确认发送哪些内容。</p>
+  <p class="warning" role="status">{{ t("job.job_analysis.4", p0=(stale_since)) }}</p>
   {% endif %}
 
   <section class="review-section" aria-labelledby="basis-title">
-    <h2 id="basis-title">依据现在的状态</h2>
-    <p class="{% if basis.worst == 'current' %}hint{% else %}warning{% endif %}">{{ basis_text(basis.worst) }}。</p>
+    <h2 id="basis-title">{{ t("job.job_analysis.5") }}</h2>
+    <p class="{% if basis.worst == 'current' %}hint{% else %}warning{% endif %}">{{ t("job.job_analysis.6", p0=(basis_text(basis.worst))) }}</p>
     <ul class="points">
       {% for line in source_lines %}
       <li>{{ line }}</li>
       {% endfor %}
     </ul>
-    <p class="hint">经历的名称按现在读出，只用来指认是哪一段；下面的原话和分析时读的那句话都是保存时存下的，不会按现在的版本重新解释。</p>
+    <p class="hint">{{ t("job.job_analysis.7") }}</p>
   </section>
 
   <section class="review-section" aria-labelledby="result-title">
-    <h2 id="result-title">分析结果</h2>
-    <p class="review-meta"><span>{{ facts.company }}</span><span>{{ facts.source_name }}</span><span>岗位编号 {{ record.posting_id }}</span><span>{{ category_text }}</span></p>
+    <h2 id="result-title">{{ t("job.job_analysis.8") }}</h2>
+    <p class="review-meta"><span>{{ facts.company }}</span><span>{{ posting_source(facts, record.source_id) }}</span><span>{{ t("job.job_analysis.9", p0=(record.posting_id)) }}</span><span>{{ category_text }}</span></p>
     {% if content.first_checks %}
-    <p class="result-label">申请前先确认</p>
+    <p class="result-label">{{ t("job.job_analysis.10") }}</p>
     <ul class="points">
       {% for line in content.first_checks %}
       <li>{{ line }}</li>
@@ -51,65 +51,72 @@
     </ul>
     {% endif %}
     {{ analysis_body(analysis) }}
-    <p class="hint">“目前未找到支持材料”只说明所选的经历里没有写到，不代表你不会。</p>
+    <p class="hint">{{ t("job.job_analysis.11") }}</p>
   </section>
 
   <section class="review-section" aria-labelledby="facts-title">
-    <h2 id="facts-title">岗位事实和生成信息</h2>
+    <h2 id="facts-title">{{ t("job.job_analysis.12") }}</h2>
     <dl class="facts">
-      <div><dt>来源</dt><dd>{{ facts.source_name }}，岗位编号 {{ record.posting_id }}（{{ EVIDENCE_WORDS.get(facts.evidence, facts.evidence) }}）</dd></div>
-      <div><dt>地点</dt><dd>{{ facts.cities|join("、") or "未认出" }}{% if facts.places_stated %}（来源原文：{{ facts.places_stated|join("、") }}）{% endif %}</dd></div>
-      <div><dt>类型</dt><dd>{{ facts.job_type or "未认出" }}{% if facts.type_stated %}（来源原文：{{ facts.type_stated }}）{% endif %}</dd></div>
-      <div><dt>来源核对</dt><dd>{{ CHECK_WORDS.get(facts.check.status, facts.check.status) }}{% if facts.check.answered_at %}（来源回答于 {{ iso_local(facts.check.answered_at) }}）{% endif %}</dd></div>
+      <div><dt>{{ t("job.job_analysis.13") }}</dt><dd>{{ t("job.job_analysis.14", p0=(posting_source(facts, record.source_id)), p1=(record.posting_id), p2=(EVIDENCE_WORDS.get(facts.evidence, facts.evidence))) }}</dd></div>
+      <div><dt>{{ t("job.job_analysis.15") }}</dt><dd>{{ list_join(facts.cities) or t("job.unrecognised") }}{% if facts.places_stated %}{{ t("job.job_analysis.16") }}{{ list_join(facts.places_stated) }}{{ t("job.job_analysis.17") }}{% endif %}</dd></div>
+      <div><dt>{{ t("job.job_analysis.18") }}</dt><dd>{{ type_word(facts.job_type) or t("job.unrecognised") }}{% if facts.type_stated %}{{ t("job.job_analysis.19", p0=(facts.type_stated)) }}{% endif %}</dd></div>
+      <div><dt>{{ t("job.job_analysis.20") }}</dt><dd>{{ CHECK_WORDS.get(facts.check.status, facts.check.status) }}{% if facts.check.answered_at %}{{ t("job.job_analysis.21", p0=(iso_local(facts.check.answered_at))) }}{% endif %}</dd></div>
       {% if facts.url %}
-      <div><dt>原始链接</dt><dd class="plain-address">{{ facts.url }}（页面不提供链接）</dd></div>
+      <div><dt>{{ t("job.job_analysis.22") }}</dt><dd class="plain-address">{{ t("job.job_analysis.23", p0=(facts.url)) }}</dd></div>
       {% endif %}
-      <div><dt>分析于</dt><dd>{% if record.analysed_at %}{{ record.analysed_at|localtime }}{% else %}未记录{% endif %}（那次查找做分析的时间）</dd></div>
-      <div><dt>保存于</dt><dd>{{ record.saved_at|localtime }}（你保存的时间）</dd></div>
-      <div><dt>分析服务</dt><dd>{{ generation.recipient.provider }} / {{ generation.recipient.model }}{% if generation.analysis_mode == "simulation" %}（本机模拟，不是 AI）{% endif %}；请求 {{ generation.requests_sent }} 次</dd></div>
-      <div><dt>版本</dt><dd>找岗规则 {{ generation.rules_version }}；处理说明 {{ generation.notice_version }}{% if generation.analysis %}；分析提示 {{ generation.analysis.analysis_prompt_version }}、规则 {{ generation.analysis.rules_version }}{% endif %}{% if generation.job %}；岗位解析提示 {{ generation.job.prompt_version }}{% endif %}</dd></div>
-      <div><dt>岗位正文版本</dt><dd>指纹 {{ record.content_sha256[:12] }}…（只用来认出分析的是哪一版正文，不能还原正文，也不当证据）</dd></div>
-      <div><dt>来自的查找</dt><dd>{% if summary %}<a href="/job-records/searches/{{ summary.id }}">查看这次查找的摘要</a>{% else %}这次查找的摘要没有保存，或已删除{% endif %}</dd></div>
-      <div><dt>岗位记录</dt><dd>{% if posting %}<a href="/job-records/postings/{{ posting.id }}">查看这个岗位的记录</a>{% else %}这个岗位没有单独保存，或已删除{% endif %}</dd></div>
+      <div><dt>{{ t("job.job_analysis.24") }}</dt><dd>{% if record.analysed_at %}{{ record.analysed_at|localtime }}{% else %}{{ t("job.job_analysis.25") }}{% endif %}{{ t("job.job_analysis.26") }}</dd></div>
+      <div><dt>{{ t("job.job_analysis.27") }}</dt><dd>{{ t("job.job_analysis.28", p0=(record.saved_at|localtime)) }}</dd></div>
+      <div><dt>{{ t("job.job_analysis.29") }}</dt><dd>{{ generation.recipient.provider }} / {{ generation.recipient.model }}{% if generation.analysis_mode == "simulation" %}{{ t("job.job_analysis.30") }}{% endif %}{{ t("job.job_analysis.31", p0=(generation.requests_sent)) }}</dd></div>
+      <div><dt>{{ t("job.job_analysis.32") }}</dt><dd>{% if generation.get("rules_version") %}{{ t("job.job_analysis.33", p0=(generation.rules_version), p1=(generation.notice_version)) }}{% else %}{{ t("job.standalone.notice_version", version=generation.notice_version) }}{% endif %}{% if generation.analysis %}{{ t("job.job_analysis.34", p0=(generation.analysis.analysis_prompt_version), p1=(generation.analysis.rules_version)) }}{% endif %}{% if generation.job %}{{ t("job.job_analysis.35", p0=(generation.job.prompt_version)) }}{% endif %}</dd></div>
+      <div><dt>{{ t("job.job_analysis.36") }}</dt><dd>{{ t("job.job_analysis.37", p0=(record.content_sha256[:12])) }}</dd></div>
+      {% if standalone %}
+      <div><dt>{{ t("job.job_analysis.38") }}</dt><dd>{{ t("job.standalone.from_page") }}</dd></div>
+      {% else %}
+      <div><dt>{{ t("job.job_analysis.38") }}</dt><dd>{% if summary %}<a href="/job-records/searches/{{ summary.id }}">{{ t("job.job_analysis.39") }}</a>{% else %}{{ t("job.job_analysis.40") }}{% endif %}</dd></div>
+      {% endif %}
+      {% if generation.get("result_language") in LANGUAGE_NAMES %}
+      <div><dt>{{ t("task.result_language") }}</dt><dd><span lang="{{ generation.result_language }}">{{ LANGUAGE_NAMES[generation.result_language] }}</span></dd></div>
+      {% endif %}
+      <div><dt>{{ t("job.job_analysis.41") }}</dt><dd>{% if posting %}<a href="/job-records/postings/{{ posting.id }}">{{ t("job.job_analysis.42") }}</a>{% else %}{{ t("job.job_analysis.43") }}{% endif %}</dd></div>
     </dl>
   </section>
 
   <section class="review-section" aria-labelledby="feedback-title">
-    <h2 id="feedback-title">指出的不准</h2>
+    <h2 id="feedback-title">{{ t("job.job_analysis.44") }}</h2>
     {% if feedback %}
     <ul class="points">
       {% for item in feedback %}
-      <li>{{ analysis_feedback_label(item.target, item.reason) }}{% if item.target_ref %}（{{ dict(parts).get(item.target ~ ":" ~ item.target_ref, item.target_ref) }}）{% endif %}{% if item.note %}：{{ item.note }}{% endif %}（{{ item.created_at|shorttime }}）</li>
+      <li>{{ analysis_feedback_label(item.target, item.reason) }}{% if item.target_ref %}{{ t("job.job_analysis.45", p0=(dict(parts).get(item.target ~ ":" ~ item.target_ref, item.target_ref))) }}{% endif %}{% if item.note %}{{ t("job.job_analysis.46", p0=(item.note)) }}{% endif %}{{ t("job.job_analysis.45", p0=(item.created_at|shorttime)) }}</li>
       {% endfor %}
     </ul>
     {% else %}
-    <p class="empty">还没有。</p>
+    <p class="empty">{{ t("job.job_analysis.47") }}</p>
     {% endif %}
     <form method="post" action="/job-records/analyses/{{ record.id }}/feedback" class="keep-form">
       {{ m.csrf() }}
       <input type="hidden" name="revision" value="{{ record.revision }}">
-      <label for="part">哪一部分</label>
+      <label for="part">{{ t("job.job_analysis.48") }}</label>
       <select id="part" name="part">
         {% for value, label in parts %}
         <option value="{{ value }}">{{ label }}</option>
         {% endfor %}
       </select>
-      <label for="analysis_reason">哪里不准</label>
+      <label for="analysis_reason">{{ t("job.job_analysis.49") }}</label>
       <select id="analysis_reason" name="analysis_reason">
         {% for value, label in ANALYSIS_REASONS %}
         <option value="{{ value }}">{{ label }}</option>
         {% endfor %}
       </select>
-      <label for="note">备注（可不填，最多 {{ NOTE_CHARS }} 字）</label>
+      <label for="note">{{ t("job.job_analysis.50", p0=(NOTE_CHARS)) }}</label>
       <textarea id="note" name="note" rows="2" maxlength="{{ NOTE_CHARS }}"></textarea>
-      <button type="submit" class="secondary">记下来</button>
-      <p class="hint">只记在本机的岗位记录里，不发给任何服务，也不会改动这份分析或以后的查找。</p>
+      <button type="submit" class="secondary">{{ t("job.job_analysis.51") }}</button>
+      <p class="hint">{{ t("job.job_analysis.52") }}</p>
     </form>
   </section>
 
   <div class="actions">
-    <a href="/job-records">返回岗位记录</a>
-    <a class="danger-link" href="/job-records/analyses/{{ record.id }}/delete">删除这份分析…</a>
+    <a href="/job-records">{{ t("job.job_analysis.53") }}</a>
+    <a class="danger-link" href="/job-records/analyses/{{ record.id }}/delete">{{ t("job.job_analysis.54") }}</a>
   </div>
 </main>
 {% endblock %}

@@ -111,5 +111,12 @@ def end_session(db: Session, session_token_hash: str) -> None:
     db.execute(delete(LoginSession).where(LoginSession.token_hash == session_token_hash))
 
 
-def remove_expired_sessions(db: Session, now: datetime) -> None:
-    db.execute(delete(LoginSession).where(LoginSession.expires_at <= now))
+def remove_expired_sessions(db: Session, now: datetime) -> list[str]:
+    """Delete the sessions whose time is up and return their token hashes, so the work tied to each can end as it does
+    when a user signs out (UI bilingual batch, Codex R1 review: an expired login's export package)."""
+    expired = list(db.scalars(select(LoginSession.token_hash).where(LoginSession.expires_at <= now)))
+
+    if expired:
+        db.execute(delete(LoginSession).where(LoginSession.token_hash.in_(expired)))
+
+    return expired

@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% import "_icons.html" as i %}
+{% set area = "jobs" %}
+{% set section = "history" %}
+{% block title %}{{ t("nav.job_history") }}{% endblock %}
+{% block scripts %}<script src="/static/results.js"></script>{% endblock %}
+{#- 查找与分析记录 (owner redesign, plan 5.4, the two history images): one title, then 岗位分析 and 查找记录 as two tabs,
+    each a list beside one record. An analysis's detail is what was kept of it: its conclusion, its kept count, the
+    experiences it cited and what is still to confirm, with the full analysis a click away; a search's detail is its
+    summary and the conditions kept, with 使用这些条件 filling a new search in (it runs nothing). A record never changes
+    with a later run; each tab has its own empty state; without JavaScript every row is a link (?item=). -#}
+{% block layout %}
+<main id="main" class="job-page" tabindex="-1">
+  <header class="page-head">
+    <h1>{{ t("nav.job_history") }}</h1>
+  </header>
+  <nav class="chip-row history-tabs" aria-label="{{ t('nav.job_history') }}">
+    <a class="chip" href="/job-records/history?tab=analyses"{% if tab == "analyses" %} aria-current="page"{% endif %}>{{ t("job.history.analyses") }}<span class="chip-count">{{ analyses|length }}</span></a>
+    <a class="chip" href="/job-records/history?tab=searches"{% if tab == "searches" %} aria-current="page"{% endif %}>{{ t("job.history.searches") }}<span class="chip-count">{{ summaries|length }}</span></a>
+  </nav>
+  {% set items = analyses if tab == "analyses" else summaries %}
+  {% if items %}
+  {% set chosen = request.query_params.get("item", "1") %}
+  {% set chosen = chosen if chosen.isdigit() and 1 <= chosen|int <= items|length else "1" %}
+  <div class="result-filters" data-result-filters hidden>
+    <span class="city-search">{{ i.icon("search") }}<input type="search" aria-label="{{ t('jobx.filter_words') if tab == 'analyses' else t('jobx.filter_searches') }}" placeholder="{{ t('jobx.filter_words') if tab == 'analyses' else t('jobx.filter_searches') }}" data-filter-words></span>
+  </div>
+  <div class="md results-md{% if request.query_params.get('item') %} md-chosen{% endif %}" data-results="{{ tab }}">
+    <nav class="md-list" aria-label="{{ t('job.history.' ~ tab) }}">
+      <ul class="md-items" data-result-list>
+        {% for record in items %}
+        <li data-result-row data-words="{% if tab == 'analyses' %}{{ record.facts.title }} {{ record.facts.company }}{% else %}{{ list_join(record.summary.scope.targets) }} {{ list_join(record.summary.scope.city['values']) }}{% endif %}">
+          <a class="md-item result-row" href="?tab={{ tab }}&amp;item={{ loop.index }}#record-{{ loop.index }}" data-result-link="{{ loop.index }}"{% if loop.index|string == chosen %} aria-current="true"{% endif %}>
+            <span class="md-item-main">
+              {% if tab == "analyses" %}
+              <span class="md-item-title">{{ record.facts.title or t("job.standalone.untitled") }}</span>
+              <span class="md-item-meta">{{ record.facts.company }}</span>
+              <span class="md-item-meta">{{ t("job.job_records.43", p0=(record.saved_at|shorttime)) }}</span>
+              {% else %}
+              <span class="md-item-title">{{ list_join(record.summary.scope.targets) or t("job.no_target") }}{% if record.summary.scope.city['values'] %} · {{ list_join(record.summary.scope.city['values']) }}{% endif %}</span>
+              <span class="md-item-meta">{{ list_join(record.summary.scope.job_type['values']|map("type_word")) or t("jobx.type_open") }}</span>
+              <span class="md-item-meta">{{ t("job.job_records.43", p0=(record.kept_at|shorttime)) }}</span>
+              {% endif %}
+            </span>
+            <span class="chevron">{{ i.icon("chevron-right") }}</span>
+          </a>
+        </li>
+        {% endfor %}
+      </ul>
+      <div class="md-empty" data-filter-empty hidden>
+        <p>{{ t("jobx.filter_none_records") }}</p>
+        <button type="button" class="secondary" data-filter-clear hidden>{{ t("jobx.clear_filters") }}</button>
+      </div>
+      <button type="button" class="secondary load-more" data-load-more hidden>{{ t("jobx.load_more") }}</button>
+    </nav>
+    <div class="md-detail">
+      {% for record in items %}
+      {% set n = loop.index %}
+      <article class="result-detail" id="record-{{ n }}" data-result-detail="{{ n }}" aria-labelledby="record-{{ n }}-title"{% if n|string != chosen %} hidden{% endif %}>
+        <p class="md-back"><a href="?tab={{ tab }}" data-md-back>{{ i.icon("arrow-left") }}{{ t("jobx.back_to_list") }}</a></p>
+        {% if tab == "analyses" %}
+        {% set analysis = shown[record.id] %}
+        {% set counted = counted_findings(analysis) %}
+        {% set coverage = evidence_coverage(analysis) %}
+        <div class="record-detail-head">
+          <h2 id="record-{{ n }}-title">{{ record.facts.title or t("job.standalone.untitled") }}</h2>
+          {% call m.more_menu() %}
+          <a class="menu-link danger-link" href="/job-records/analyses/{{ record.id }}/delete">{{ t("jobx.delete_analysis") }}</a>
+          {% endcall %}
+        </div>
+        <p class="result-company">{{ record.facts.company }}</p>
+        <p class="result-check">{{ t("job.job_records.43", p0=(record.saved_at|shorttime)) }}<span class="sep" aria-hidden="true"></span>{{ CATEGORY_WORDS.get(record.content.category) if record.content.category else t("job.standalone.kind") }}<span class="sep" aria-hidden="true"></span>{{ basis_texts[record.id] }}</p>
+        <p class="history-coverage">{% if coverage.total is defined %}<strong>{{ t("cov.title") }}</strong> {{ t("cov.percent", p=coverage.percent) }} · {{ t("cov.count", n=coverage.supported, d=coverage.total) }}{% else %}{{ t("cov.none." ~ coverage) }}{% endif %}</p>
+        {% set conflicts = analysis.findings|selectattr("group", "equalto", Group.HARD_CONSTRAINT)|selectattr("conclusion", "equalto", "conflict")|list %}
+        {% if conflicts %}<p class="result-alert">{{ t("cov.conflict") }}</p>{% endif %}
+        <section aria-labelledby="record-{{ n }}-related">
+          <h3 class="section-title" id="record-{{ n }}-related">{{ t("jobx.related_experiences") }}</h3>
+          {#- Each experience quote once, however many requirements it supports (the first three). -#}
+          {% set quotes = namespace(seen=[], shown=0) %}
+          {% for finding in counted|selectattr("conclusion", "equalto", "supported") %}
+          {% for citation in finding.citations[:1] %}
+          {% set key = citation.item_id ~ "|" ~ citation.quote %}
+          {% if key not in quotes.seen and quotes.shown < 3 %}
+          {% set quotes.seen = quotes.seen + [key] %}
+          {% set quotes.shown = quotes.shown + 1 %}
+          <div class="evidence-item">
+            <p class="evidence-name">{{ titles[record.id][citation.item_id].title if citation.item_id in titles[record.id] else requirement_words(finding) }}</p>
+            <blockquote class="quote">{{ citation.quote }}</blockquote>
+          </div>
+          {% endif %}
+          {% endfor %}
+          {% endfor %}
+          {% if not quotes.shown %}
+          <p class="empty">{{ t("cov.none_related") }}</p>
+          {% endif %}
+        </section>
+        <section aria-labelledby="record-{{ n }}-pending">
+          <h3 class="section-title" id="record-{{ n }}-pending">{{ t("jobx.to_add") }}</h3>
+          {% set pending = counted|rejectattr("conclusion", "equalto", "supported")|list %}
+          {% if pending %}
+          <ul class="points">
+            {% for finding in pending[:5] %}<li>{{ requirement_words(finding) }}<span class="finding-verdict">{{ conclusion_label(finding) }}</span></li>{% endfor %}
+          </ul>
+          {% else %}
+          <p class="empty">{{ t("cov.none_pending") }}</p>
+          {% endif %}
+        </section>
+        <div class="result-actions">
+          <a class="button secondary" href="/job-records/analyses/{{ record.id }}">{{ t("jobx.open_analysis") }}</a>
+          {% if posting_of[record.id] %}<a class="button secondary" href="/job-records/postings/{{ posting_of[record.id] }}">{{ t("jobx.open_job") }}</a>{% endif %}
+        </div>
+        {% else %}
+        {% set summary = record.summary %}
+        <div class="record-detail-head">
+          <h2 id="record-{{ n }}-title">{{ list_join(summary.scope.targets) or t("job.no_target") }}{% if summary.scope.city['values'] %} · {{ list_join(summary.scope.city['values']) }}{% endif %}</h2>
+          <span class="badge">{{ t("jobx.search_summary") }}</span>
+          {% call m.more_menu() %}
+          <a class="menu-link" href="/job-records/searches/{{ record.id }}">{{ t("jobx.open_summary") }}</a>
+          <a class="menu-link danger-link" href="/job-records/searches/{{ record.id }}/delete">{{ t("jobx.delete_summary") }}</a>
+          {% endcall %}
+        </div>
+        <p class="result-check">{{ t("job.job_records.43", p0=(record.kept_at|shorttime)) }}<span class="sep" aria-hidden="true"></span>{{ t("job.job_records.41", p0=(summary.counts.results)) }}<span class="sep" aria-hidden="true"></span>{{ t("job.job_records.42", p0=(summary.counts.leads)) }}</p>
+        <section aria-labelledby="record-{{ n }}-scope">
+          <h3 class="section-title" id="record-{{ n }}-scope">{{ t("jobx.search_conditions") }}</h3>
+          <dl class="facts compact-facts condition-table">
+            {% for label, text in scope_lines[record.id] %}
+            <div><dt>{{ label }}</dt><dd>{{ text }}</dd></div>
+            {% endfor %}
+            <div><dt>{{ t("job.job_search.4") }}</dt><dd>{{ list_join(summary.sources|map(attribute="name")|map("source_label")) }}</dd></div>
+          </dl>
+        </section>
+        <div class="result-actions">
+          <a class="button primary" href="/discover?summary={{ record.id }}">{{ t("jobx.use_conditions") }}</a>
+        </div>
+        <p class="hint">{{ t("jobx.use_conditions_hint") }}</p>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </div>
+  </div>
+  {% elif tab == "analyses" %}
+  <div class="empty-panel">
+    <p class="empty-icon">{{ i.icon("search") }}</p>
+    <p class="empty-sentence">{{ t("job.job_records.39") }}</p>
+    <a class="button primary" href="/job-analysis">{{ t("ws.task_analyse") }}</a>
+  </div>
+  {% else %}
+  <div class="empty-panel">
+    <p class="empty-icon">{{ i.icon("briefcase") }}</p>
+    <p class="empty-sentence">{{ t("job.job_records.44") }}</p>
+    <a class="button primary" href="/discover">{{ t("ws.task_discover") }}</a>
+  </div>
+  {% endif %}
+</main>
+{% endblock %}

@@ -298,7 +298,9 @@ def test_the_default_and_validation_a_take_no_model_whatever_service_the_app_has
 
             # Read for real, decided and analysed by the simulation: no model call, no ledger row.
             assert routed.requests and provider.calls == [] and rows(application.state.library.database) == []
-            assert "本机模拟服务处理的请求" in shown and "已交给模型服务的请求" not in shown
+            # The result page says what decided and analysed (its banner); request counts are no longer shown there
+            # (owner redesign, plan 5.3) and never claim a model service.
+            assert "决策和分析仍由本机固定规则模拟" in shown and "已交给模型服务的请求" not in shown
             # What A's review says is not done no longer says it stays offline (U3-D2-E3).
             # Version 6 since U3-D3c (5 since U3-D3b): what a set that lets keep says; A's own words did not change.
             assert stored(application, browser, url).confirmation.notice_version == "discovery-preview-7"
@@ -428,7 +430,7 @@ def test_validation_b_runs_through_one_gate_names_its_three_recipients_and_keeps
     assert "岗位来源" in page and f"读取批准 {SOURCE_APPROVAL}" in page
     assert f"OpenAI 的 gpt-5.6-sol（模型批准 {MODEL_APPROVAL}" in page and "由它选下一个动作" in page
     assert "（同一份模型批准）：每分析一个岗位" in page and "英文原文" in page
-    assert "处理说明" in page and all(paragraph in page for paragraph in model_live.NOTICE)
+    assert "处理说明" in page and all(str(paragraph) in page for paragraph in model_live.NOTICE)
     assert "处理说明的版本或任一批准变了，原来的核对作废" in page and "还剩 14 次" in page
     assert "不联网" not in page and "除了上面写明的来源读取和模型请求，不访问别的网站" in page
     assert stored(application, browser, url).confirmation.notice_version == model_live.NOTICE_VERSION
@@ -454,8 +456,9 @@ def test_validation_b_runs_through_one_gate_names_its_three_recipients_and_keeps
     assert model_claim(run_dir)["source_approval_id"] == SOURCE_APPROVAL
     # Robots first, then the list, a read and a check: within the read approval.
     assert routed.requests[0] == "/robots.txt" and len(routed.requests) == 6
-    # The pages say what was real: requests handed to the model service, counted as the job analysis pages count them.
-    assert "已交给模型服务的请求：计数 0 次、生成 7 次，合计 7 次" in shown and "本机模拟" not in shown
+    # The page says what was real (its banner: a real model decided and analysed); the seven requests are the task's
+    # count above, no longer listed on the result page (owner redesign, plan 5.3).
+    assert "每一步的决策和每个岗位的分析由真实模型" in shown and "本机模拟" not in shown
     # Nothing the user wrote but the chosen fields went to the decisions: no private note, no experience text.
     decisions = [prompt for (kind, _), prompt in zip(provider.calls, provider.prompts) if kind == ACTION_SCHEMA_NAME]
     assert not any(DEMO_PROJECT["actions"] in prompt for prompt in decisions)

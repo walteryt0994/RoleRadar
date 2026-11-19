@@ -2,31 +2,35 @@
 {% import "_macros.html" as m with context %}
 {% from "_direction_cards.html" import direction_cards with context %}
 {% set area = "directions" %}
-{% block title %}保存的探索{% endblock %}
+{% block title %}{{ t("dir.direction_exploration.1") }}{% endblock %}
 {% block layout %}
 <main id="main" class="job-page job-reading" tabindex="-1">
   {% if notice %}
   <p class="notice" role="status">{{ notice }}</p>
   {% endif %}
   <header class="job-head">
-    <h1>保存的探索</h1>
-    <p class="job-mode">保存于 {{ exploration.saved_at|shorttime }}</p>
+    <h1>{{ t("dir.direction_exploration.1") }}</h1>
+    <p class="job-mode">{{ t("dir.direction_exploration.2", p0=(exploration.saved_at|shorttime)) }}</p>
   </header>
   {% if error %}
   <p class="error" role="alert">{{ error }}</p>
   {% endif %}
   {% if not current %}
-  <p class="warning" role="alert">{{ state_label }}：这是当时的结果，不能再根据它做决定。</p>
+  <p class="warning" role="alert">{{ t("dir.direction_exploration.3", p0=(state_label)) }}</p>
   {% endif %}
   <dl class="facts" data-reveal>
-    <div><dt>依据</dt><dd>{{ state_label }}</dd></div>
-    <div><dt>生成</dt><dd>{% if generation.provider == "simulation" %}本机模拟服务（固定规则，不是 AI）{% else %}{{ generation.provider }} 的 {{ generation.model }}{% endif %}；提示词版本 {{ generation.prompt_version }}，处理说明版本 {{ generation.notice_version }}</dd></div>
+    <div><dt>{{ t("dir.direction_exploration.4") }}</dt><dd>{{ state_label }}</dd></div>
+    <div><dt>{{ t("dir.direction_exploration.5") }}</dt><dd>{% if generation.provider == "simulation" %}{{ t("dir.direction_exploration.6") }}{% else %}{{ t("dir.direction_exploration.7", p0=(generation.provider), p1=(generation.model)) }}{% endif %}{{ t("dir.direction_exploration.8", p0=(generation.prompt_version), p1=(generation.notice_version)) }}</dd></div>
+    {% if generation.get("result_language") in LANGUAGE_NAMES %}
+    <div><dt>{{ t("task.result_language") }}</dt><dd><span lang="{{ generation.result_language }}">{{ LANGUAGE_NAMES[generation.result_language] }}</span></dd></div>
+    {% endif %}
   </dl>
-  <p class="hint">下面都是一般性介绍，未经岗位来源核验；没有分数，也不排名。</p>
+  <p class="hint">{{ t("dir.direction_exploration.9") }}</p>
   {{ direction_cards(cards, "/directions/explorations/" ~ exploration.id ~ "/decide", current, "/directions/explorations/" ~ exploration.id) }}
   <div class="actions result-foot">
-    <a href="/directions/records">回到探索记录</a>
-    <a class="danger-link" href="/directions/explorations/{{ exploration.id }}/delete">删除这次探索…</a>
+    <a class="button secondary" href="/directions?again={{ exploration.id }}">{{ t("dir.again.title") }}</a>
+    <a href="/directions/records">{{ t("dir.direction_exploration.10") }}</a>
+    <a class="danger-link" href="/directions/explorations/{{ exploration.id }}/delete">{{ t("dir.direction_exploration.11") }}</a>
   </div>
 </main>
 {% endblock %}

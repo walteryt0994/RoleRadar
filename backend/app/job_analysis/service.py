@@ -24,17 +24,15 @@ from app.ai_provider import AIProvider, SendState, how_far
 from app.analysis_contracts import Recipient
 from app.library.sends import Call
 from app.live_gate import Blocked, LiveGate, Purpose, Sending, delivery
+from app.i18n import lazy, t
 
 # What the review page says about a real service. Changing a word changes the version,
 # and with it every fingerprint: a confirmation of the old text does not carry over.
 LIVE_NOTICE_VERSION = "live-3"
 LIVE_NOTICE = (
-    "确认后，上面勾选的内容会发给这个外部 AI 服务，只用于生成这一次分析：一次分析通常发出两个请求，先解析岗位，再分析经历。"
-    "按服务商的政策，API 数据默认不用于训练模型。",
-    "请求设置为不保存回答，但这不等于不留存：按服务商的默认政策，滥用监控日志最多保留 30 天，"
-    "法律要求或为防止伤害时可能更长；为了提速，服务商还可能缓存由提示内容算出的加密中间数据（不是原文），最长 24 小时。",
-    "每次发送前按固定的保守额度预留费用，返回后按服务商报告的用量核算。这是应用内的预算检查，不是服务商账单的硬上限："
-    "正在进行的请求可能超出预留。已经发出的请求无法撤回，取消只能停止之后的发送。",
+    lazy("job.service.1"),
+    lazy("job.service.2"),
+    lazy("job.service.3"),
 )
 
 

@@ -361,6 +361,19 @@ class DiscoveryTaskStore:
 
             self._tasks.clear()
 
+    def listed(self, owner_id: str, session: str) -> list:
+        """This session's own tasks, newest change first, as copies with the seconds each still has before it goes
+        (None while it runs): what the workspace lists under 继续处理 (UI bilingual batch, plan 5.1). Reads only."""
+        with self._lock:
+            self._sweep()
+            now = self.clock()
+            mine = [task for task in self._tasks.values() if task.owner_id == owner_id and task.session == session]
+
+            return [
+                (replace(task), None if task.stage is Stage.RUNNING else max(0.0, TASK_TTL_SECONDS - (now - task.touched)))
+                for task in sorted(mine, key=lambda task: task.touched, reverse=True)
+            ]
+
     def sweep(self) -> None:
         with self._lock:
             self._sweep()

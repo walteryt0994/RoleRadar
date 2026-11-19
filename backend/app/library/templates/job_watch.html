@@ -1,74 +1,68 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m with context %}
-{% block title %}开启每日查新{% endblock %}
+{% import "_icons.html" as i %}
+{% block title %}{{ t("job.job_watch.1") }}{% endblock %}
+{#- 查新设置 (owner redesign, plan 5.5, image 13): the summary it repeats, its scope as short read-only chips, whether
+    the automatic check really runs (as the running app is set, never a switch shown as on), and 开启查新 with the
+    baseline said in one line. What it keeps, for how long, and what it never does are the terms of turning it on: kept
+    on the page, one fold away, and bound to the version shown (notice_version). -#}
 {% block layout %}
 <main id="main" class="job-page job-reading" tabindex="-1">
   {% if notice %}
   <p class="notice" role="status">{{ notice }}</p>
   {% endif %}
-  <header class="job-head">
-    <h1>开启每日查新</h1>
-    <p class="job-mode">按这份查找摘要记下的来源和检索，用固定流程重查，列出以前没见过的岗位。开启前请看一遍下面会做什么、会保存什么。</p>
+  <p class="back-line"><a class="library-back" href="/job-records/searches/{{ record.id }}">{{ i.icon("arrow-left") }}{{ t("job.job_watch.18") }}</a></p>
+  <header class="page-head">
+    <h1>{{ t("jobx.watch_title") }}</h1>
+    <p class="lede">{{ t("jobx.watch_lede") }}</p>
   </header>
 
-  <section class="review-section" aria-labelledby="repeat-title">
-    <h2 id="repeat-title">会重查的检索</h2>
-    <ul class="points">
-      {% for line in searches %}
-      <li>{{ line }}</li>
+  <section class="watch-card" aria-labelledby="watch-summary-title">
+    <div class="watch-card-head">
+      <h2 id="watch-summary-title">{{ list_join(record.summary.scope.targets) or t("job.no_target") }}</h2>
+      <span class="badge">{{ t("jobx.watch_off") }}</span>
+    </div>
+    <p class="chips-label" id="watch-scope-label">{{ t("job.job_watch.4") }}</p>
+    <ul class="scope-chips" aria-labelledby="watch-scope-label">
+      {% for label, text in scope_lines %}
+      <li class="scope-chip"><span class="scope-chip-label">{{ label }}</span><span>{{ text }}</span></li>
       {% endfor %}
+      <li class="scope-chip"><span class="scope-chip-label">{{ t("job.job_search.4") }}</span><span>{{ list_join(sources) }}</span></li>
     </ul>
-    {# What the start reads, as the running set reads its sources (U3-D6 close-out, F1): offline for the synthetic sets,
-       a real read under the batch's read approval for the D6 board. #}
     {% for line in source_lines %}
     <p class="hint">{{ line }}</p>
     {% endfor %}
+    <form method="post" action="/job-records/searches/{{ record.id }}/watch" class="watch-status">
+      {{ m.csrf() }}
+      <input type="hidden" name="expected_revision" value="{{ record.revision }}">
+      <input type="hidden" name="notice_version" value="{{ notice_version }}">
+      <p class="watch-status-line">{{ i.icon("triangle-alert") }}<span>{{ auto }}</span></p>
+      <button type="submit" class="primary">{{ t("jobx.watch_on") }}</button>
+    </form>
+    <p class="hint">{{ t("jobx.watch_baseline") }}</p>
+    <details class="fold">
+      {{ m.fold_summary(t("job.job_watch.3"), badge=searches|length) }}
+      <ul class="points">
+        {% for line in searches %}
+        <li>{{ line }}</li>
+        {% endfor %}
+      </ul>
+      <p class="hint">{{ t("job.job_watch.5") }}</p>
+    </details>
+    <details class="fold">
+      {{ m.fold_summary(t("jobx.watch_terms")) }}
+      <ul class="points">
+        <li>{{ t("job.job_watch.7") }}</li>
+        <li>{{ t("job.job_watch.8") }}</li>
+        <li>{{ t("job.job_watch.10") }}</li>
+        <li>{{ t("job.job_watch.11", p0=(KEEP_NEW_DAYS)) }}</li>
+        <li>{{ t("job.job_watch.12", p0=(SEEN_THRESHOLD)) }}</li>
+        <li>{{ t("job.job_watch.13") }}</li>
+        <li>{{ t("job.job_watch.15") }}</li>
+        <li>{{ t("job.job_watch.16") }}</li>
+        <li>{{ t("job.job_watch.17", p0=(MAX_WATCHES)) }}</li>
+      </ul>
+    </details>
   </section>
-
-  <section class="review-section" aria-labelledby="range-title">
-    <h2 id="range-title">初筛用的范围</h2>
-    <dl class="facts">
-      {% for label, text in scope_lines %}
-      <div><dt>{{ label }}</dt><dd>{{ text }}</dd></div>
-      {% endfor %}
-    </dl>
-    <p class="hint">这是这份摘要当时确认的范围，只在本机初筛用，不发送。查新不读你现在的偏好：你以后改偏好，查新也不变；要按新条件查新，请重新查找、保存摘要，在新摘要上开启，再停掉这个。</p>
-  </section>
-
-  <section class="review-section" aria-labelledby="when-title">
-    <h2 id="when-title">什么时候查</h2>
-    <ul class="points">
-      <li>开启时马上建立基准：那时已经有的岗位都记为见过，不算新增。每次检索第一次得到回答时，也只记基准。</li>
-      <li>{{ auto }}</li>
-      <li>随时可以点“现在查新”；一轮开始后 10 分钟内不重复。</li>
-    </ul>
-  </section>
-
-  <section class="review-section" aria-labelledby="kept-title">
-    <h2 id="kept-title">会保存什么，保存多久</h2>
-    <ul class="points">
-      <li>开启后，系统会自动保存：对这份摘要的引用（查新的条件）、这个查新见过的岗位编号，以及新增岗位的公开信息（职位名、公司、地点、类型、日期、来源）。不保存正文、分析，也不保存你的经历。</li>
-      <li>新增岗位从第一次读到起保留 {{ KEEP_NEW_DAYS }} 天，查看和再次出现都不延长；到期直接删除，不进回收站。它们不会自动加入我的岗位：要留下，请点“加入我的岗位”。</li>
-      <li>查新的条件和见过的岗位编号，保留到你停止它为止。见过的岗位达到 {{ SEEN_THRESHOLD }} 个时，查新停下并提示，不会悄悄删掉旧编号。</li>
-      <li>你跳过的岗位、已经在岗位记录里的、超出条件的、重复的，都不算新增，只计数。</li>
-    </ul>
-  </section>
-
-  <section class="review-section" aria-labelledby="not-title">
-    <h2 id="not-title">不做什么</h2>
-    <ul class="points">
-      <li>不用 AI，不分析，不读也不发送你的经历和偏好；不自动加入我的岗位；不发通知。</li>
-      <li>新增岗位只确认过“在列表里”，没有核对招聘状态；最近一轮没再出现，也不等于已经关闭。</li>
-      <li>停止就是“停止并清除”：查新、见过的岗位编号和还没处理的新增岗位直接删除，不进回收站；删除这份摘要时也会一并清除，恢复摘要不会恢复查新。你加入我的岗位的不受影响。每人最多同时开启 {{ MAX_WATCHES }} 个查新。</li>
-    </ul>
-  </section>
-
-  <form method="post" action="/job-records/searches/{{ record.id }}/watch" class="actions">
-    {{ m.csrf() }}
-    <input type="hidden" name="expected_revision" value="{{ record.revision }}">
-    <input type="hidden" name="notice_version" value="{{ notice_version }}">
-    <button type="submit" class="primary">开启每日查新</button>
-    <a href="/job-records/searches/{{ record.id }}">先不开启</a>
-  </form>
 </main>
 {% endblock %}

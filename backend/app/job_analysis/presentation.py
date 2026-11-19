@@ -27,89 +27,88 @@ from app.job_analysis.service import LIVE_NOTICE
 from app.job_analysis.tasks import Step
 from app.live_gate import Blocked
 from app.library.projection import NOT_CONFIRMED, PREFERENCES_CHANGED, UNAVAILABLE, VERSION_CHANGED
-from app.outbound_review import LABELS as FOUND_LABELS
+from app.outbound_review import NAMES as FOUND_LABELS
+from app.i18n import MessageMap, lazy, list_join, t
 
-STEP_LABELS = {
-    Step.CHECKING: "核对资料",
-    Step.PARSING: "解析岗位",
-    Step.ANALYSING: "分析经历",
-}
-SELECTION_PROBLEMS = {
-    UNAVAILABLE: "已删除或找不到",
-    NOT_CONFIRMED: "修改后还没有重新确认",
-    VERSION_CHANGED: "已重新确认成新版本",
-    PREFERENCES_CHANGED: "选用的求职偏好已修改",
-}
-REJECTED = {
-    RejectionReason.SOURCES_CHANGED: "开始之后，所选的资料有了变化，所以没有继续发送。请重新核对后再开始。",
-    RejectionReason.SELECTION_INVALID: "所选的资料已经不能按核对时的版本使用，所以没有发送。请重新核对后再开始。",
-    RejectionReason.OUTBOUND_BLOCKED: "发送前的检查发现了疑似敏感的内容，所以没有发送。请重新核对后再开始。",
-    RejectionReason.RECIPIENT_MISMATCH: "接收服务和核对时说明的不一致，所以没有发送。",
-    RejectionReason.RECIPIENT_UNVERIFIED: "无法确认接收服务，所以没有发送。",
+STEP_LABELS = MessageMap({
+    Step.CHECKING: "job.apres.step_labels.1",
+    Step.PARSING: "job.apres.step_labels.2",
+    Step.ANALYSING: "job.apres.step_labels.3",
+})
+SELECTION_PROBLEMS = MessageMap({
+    UNAVAILABLE: "job.apres.selection_problems.1",
+    NOT_CONFIRMED: "job.apres.selection_problems.2",
+    VERSION_CHANGED: "job.apres.selection_problems.3",
+    PREFERENCES_CHANGED: "job.apres.selection_problems.4",
+})
+REJECTED = MessageMap({
+    RejectionReason.SOURCES_CHANGED: "job.apres.rejected.1",
+    RejectionReason.SELECTION_INVALID: "job.apres.rejected.2",
+    RejectionReason.OUTBOUND_BLOCKED: "job.apres.rejected.3",
+    RejectionReason.RECIPIENT_MISMATCH: "job.apres.rejected.4",
+    RejectionReason.RECIPIENT_UNVERIFIED: "job.apres.rejected.5",
     # These two and GATE_CLOSED may also stop a generation after its count: what went out is counted below.
-    RejectionReason.GATE_STOPPED: "真实服务已停用，之后的生成请求没有发出。",
-    RejectionReason.GATE_PAUSED: "这批批准已暂停，之后的生成请求没有发出；继续需要新的批准。",
-    RejectionReason.GATE_BUSY: "另一个真实分析正在进行，这次请求没有发出。请等它结束后重新分析。",
-    RejectionReason.GATE_REQUESTS: "这批批准的请求次数已经用完，这次请求没有发出。",
-    RejectionReason.GATE_COST: "这次请求的保守预留会超出这批批准剩下的应用内预算，所以没有发出。",
-    RejectionReason.GATE_CLOSED: "服务正在停止，之后的生成请求没有发出。",
-    RejectionReason.GATE_ENDED: "这次分析已经结束，之后的请求没有发出。",
-    RejectionReason.GATE_PURPOSE: "这批批准不包括岗位分析，这次请求没有发出。",
-    RejectionReason.GATE_COUNT: "发送前的计数没有完成，或者结果不能用、用完了这次请求的时限，所以没有发出生成请求。"
-    "计数请求有没有发出，以下面的次数为准。",
-    RejectionReason.GATE_TIME: "本机的准备和发送前检查用完了这次请求的时限，所以没有发出生成请求。",
-    RejectionReason.GATE_INPUT: "计数显示这次请求的输入超过了这批批准的单次输入上限，所以没有发出生成请求；计数请求已经发出。",
-    RejectionReason.GATE_PAYLOAD: "这次请求的完整内容超过了这批批准允许的大小，所以没有发出，也不会被截短或拆开重发。"
-    "请减少这次选用的资料，或缩短岗位描述后重新分析。",
-}
-FAILED = {
-    AnalysisFailure.TIMEOUT: "分析服务没有在限定时间内回答。",
-    AnalysisFailure.CONNECTION: "连不上分析服务。",
-    AnalysisFailure.RATE_LIMIT: "分析服务暂时拒绝了请求（次数或额度限制）。",
-    AnalysisFailure.PROVIDER_RESPONSE: "分析服务返回了错误。",
-    AnalysisFailure.REFUSAL: "分析服务拒绝回答这次请求。",
-    AnalysisFailure.EMPTY_RESPONSE: "分析服务没有给出内容。",
-    AnalysisFailure.INVALID_JSON: "分析服务的回答格式不对，整份回答没有采用。",
-    AnalysisFailure.SCHEMA: "分析服务的回答格式不对，整份回答没有采用。",
-    AnalysisFailure.CITATION: "分析服务引用了所选资料或岗位描述里没有的原文，整份回答没有采用。",
-    AnalysisFailure.COVERAGE: "分析服务漏掉或重复了某些要求，整份回答没有采用。",
-    AnalysisFailure.RECIPIENT_MISMATCH: "回答声称来自另一个服务或模型，没有采用。",
-    AnalysisFailure.JOB_RECORD: "岗位解析的结果和这份岗位描述对不上，没有继续。",
-    AnalysisFailure.PROVIDER_UNAVAILABLE: "真实服务无法使用（无法建立，或和批准的接收方不符），没有发送任何请求。",
+    RejectionReason.GATE_STOPPED: "job.apres.rejected.6",
+    RejectionReason.GATE_PAUSED: "job.apres.rejected.7",
+    RejectionReason.GATE_BUSY: "job.apres.rejected.8",
+    RejectionReason.GATE_REQUESTS: "job.apres.rejected.9",
+    RejectionReason.GATE_COST: "job.apres.rejected.10",
+    RejectionReason.GATE_CLOSED: "job.apres.rejected.11",
+    RejectionReason.GATE_ENDED: "job.apres.rejected.12",
+    RejectionReason.GATE_PURPOSE: "job.apres.rejected.13",
+    RejectionReason.GATE_COUNT: "job.apres.rejected.14",
+    RejectionReason.GATE_TIME: "job.apres.rejected.15",
+    RejectionReason.GATE_INPUT: "job.apres.rejected.16",
+    RejectionReason.GATE_PAYLOAD: "job.apres.rejected.17",
+})
+FAILED = MessageMap({
+    AnalysisFailure.TIMEOUT: "job.apres.failed.1",
+    AnalysisFailure.CONNECTION: "job.apres.failed.2",
+    AnalysisFailure.RATE_LIMIT: "job.apres.failed.3",
+    AnalysisFailure.PROVIDER_RESPONSE: "job.apres.failed.4",
+    AnalysisFailure.REFUSAL: "job.apres.failed.5",
+    AnalysisFailure.EMPTY_RESPONSE: "job.apres.failed.6",
+    AnalysisFailure.INVALID_JSON: "job.apres.failed.7",
+    AnalysisFailure.SCHEMA: "job.apres.failed.8",
+    AnalysisFailure.CITATION: "job.apres.failed.9",
+    AnalysisFailure.COVERAGE: "job.apres.failed.10",
+    AnalysisFailure.RECIPIENT_MISMATCH: "job.apres.failed.11",
+    AnalysisFailure.JOB_RECORD: "job.apres.failed.12",
+    AnalysisFailure.PROVIDER_UNAVAILABLE: "job.apres.failed.13",
     # Only this request: any sent before it are counted below the result.
-    AnalysisFailure.PROVIDER_CONFIG: "分析服务的本机设置有问题，这次请求在发出之前就停止了，没有发出。",
-}
+    AnalysisFailure.PROVIDER_CONFIG: "job.apres.failed.14",
+})
 # Why the review offers no start while the real service's gate refuses.
-REFUSALS = {
-    Blocked.STOPPED: "真实服务已停用（库目录里有停用文件），现在不能开始分析。",
-    Blocked.PAUSED: "这批批准已暂停，不能再发送；继续需要新的批准。",
-    Blocked.REQUESTS: "这批批准的请求次数已经用完，不能再发送；继续需要新的批准。",
-}
-PAUSE_REASONS = {
-    "interrupted": "上次运行中断，有请求按预留占用记为费用待核实",
-    "unknown_usage": "有一次请求的费用无法确认，按保守占用记为费用待核实",
-    "over_reservation": "有一次请求按用量核算的费用超过了它的预留",
-    "above_count": "有一次请求的实际输入超过了发送前的计数",
-    "count_maybe": "有一次计数请求可能已发出，费用无法确认，按计数单价记账",
-}
+REFUSALS = MessageMap({
+    Blocked.STOPPED: "job.apres.refusals.1",
+    Blocked.PAUSED: "job.apres.refusals.2",
+    Blocked.REQUESTS: "job.apres.refusals.3",
+})
+PAUSE_REASONS = MessageMap({
+    "interrupted": "job.apres.pause_reasons.1",
+    "unknown_usage": "job.apres.pause_reasons.2",
+    "over_reservation": "job.apres.pause_reasons.3",
+    "above_count": "job.apres.pause_reasons.4",
+    "count_maybe": "job.apres.pause_reasons.5",
+})
 PROVIDER_NAMES = {"openai": "OpenAI"}
-DEGRADED = {
-    "timeout": "解析岗位时服务超时",
-    "connection": "解析岗位时连不上服务",
-    "rate_limit": "解析岗位时服务暂时拒绝了请求",
-    "provider_response": "解析岗位时服务返回了错误",
-    "refusal": "服务拒绝解析这份岗位描述",
-    "empty_response": "服务没有给出解析结果",
-    "invalid_json": "解析结果格式不对",
-    "schema": "解析结果格式不对",
-    "evidence": "解析结果引用了岗位描述里没有的原文",
-}
-CANCELLED_BY = {
-    "user": "你取消了这次分析。",
-    "logout": "退出登录时取消了这次分析。",
-    "timeout": "这次分析超过了运行时限，已停止。",
-    "shutdown": "服务停止时取消了这次分析。",
-}
+DEGRADED = MessageMap({
+    "timeout": "job.apres.degraded.1",
+    "connection": "job.apres.degraded.2",
+    "rate_limit": "job.apres.degraded.3",
+    "provider_response": "job.apres.degraded.4",
+    "refusal": "job.apres.degraded.5",
+    "empty_response": "job.apres.degraded.6",
+    "invalid_json": "job.apres.degraded.7",
+    "schema": "job.apres.degraded.8",
+    "evidence": "job.apres.degraded.9",
+})
+CANCELLED_BY = MessageMap({
+    "user": "job.apres.cancelled_by.1",
+    "logout": "job.apres.cancelled_by.2",
+    "timeout": "job.apres.cancelled_by.3",
+    "shutdown": "job.apres.cancelled_by.4",
+})
 
 
 def service_view(jobs) -> dict:
@@ -147,9 +146,9 @@ def _usd(micro_usd: int) -> str:
 def service_label(recipient) -> str:
     """Which service a task goes to, as the input page (the app's) and the running page (the task's) say it."""
     if recipient.provider == SIMULATION_PROVIDER:
-        return "本机模拟服务：由固定规则生成结果，不是 AI。"
+        return t("job.apres.60")
 
-    return f"真实服务：请求发给 {PROVIDER_NAMES.get(recipient.provider, recipient.provider)} 的 {recipient.model}。"
+    return t("job.apres.61", p0=PROVIDER_NAMES.get(recipient.provider, recipient.provider), p1=recipient.model)
 
 
 def running_label(task) -> str:
@@ -159,15 +158,15 @@ def running_label(task) -> str:
 def mode_label(result) -> str:
     """Whose result this is: a rule result is never passed off as a real service's."""
     if result.mode == "simulation":
-        return "本机模拟服务的结果：由固定规则生成，不是 AI 的判断。"
+        return t("job.apres.62")
 
     if result.status is AnalysisStatus.DEGRADED:
-        return "规则降级的结果：真实服务没能完成岗位解析，下面只是按规则找到的技能词，不是 AI 的判断。"
+        return t("job.apres.63")
 
     if result.status in (AnalysisStatus.COMPLETE, AnalysisStatus.STALE):
-        return "真实服务的结果：由外部 AI 模型生成，引文已和原文逐条核对。"
+        return t("job.apres.64")
 
-    return "真实服务：这次没有得到可用的分析结果。"
+    return t("job.apres.65")
 
 
 def score_text(value) -> str:
@@ -176,25 +175,25 @@ def score_text(value) -> str:
 
 
 def found_labels(kinds) -> str:
-    return "、".join(FOUND_LABELS[kind] for kind in kinds)
+    return list_join(FOUND_LABELS[kind] for kind in kinds)
 
 
 def outcome_message(result) -> str | None:
     """What went wrong with a result that is not a complete analysis, in words."""
     if result.status is AnalysisStatus.REJECTED:
-        return REJECTED.get(RejectionReason(result.problem), "这次分析没有开始。")
+        return REJECTED.get(RejectionReason(result.problem), t("job.apres.67"))
 
     if result.status is AnalysisStatus.FAILED:
         known = {failure.value: text for failure, text in FAILED.items()}
 
-        return known.get(result.problem, "分析没有完成（程序出错）。没有采用任何结果。")
+        return known.get(result.problem, t("job.apres.68"))
 
     if result.status is AnalysisStatus.DEGRADED:
-        reason = DEGRADED.get(result.problem, "岗位描述没能完整解析")
+        reason = DEGRADED.get(result.problem, t("job.apres.69"))
 
-        return f"{reason}，所以没有做经历分析。下面只列出按规则在岗位描述里找到的技能词，不是分析结论，也没有分数。"
+        return t("job.apres.70", p0=reason)
 
     if result.status is AnalysisStatus.STALE:
-        return "分析完成之后，所选的资料有了变化。这份结果按核对时的版本得出，不是当前有效的分析。"
+        return t("job.apres.71")
 
     return None

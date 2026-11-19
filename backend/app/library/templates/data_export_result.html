@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% set area = "data" %}
+{% set section = "export" %}
+{% block title %}{{ t("data.export.result_title") }}{% endblock %}
+{# The result of one build (plan 5.6): what it holds and what it could not put in, from that very build. #}
+{% block layout %}
+<main id="main" class="data-page" tabindex="-1">
+  <header class="page-head">
+    <h1>{{ t("data.export.result_title") }}</h1>
+    <p class="lede">{% if complete %}{{ t("data.export.complete") }}{% else %}{{ t("data.export.incomplete", n=missing|length) }}{% endif %}</p>
+  </header>
+  {% if missing %}
+  <section class="data-group" aria-labelledby="export-missing">
+    <h2 id="export-missing">{{ t("data.export.missing") }}</h2>
+    <ul class="points">
+      {% for entry in missing %}
+      <li><strong>{{ entry.name }}</strong>{{ t("common.colon") }}{{ entry.why }} · <a href="{{ entry.href }}">{{ t("data.export.locate_attachment" if entry.kind == "attachment" else "data.export.locate_import") }}</a></li>
+      {% endfor %}
+    </ul>
+    <p class="hint">{{ t("data.export.missing_hint") }}</p>
+  </section>
+  {% endif %}
+  <section class="data-group" aria-labelledby="export-download">
+    <h2 id="export-download">{{ t("data.export.download_title") }}</h2>
+    <p>{{ t("data.export.package", name=filename, size=format_size(size)) }}</p>
+    <div class="actions">
+      <a class="button primary" href="/data/export/download/{{ token }}">{{ t("data.export.download_all" if complete else "data.export.download_available") }}</a>
+      <form method="post" action="/data/export/cancel/{{ token }}" class="inline">
+        {{ m.csrf() }}
+        <button type="submit" class="secondary">{{ t("data.export.cancel") }}</button>
+      </form>
+    </div>
+    <p class="hint">{{ t("data.export.token_hint", minutes=minutes_left) }}</p>
+  </section>
+</main>
+{% endblock %}

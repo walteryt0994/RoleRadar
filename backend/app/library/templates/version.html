@@ -2,19 +2,20 @@
 {% import "_macros.html" as m with context %}
 {% import "_icons.html" as i %}
 {% set document = item.category in DOCUMENT_KINDS %}
+{% set section = item.category if document else "library" %}
 {% block title %}{{ version_label(version) }} · {{ display_title(item.content, item.category) }}{% endblock %}
 {% block content %}
-<p class="crumbs">{% if not document %}<a href="/experiences">我的经历</a> / {% endif %}<a href="{{ record_page(item) }}">{{ display_title(item.content, item.category) }}</a> / <a href="/experiences/{{ item.id }}/history">历史</a> / {{ version_label(version) }}</p>
+<p class="crumbs">{% if not document %}<a href="/experiences">{{ t("nav.experiences") }}</a> / {% endif %}<a href="{{ record_page(item) }}">{{ display_title(item.content, item.category) }}</a> / <a href="/experiences/{{ item.id }}/history">{{ t("lib.history") }}</a> / {{ version_label(version) }}</p>
 <h1>{{ version_label(version) }}</h1>
-<p class="muted">{% if version.kind == "initial" %}第一次保存于{% elif version.kind == "saved" %}保存于{% else %}确认于{% endif %} {{ version.created_at|localtime }}。历史版本只能查看，不能修改。{% if not deletable %}这是当前的确认版本。{% elif version.kind == "confirmed" %}这个确认版本已不再代表当前事实。{% endif %}</p>
+<p class="muted">{{ t("lib.version_when." ~ version.kind, at=version.created_at|localtime) }}{{ t("common.sentence_end") }}{{ t("lib.version_read_only") }}{% if not deletable %}{{ t("lib.version_is_current") }}{% elif version.kind == "confirmed" %}{{ t("lib.version_no_longer_current") }}{% endif %}</p>
 {{ m.content_block(version.content, item.category) }}
 {% if not document %}
-{% call m.note_block("当时的私有备注", version.private_note) %}{% endcall %}
+{% call m.note_block(t("lib.note_then"), version.private_note) %}{% endcall %}
 {% endif %}
 <div class="actions">
-  <a class="button secondary" href="/experiences/{{ item.id }}/history">{{ i.icon("arrow-left") }}回到历史</a>
+  <a class="button secondary" href="/experiences/{{ item.id }}/history">{{ i.icon("arrow-left") }}{{ t("lib.back_to_history") }}</a>
   {% if deletable %}
-  <a class="danger-link" href="/experiences/{{ item.id }}/versions/{{ version.id }}/delete">删除这个历史版本…</a>
+  <a class="danger-link" href="/experiences/{{ item.id }}/versions/{{ version.id }}/delete">{{ t("lib.delete_version_link") }}</a>
   {% endif %}
 </div>
 {% endblock %}

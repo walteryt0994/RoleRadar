@@ -76,6 +76,12 @@ class Database:
         self.engine = engine
         self._sessions = sessionmaker(bind=engine, expire_on_commit=False)
 
+    def on_flush(self, listener) -> None:
+        """Call listener(session) after each flush of a session of this database, inside its transaction and before
+        it commits: what the flush changed is seen before anyone can read it as committed (UI bilingual batch: an
+        export built before a deletion is spoiled as the deletion is written)."""
+        event.listen(self._sessions, "after_flush", lambda session, _context: listener(session))
+
     @contextmanager
     def transaction(self):
         """Run one transaction: commit on success, roll back on any error."""

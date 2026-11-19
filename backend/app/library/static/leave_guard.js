@@ -9,6 +9,24 @@
 // appears, so the page never promises it will.
 (function () {
   "use strict";
+  // The words of this page's language (the html element's data-ui-text, UI bilingual batch); the Chinese is a fallback.
+  var UI_TEXT = null;
+
+  function say(key, fallback, values) {
+    if (UI_TEXT === null) {
+      var root = document.documentElement;
+      try {
+        UI_TEXT = root && root.getAttribute ? JSON.parse(root.getAttribute("data-ui-text") || "{}") : {};
+      } catch (error) {
+        UI_TEXT = {};
+      }
+    }
+    var text = UI_TEXT[key] || fallback;
+    Object.keys(values || {}).forEach(function (name) {
+      text = text.split("{" + name + "}").join(values[name]);
+    });
+    return text;
+  }
 
   const form = document.querySelector("form[data-leave-guard]");
   const dialog = document.getElementById("leave-dialog");
@@ -24,6 +42,16 @@
   // Choosing another one and then the first again leaves nothing unsaved.
   const options = Array.from(form.querySelectorAll("input[type=radio]"));
   const initialOptions = new Map(options.map((option) => [option, option.checked]));
+  // A choice in a list or a tick counts too (a stance or a month in the preferences, 至今 on an experience), and so do
+  // rows added or removed (the preferences editor): the names of the fields, in order, are compared as well.
+  const ticks = Array.from(form.querySelectorAll("input[type=checkbox]"));
+  const initialTicks = new Map(ticks.map((tick) => [tick, tick.checked]));
+  const lists = Array.from(form.querySelectorAll("select[name]"));
+  const initialLists = new Map(lists.map((list) => [list, list.value]));
+  function shape() {
+    return Array.from(form.querySelectorAll("[name]")).map((element) => element.name).join("\n");
+  }
+  const initialShape = shape();
   const status = document.getElementById("dirty-status");
   const nextField = form.querySelector("input[name=next]");
   const afterSaveField = form.querySelector("input[name=after_save]");
@@ -37,7 +65,10 @@
     return (
       startedDirty ||
       fields.some((field) => field.value !== initial.get(field)) ||
-      options.some((option) => option.checked !== initialOptions.get(option))
+      options.some((option) => option.checked !== initialOptions.get(option)) ||
+      ticks.some((tick) => tick.checked !== initialTicks.get(tick)) ||
+      lists.some((list) => list.value !== initialLists.get(list)) ||
+      shape() !== initialShape
     );
   }
 
@@ -46,7 +77,7 @@
     form.dataset.dirty = dirty ? "true" : "false";
 
     if (status) {
-      status.textContent = dirty ? "有还没保存的修改。" : "";
+      status.textContent = dirty ? say("js.unsaved", "有还没保存的修改。") : "";
     }
   }
 
@@ -119,9 +150,16 @@
 
       event.preventDefault();
       const loggingOut = other.hasAttribute("data-logout");
+      const submitter = event.submitter;
       ask(
         function () {
-          other.submit();
+          // With the button that was pressed, so that its value goes too (the language menu's choice): submit()
+          // would leave it out. leaving is already set, so this listener lets it through.
+          if (submitter && typeof other.requestSubmit === "function") {
+            other.requestSubmit(submitter);
+          } else {
+            other.submit();
+          }
         },
         loggingOut ? "" : continuation(other, event.submitter),
         loggingOut ? "logout" : ""

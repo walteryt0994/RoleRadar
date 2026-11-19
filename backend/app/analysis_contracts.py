@@ -90,6 +90,10 @@ class AnalysisRequest:
     # a posting the user pasted never does, however its words look. It changes only what the local rules may read as
     # a fact of the posting, never what goes out or to whom, so a confirmation's fingerprint does not include it.
     posting_from_source: bool = False
+    # The language the task's results are asked for (UI bilingual batch, plan 6.3), confirmed with it. A job analysis
+    # writes no explanatory prose of its own (codes, quotes and the posting's own wording only), so its requests are
+    # the same in either language; the language is kept with the task and with a saved result.
+    result_language: str = "zh-CN"
 
 
 def task_fingerprint(request: AnalysisRequest) -> str:
@@ -114,6 +118,11 @@ def task_fingerprint(request: AnalysisRequest) -> str:
         "preferences": sorted([preference.field, preference.text] for preference in request.preferences),
         "notice_version": request.notice_version,
     }
+
+    if request.result_language != "zh-CN":
+        # Another result language is another confirmation; a Chinese task's fingerprint is as it always was.
+        scope["result_language"] = request.result_language
+
     encoded = json.dumps(scope, sort_keys=True, ensure_ascii=False).encode("utf-8")
 
     return hashlib.sha256(encoded).hexdigest()

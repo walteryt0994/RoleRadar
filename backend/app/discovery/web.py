@@ -43,6 +43,8 @@ never start a search, and nothing here writes a decision or the preferences.
 """
 import logging
 import os
+import re
+import secrets
 import threading
 import time
 import unicodedata
@@ -61,14 +63,15 @@ from app.directions.handoff import check_kept, kept_for_search
 from app.discovery import batch_live, lever_demo, lever_live, model_live, presentation, records, rules, supplied, synthetic, updates, watches
 from app.discovery.agent import MAX_DECISIONS, ModelDecider, SimulatedDecider
 from app.discovery.contracts import (
-    CATEGORY_LABELS as RESULT_CATEGORIES,
-    DIMENSION_LABELS,
-    NOT_PERSONALISED,
+    CATEGORY_NAMES as RESULT_CATEGORIES,
+    DIMENSION_NAMES,
+    NOT_PERSONALISED_TEXT,
     Category,
     Dimension,
     DimensionScope,
     Limits,
     Others,
+    Outcome,
     ParentConfirmation,
     PostingRef,
     SearchScope,
@@ -80,7 +83,6 @@ from app.discovery.runner import _Stops, live_provider_for, run_search, tracing_
 from app.discovery.sources import Register
 from app.discovery.tasks import TASK_TTL_SECONDS, DiscoveryTaskStore, Stage, Start, TooManyTasks
 from app.discovery.tools import scope_check
-from app.experience_analysis import PREFERENCE_TOPICS
 from app.job_analysis import presentation as analysis_text
 from app.job_analysis.scope import (
     BLOCKED,
@@ -100,6 +102,7 @@ from app.job_analysis.service import LiveService, local_provider
 from app.job_analysis.simulation import RECIPIENT, SimulatedProvider
 from app.job_analysis.tasks import SWEEP_SECONDS
 from app.job_analysis.web import checked_fields
+from app.library.places import CITY_CHOICES
 from app.library.content import CATEGORY_LABELS
 from app.library import job_watches
 from app.library.errors import ConfigError, NotFound
@@ -110,7 +113,11 @@ from app.library.projection import current_preferences, project_confirmed_librar
 from app.library.references import read_record_refs
 from app.library.service import list_experiences
 from app.library.presentation import format_short
+from app.library.web import NOTICES as LIBRARY_NOTICES
 from app.library.web import current_user, message_page, render, runtime, safe_next, see_other
+from app import i18n
+from app.i18n import MessageMap, lazy, list_join, t
+from app.library.job_words import source_label
 
 BASE = "/discover"
 # What every search here is confirmed for, decided by the server: its runtime's sources (SourceSet), the simulation as
@@ -127,23 +134,23 @@ LIMITS = Limits()
 # search's words may be.
 TEXT_CHARS = 200
 VALUE_CHARS = LIMITS.keyword_chars
-NOTICES = {
-    "already": "这次确认已经开始过，没有重复执行。",
-    "scope_updated": "已按你的选择更新核对内容，请再看一遍后确认。",
-    "scope_changed": "你改动了发送范围，所以还没有开始。下面已按新的范围更新，请再看一遍后确认。",
-    "kept_changed": "你选择的保留方向在核对之后有变化，原来的确认已经作废，没有开始。下面已按现在的情况重新核对，请再看一遍后确认。",
+NOTICES = MessageMap({
+    "already": "job.dweb.notices.1",
+    "scope_updated": "job.dweb.notices.2",
+    "scope_changed": "job.dweb.notices.3",
+    "kept_changed": "job.dweb.notices.4",
     # The postings the user skipped changed after the review (U3-D3c).
-    "skips_changed": "你跳过的岗位在核对之后有变化（新跳过、撤销、改了决定、删除或恢复），原来的确认已经作废，没有开始。下面已按现在的情况重新核对，请再看一遍后确认。",
+    "skips_changed": "job.dweb.notices.5",
     # The review was made under other sources, another recipient, notice or limits than the pages run now (U3-D3b).
-    "service_changed": "来源、接收方或处理说明在核对之后有了变化，原来的确认已经作废，没有开始。下面已按现在的设置重新生成核对内容，请再看一遍后确认。",
-    "batch_changed": "这一批的剩余次数或预算在核对之后有了变化，原来的确认已经作废，没有开始。下面已按现在的剩余重新生成核对内容，请再看一遍后确认。",
+    "service_changed": "job.dweb.notices.6",
+    "batch_changed": "job.dweb.notices.7",
     # What the user kept from this search (U3-D3a, app.discovery.records_web).
-    "kept": "已加入我的岗位。",
-    "decided": "已记下你的决定，这个岗位已加入我的岗位。",
-    "feedback": "已记下你指出的不准，这个岗位已加入我的岗位。",
-    "summary": "这次查找的摘要已保存到岗位记录。",
-    "analysis_kept": "这个岗位的分析已保存到岗位记录。",
-}
+    "kept": "job.dweb.notices.8",
+    "decided": "job.dweb.notices.9",
+    "feedback": "job.dweb.notices.10",
+    "summary": "job.dweb.notices.11",
+    "analysis_kept": "job.dweb.notices.12",
+})
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -167,18 +174,20 @@ class SourceSet:
     mode: str = "synthetic"
     limits: Limits = LIMITS
     banner: str = presentation.PREVIEW
-    source_note: str = "都是本机的合成数据（离线演示），不联网，不打开任何链接。"
-    source_tag: str = "本机合成数据，不联网"
-    link_note: str = "（合成示例地址，不能访问）"
-    checked_note: str = "合成来源在本机回答，不是真实核验"
-    evidence_note: str = "的合成样例"
+    source_note: str = lazy("job.dweb.13")
+    source_tag: str = lazy("job.dweb.14")
+    link_note: str = lazy("job.dweb.15")
+    checked_note: str = lazy("job.dweb.16")
+    evidence_note: str = lazy("job.dweb.17")
     requests_note: str = presentation.SIMULATED_REQUESTS
     # What the review says of the decisions and the analyses, and of what is not done (U3-D2-E3).
-    decision_note: str = "本机模拟决策：RoleRadar 内置的固定规则，不是 AI。"
-    analysis_note: str = "本机模拟服务：固定规则，不是 AI。在这台电脑上运行，不联网，不保存请求。"
+    decision_note: str = lazy("job.dweb.18")
+    analysis_note: str = lazy("job.dweb.19")
     # What is not done, as the review lists it; the review adds whether results are kept (U3-D3b): never by themselves,
     # and only by the user where the set lets keep.
-    kept_note: str = "不联网，不打开岗位里的链接，不投递"
+    kept_note: str = lazy("job.dweb.20")
+    # Whether kept_note itself already says results are not kept (the review adds it otherwise).
+    says_unkept: bool = False
     # The real source's terms, and the day as its checks read it; None for the sets of this process.
     terms: "lever_live.SourceTerms | None" = None
     today: Callable[[], object] = lever_live.today_here
@@ -202,7 +211,7 @@ class SourceSet:
 
 SYNTHETIC_SOURCES = SourceSet(
     "synthetic",
-    "本机冻结的合成数据",
+    lazy("job.dweb.21"),
     synthetic.GRANTS,
     lambda task: synthetic.register(),
     keep=frozenset(grant.source_id for grant in synthetic.GRANTS),
@@ -233,21 +242,18 @@ def live_source_set(terms: lever_live.SourceTerms, **inject) -> SourceSet:
         mode="real",
         limits=lever_live.LIMITS,
         banner=(
-            "真实来源受控只读：岗位来自 Palantir 的 Lever 公开职位接口；决策和分析仍由本机固定规则模拟，不是 AI，"
-            "也不发给任何模型；核对时间是实际请求的时间，“核对时仍公开发布”不代表企业还有名额。"
+            lazy("job.dweb.22")
         ),
         source_note=(
-            f"只读 Palantir 的 Lever 公开职位接口：读取批准 {terms.approval_id}，只在 {terms.run_date}（美东）有效，"
-            f"最多 {terms.max_requests} 次请求，确认后开始计时 {int(terms.window_seconds)} 秒；"
-            f"来源准入 {terms.admission_id} 到 {terms.admission_until} 为止。决策和分析由本机模拟，什么都不发给模型；"
-            "页面不提供可点击的链接。确认之前什么都不读取。"
+            lazy("job.dweb.23", p0=terms.approval_id, p1=terms.run_date, p2=terms.max_requests, p3=int(terms.window_seconds), p4=terms.admission_id, p5=terms.admission_until)
         ),
-        source_tag="真实来源，受控只读",
-        link_note="（真实岗位地址，页面不提供链接）",
-        checked_note="来源在这个时间回答：核对时仍公开发布，不代表企业还有名额",
+        source_tag=lazy("job.dweb.24"),
+        link_note=lazy("job.dweb.25"),
+        checked_note=lazy("job.dweb.26"),
         evidence_note="",
-        requests_note="（决策和分析都是本机模拟，没有发给任何模型，不产生模型费用；岗位来自真实来源的受控读取）",
-        kept_note="除了上面写明的来源读取，不访问别的网站；不打开岗位里的链接，不投递，不保存结果",
+        requests_note=lazy("job.dweb.27"),
+        kept_note=lazy("job.dweb.28"),
+        says_unkept=True,
         terms=terms,
         today=inject.get("today", lever_live.today_here),
         diagnose_for=lambda task: lever_live.analysis_record(terms, task.id),
@@ -258,32 +264,25 @@ def live_model_source_set(terms: lever_live.SourceTerms, model: "model_live.Mode
     """Validation B (U3-D2-E3): the real source as live_source_set reads it, each decision and analysis a real
     service's under the model approval given (approval: its gate's terms, which name the service). inject as there."""
     service = analysis_text.PROVIDER_NAMES.get(approval.provider, approval.provider)
-    named = f"{service} 的 {approval.model}"
+    named = lazy("job.dweb.29", p0=service, p1=approval.model)
 
     return replace(
         live_source_set(terms, **inject),
         model=model,
         banner=(
-            "验证 B：岗位来自 Palantir 的 Lever 公开职位接口的受控只读；每一步的决策和每个岗位的分析由真实模型"
-            f"（{named}）给出，确认之后才发送；核对时间是实际请求的时间，“核对时仍公开发布”不代表企业还有名额。"
+            lazy("job.dweb.30", p0=named)
         ),
         source_note=(
-            f"只读 Palantir 的 Lever 公开职位接口：读取批准 {terms.approval_id}，只在 {terms.run_date}（美东）有效，"
-            f"最多 {terms.max_requests} 次请求，确认后开始计时 {int(terms.window_seconds)} 秒；"
-            f"来源准入 {terms.admission_id} 到 {terms.admission_until} 为止。页面不提供可点击的链接。确认之前什么都不读取。"
+            lazy("job.dweb.31", p0=terms.approval_id, p1=terms.run_date, p2=terms.max_requests, p3=int(terms.window_seconds), p4=terms.admission_id, p5=terms.admission_until)
         ),
         decision_note=(
-            f"{named}（模型批准 {model.approval_id}，只在 {model.run_date}（美东）有效）：每一步发送检索条件、来源名称、"
-            "剩余次数、岗位摘要行和截短、遮盖过的原文摘录，由它选下一个动作；"
-            f"最多 {MAX_DECISIONS} 次。不发送经历、偏好原文、私有备注和岗位链接。"
+            lazy("job.dweb.32", p0=named, p1=model.approval_id, p2=model.run_date, p3=MAX_DECISIONS)
         ),
         analysis_note=(
-            f"{named}（同一份模型批准）：每分析一个岗位，发送下面勾选的栏目、勾选的偏好和这一个岗位处理过的英文原文"
-            f"（不超过 {MAX_POSTING_CHARS:,} 字；邮箱、电话、证件号和英文地址行遮盖，有保密字样、中文地址或跨行地址的整份不发），"
-            "通常两个请求：先解析岗位，再对照经历。"
+            lazy("job.dweb.33", p0=named, p1=format(MAX_POSTING_CHARS, ','))
         ),
-        requests_note="（决策和分析都交给真实模型；岗位来自真实来源的受控读取）",
-        kept_note="除了上面写明的来源读取和模型请求，不访问别的网站；不打开岗位里的链接，不投递，不保存结果",
+        requests_note=lazy("job.dweb.34"),
+        kept_note=lazy("job.dweb.35"),
     )
 
 
@@ -294,7 +293,7 @@ def batch_source_set(batch: "batch_live.Batch", approval) -> SourceSet:
     terms = batch.source
     keep, keep_analyses = batch_live.keep_of(terms)
     service = analysis_text.PROVIDER_NAMES.get(approval.provider, approval.provider)
-    named = f"{service} 的 {approval.model}"
+    named = lazy("job.dweb.29", p0=service, p1=approval.model)
     saved = batch_live.SAVE_TEXT[terms.save]
 
     return SourceSet(
@@ -305,33 +304,27 @@ def batch_source_set(batch: "batch_live.Batch", approval) -> SourceSet:
         mode="real",
         limits=batch_live.LIMITS,
         banner=(
-            f"D6 真实验收：岗位来自 {terms.board.company} 的 Lever 公开职位接口的受控只读；每一步的决策和每个岗位的分析由真实模型"
-            f"（{named}）给出，确认之后才发送；核对时间是实际请求的时间，“核对时仍公开发布”不代表企业还有名额。"
+            lazy("job.dweb.36", p0=terms.board.company, p1=named)
         ),
         source_note=(
-            f"只读 {terms.board.company} 的 Lever 公开职位接口：读取批准 {terms.approval_id}，只在 {terms.run_date}（美东）有效，"
-            f"这一批最多 {terms.max_requests} 次请求，由这一天的各项操作共用；来源准入 {terms.admission_id} 到 {terms.admission_until} 为止，"
-            f"保存许可：{saved}。页面不提供可点击的链接。确认之前什么都不读取。"
+            lazy("job.dweb.37", p0=terms.board.company, p1=terms.approval_id, p2=terms.run_date, p3=terms.max_requests, p4=terms.admission_id, p5=terms.admission_until, p6=saved)
         ),
-        source_tag="真实来源，受控只读",
-        link_note="（真实岗位地址，页面不提供链接）",
-        checked_note="来源在这个时间回答：核对时仍公开发布，不代表企业还有名额",
+        source_tag=lazy("job.dweb.24"),
+        link_note=lazy("job.dweb.25"),
+        checked_note=lazy("job.dweb.26"),
         evidence_note="",
         decision_note=(
-            f"{named}（模型批准 {batch.model.approval_id}，只在 {batch.model.run_date}（美东）有效）：每一步发送检索条件、来源名称、"
-            "剩余次数、岗位摘要行和截短、遮盖过的原文摘录，由它选下一个动作；"
-            f"最多 {MAX_DECISIONS} 次。不发送经历、偏好原文、私有备注和岗位链接。"
+            lazy("job.dweb.32", p0=named, p1=batch.model.approval_id, p2=batch.model.run_date, p3=MAX_DECISIONS)
         ),
         analysis_note=(
-            f"{named}（同一份模型批准）：每分析一个岗位，发送下面勾选的栏目、勾选的偏好和这一个岗位处理过的英文原文"
-            f"（不超过 {MAX_POSTING_CHARS:,} 字；邮箱、电话、证件号和英文地址行遮盖，有保密字样、中文地址或跨行地址的整份不发），"
-            f"通常两个请求：先解析岗位，再对照经历。这一批每次查找最多完整分析 {batch_live.LIMITS.analyses} 个岗位。"
+            lazy("job.dweb.38", p0=named, p1=format(MAX_POSTING_CHARS, ','), p2=batch_live.LIMITS.analyses)
         ),
-        requests_note="（决策和分析都交给真实模型；岗位来自真实来源的受控读取）",
+        requests_note=lazy("job.dweb.34"),
         kept_note=(
-            "除了上面写明的来源读取和模型请求，不访问别的网站；不打开岗位里的链接，不投递；"
-            + ("不保存结果" if not keep else f"结果只在你点保存以后保存（{saved}），不存岗位全文")
+            lazy("job.dweb.39")
+            + (lazy("job.dweb.40") if not keep else lazy("job.dweb.41", p0=saved))
         ),
+        says_unkept=not keep,
         today=batch.today,
         diagnose_for=lambda task: batch_live.analysis_record(batch, task.id),
         keep=keep,
@@ -365,9 +358,44 @@ def sources_from(environ: Mapping[str, str], *, today=None, approval=None) -> So
         return live_source_set(lever_live.load_terms(environ, today=today))
 
     raise ValueError(
-        f"{DEMO_VARIABLE} 只能不设，或者设为 {LEVER_REPLAY.key}（离线合成回放）或 {lever_live.KEY}（真实来源，需要批准）；"
-        "其他值不启用任何来源，网页没有启动。"
+        f"{DEMO_VARIABLE} 只能不设，或者设为 {LEVER_REPLAY.key}（离线合成回放）或 {lever_live.KEY}（真实来源，需要批准）；其他值不启用任何来源，网页没有启动。"
     )
+
+
+class StartKeys:
+    """One-time keys of the setup page's 开始查找 (owner redesign, plan 5.2): a key starts at most one search, so a
+    second click or a form sent again opens the search the first one started instead of starting another. Held in
+    memory for a while, for this user and session only."""
+
+    MOST = 1000
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._keys: dict[tuple[str, str, str], str | None] = {}
+
+    def reserve(self, owner_id: str, session: str, key: str) -> tuple[bool, str | None]:
+        """(True, None) when the key is new and now taken; (False, task id or None while the first is starting)."""
+        with self._lock:
+            mark = (owner_id, session, key)
+
+            if mark in self._keys:
+                return False, self._keys[mark]
+
+            if len(self._keys) >= self.MOST:
+                for old in list(self._keys)[: self.MOST // 2]:
+                    del self._keys[old]
+
+            self._keys[mark] = None
+
+            return True, None
+
+    def settle(self, owner_id: str, session: str, key: str, task_id: str | None) -> None:
+        """The search a key started (or none, so the page can be sent again after it said what to fix)."""
+        with self._lock:
+            if task_id is None:
+                self._keys.pop((owner_id, session, key), None)
+            else:
+                self._keys[(owner_id, session, key)] = task_id
 
 
 @dataclass
@@ -406,6 +434,8 @@ class DiscoveryRuntime:
     # go by the same clock (apply_checks, F1).
     database: object = None
     now: Callable[[], object] | None = None
+    # The setup page's one-time start keys (owner redesign, plan 5.2).
+    start_keys: StartKeys = field(default_factory=StartKeys)
 
     def __post_init__(self):
         if self.sources is None:
@@ -526,7 +556,7 @@ class DiscoveryRuntime:
         blocked = self.live.refusal()
 
         if blocked is not None:
-            return f"模型服务现在不能开始：{presentation.gate_text(blocked.value)}"
+            return t("job.dweb.46", p0=presentation.gate_text(blocked.value))
 
         if self.batch is not None:
             problem = self.batch.problem()
@@ -540,14 +570,24 @@ class DiscoveryRuntime:
         one search would reserve of what is left (batch_live.Batch.availability), said without writing, claiming or
         sending anything (D6-1 R3, L3). The review shows it in place of its start button; a confirmation asks it again,
         and the batch's begin() once more, under its lock, before anything is taken."""
+        problems = self.start_problems(owner_id)
+
+        return list_join(problems, "clauses") if problems else None
+
+    def start_problems(self, owner_id: str) -> list[str]:
+        """Every reason the user's search may not start now that can be read here (UI bilingual batch, plan 4.3):
+        refusal()'s, and for the D6 batch every shortfall of what one search would reserve, without writing,
+        claiming or sending anything; the same reason once. start_problem says them in one line."""
+        found = []
         refusal = self.refusal()
 
-        if refusal is not None or self.batch is None:
-            return refusal
+        if refusal is not None:
+            found.append(str(refusal))
 
-        short = self.batch.availability(OperationKind.SEARCH, owner_id)
+        if self.batch is not None:
+            found.extend(text for _, text in self.batch.availability_all(OperationKind.SEARCH, owner_id))
 
-        return None if short is None else short[1]
+        return list(dict.fromkeys(found))
 
     def refresh_limits(self) -> "updates.BatchLimits":
         """The limits a 现在核对 or an automatic check runs under, as it runs: the D6 batch checks at most three
@@ -575,24 +615,22 @@ class DiscoveryRuntime:
             return f"{micro / 1_000_000:.2f}"
 
         lines = [
-            ("模型批准", f"{terms.approval_id}：最多 {terms.max_requests} 次请求，还剩 {status.requests_left} 次；"
-             f"应用内预算 ${usd(terms.max_cost_micro_usd)}，还剩 ${usd(status.micro_usd_left)}（不是服务商账单的上限）"),
+            (t("job.dweb.47"), t("job.dweb.48", p0=terms.approval_id, p1=terms.max_requests, p2=status.requests_left, p3=usd(terms.max_cost_micro_usd), p4=usd(status.micro_usd_left))),
         ]
 
         if status.paused_reason:
-            lines.append(("已暂停", analysis_text.PAUSE_REASONS.get(status.paused_reason, status.paused_reason)))
+            lines.append((t("job.dweb.49"), analysis_text.PAUSE_REASONS.get(status.paused_reason, status.paused_reason)))
 
         if self.batch is not None and self.batch.source is not None:
             batch, need = self.batch, self.batch.model_need(OperationKind.SEARCH)
             lines.append(
                 (
-                    "读取批准",
-                    f"{batch.source.approval_id}：这一批最多 {batch.source.max_requests} 次请求，已用 {batch.sent} 次；"
-                    f"一次查找最多用 {batch_live.OPERATION_REQUESTS[OperationKind.SEARCH]} 次"
-                    + ("" if batch.robots_read else "，这次启动的第一项读取操作另加 1 次 robots"),
+                    t("job.dweb.50"),
+                    t("job.dweb.51", p0=batch.source.approval_id, p1=batch.source.max_requests, p2=batch.sent, p3=batch_live.OPERATION_REQUESTS[OperationKind.SEARCH])
+                    + ("" if batch.robots_read else t("job.dweb.52")),
                 )
             )
-            lines.append(("这次查找的上限", f"模型最多 {need[0]} 次请求，最坏预留 ${usd(need[1])}；剩余不够就不开始"))
+            lines.append((t("job.dweb.53"), t("job.dweb.54", p0=need[0], p1=usd(need[1]))))
 
         return lines
 
@@ -920,6 +958,11 @@ class SearchInputs:
     kept: tuple[tuple[str, int], ...] = ()
     # 临时留存并跟踪这次的推荐, unticked unless the user ticks it (U3-D4b-2); the review holds it only where offered.
     track: bool = False
+    # The language the results are asked for (UI bilingual batch, plan 6.3); a new draft starts from the interface
+    # language of the moment.
+    result_language: str = "zh-CN"
+    # Entered on the new setup page (owner redesign, plan 5.1): chosen values only, started in one protected post.
+    picked: bool = False
 
     def of(self, dimension: Dimension) -> Wanted:
         return getattr(self, dimension.value)
@@ -951,7 +994,10 @@ def fresh_inputs(saved: Mapping[str, str]) -> SearchInputs:
     """A new search: the ideal and acceptable values of the preferences ticked, nothing else chosen."""
     offered = rules.prefill(saved)
 
-    return SearchInputs(**{dimension.value: Wanted(ticked=offered[dimension].values) for dimension in Dimension})
+    return SearchInputs(
+        **{dimension.value: Wanted(ticked=offered[dimension].values) for dimension in Dimension},
+        result_language=i18n.language(),
+    )
 
 
 def _chosen(values: list[str]) -> tuple[tuple[str, str], ...]:
@@ -982,6 +1028,9 @@ def kept_refs(values: list[str]) -> tuple[tuple[str, int], ...]:
 
 
 def inputs_from(form: FormData) -> SearchInputs:
+    if form.get("scope_v2") == "1":
+        return _picked_inputs(form)
+
     return SearchInputs(
         targets=form.get("targets", ""),
         **{
@@ -996,6 +1045,45 @@ def inputs_from(form: FormData) -> SearchInputs:
         use_preferences=form.get("use_preferences") == "yes",
         kept=kept_refs(form.getlist("kept")),
         track=form.get("track_recommendations") == "yes",
+        # Only a whitelisted language; anything else is the interface language (plan 6.3).
+        result_language=i18n.result_language(form.get("result_language")),
+    )
+
+
+def _picked_inputs(form: FormData) -> SearchInputs:
+    """The new setup page (owner redesign, plan 5.1): for each dimension, the values chosen are this search's scope and
+    everything else is left out of it (Others.EXCLUDED); a dimension with nothing chosen stays undecided, never "any".
+    A value offered by the preferences is taken as ticked, any other as added, exactly as the older page's two inputs
+    took them (build_scope); nothing here changes the preferences or an older search."""
+    parts = {}
+
+    for dimension in Dimension:
+        picks = tuple(dict.fromkeys(value.strip() for value in form.getlist(f"{dimension.value}_pick") if value.strip()))
+        parts[dimension.value] = Wanted(
+            ticked=picks,
+            added="\n".join(picks),
+            others=Others.EXCLUDED.value if picks else "",
+        )
+
+    # What of each experience and preference to send (owner review, plan 5.2: the review page's choice of fields, kept
+    # on the setup page): every field the page offered and the user unticked is left out, as the review left it out;
+    # a field the page never offered (blocked, or another page) is never sent on its say-so (the material decides).
+    left_out: frozenset[str] = frozenset()
+
+    if form.get("send_shown") == "1":
+        left_out = frozenset(set(form.getlist("send_offered")) - set(form.getlist("send")))
+
+    return SearchInputs(
+        targets=form.get("targets", ""),
+        **parts,
+        chosen=_chosen(form.getlist("source")),
+        use_preferences=form.get("use_preferences") == "yes",
+        kept=kept_refs(form.getlist("kept")),
+        track=form.get("track_recommendations") == "yes",
+        # The interface language at the moment of starting (plan 5.1: no language choice on this page).
+        result_language=i18n.result_language(None),
+        picked=True,
+        left_out=left_out,
     )
 
 
@@ -1044,19 +1132,34 @@ def build_scope(inputs: SearchInputs, saved: Mapping[str, str], kept: tuple[str,
 
 
 def text_problems(inputs: SearchInputs) -> list[str]:
-    """Free text the page cannot take as it is: too long, or holding control characters."""
-    texts = [("要找的岗位名称", inputs.targets)] + [
-        (f"{DIMENSION_LABELS[dimension]}（也查）", inputs.of(dimension).added) for dimension in Dimension
+    """Free text the page cannot take as it is: too long, or holding control characters. On the new setup page each
+    value chosen is checked on its own (they travel joined one per line, which is not something typed)."""
+    if inputs.picked:
+        problems = text_problems(replace(inputs, picked=False, city=Wanted(), job_type=Wanted(), direction=Wanted()))
+
+        for dimension in Dimension:
+            label = DIMENSION_NAMES[dimension]
+
+            for value in inputs.of(dimension).ticked:
+                if any(unicodedata.category(char) == "Cc" for char in value):
+                    problems.append(t("job.dweb.61", p0=label))
+                elif len(value) > VALUE_CHARS:
+                    problems.append(t("job.dweb.62", p0=label, p1=VALUE_CHARS))
+
+        return list(dict.fromkeys(problems))
+
+    texts = [(t("job.dweb.58"), inputs.targets)] + [
+        (t("job.dweb.59", p0=DIMENSION_NAMES[dimension]), inputs.of(dimension).added) for dimension in Dimension
     ]
     problems = []
 
     for label, text in texts:
         if len(text) > TEXT_CHARS:
-            problems.append(f"{label}最多 {TEXT_CHARS} 字")
+            problems.append(t("job.dweb.60", p0=label, p1=TEXT_CHARS))
         elif any(unicodedata.category(char) == "Cc" for char in text):
-            problems.append(f"{label}里有无法处理的控制字符，请重新输入")
+            problems.append(t("job.dweb.61", p0=label))
         elif any(len(value) > VALUE_CHARS for value in rules.values_of(text)):
-            problems.append(f"{label}：每一项最多 {VALUE_CHARS} 字")
+            problems.append(t("job.dweb.62", p0=label, p1=VALUE_CHARS))
 
     return problems
 
@@ -1064,7 +1167,7 @@ def text_problems(inputs: SearchInputs) -> list[str]:
 def kept_name_problems(names: tuple[str, ...]) -> list[str]:
     """A kept direction's name is the library's, yet held to what a value typed in may be."""
     return [
-        f"保留的方向“{name}”超过 {VALUE_CHARS} 字或含有无法处理的控制字符，不能用于找岗"
+        t("job.dweb.63", p0=name, p1=VALUE_CHARS)
         for name in names
         if len(name) > VALUE_CHARS or any(unicodedata.category(char) == "Cc" for char in name)
     ]
@@ -1080,16 +1183,16 @@ def build_material(db, owner_id: str, inputs: SearchInputs) -> Material:
     chosen = inputs.chosen
 
     if len(chosen) > MAX_EXPERIENCES:
-        raise InputProblem(f"一次最多选择 {MAX_EXPERIENCES} 段经历，现在选了 {len(chosen)} 段。", "sources")
+        raise InputProblem(t("job.dweb.64", p0=MAX_EXPERIENCES, p1=len(chosen)), "sources")
 
     if len({item_id for item_id, _ in chosen}) != len(chosen):
-        raise InputProblem("同一段经历只能选择一次，请重新选择。", "sources")
+        raise InputProblem(t("job.dweb.65"), "sources")
 
     entries, problems = read_selected_confirmations(db, owner_id, dict(chosen))
 
     if problems:
         raise InputProblem(
-            f"你选择的经历里有 {len(problems)} 段已经修改、重新确认或删除，不能按原来的版本使用。下面已按当前内容刷新，请重新选择。",
+            t("job.dweb.66", p0=len(problems)),
             "sources",
         )
 
@@ -1098,7 +1201,7 @@ def build_material(db, owner_id: str, inputs: SearchInputs) -> Material:
     for source in sources:
         if not source.sent:
             raise InputProblem(
-                f"“{source.title}”没有可以发送的栏目（都被排除或含有疑似敏感信息）。请取消选择它，或修改这段经历后重新确认。",
+                t("job.dweb.67", p0=source.title),
                 "sources",
             )
 
@@ -1114,7 +1217,7 @@ def build_material(db, owner_id: str, inputs: SearchInputs) -> Material:
     # As start() counts it: not even the shortest posting would fit in one analysis with them.
     if chars >= MAX_OUTBOUND_CHARS:
         raise InputProblem(
-            f"所选经历和偏好共 {chars} 字，加上岗位原文会超过一次分析 {MAX_OUTBOUND_CHARS} 字的上限。请少选几段经历，或排除一些栏目。",
+            t("job.dweb.68", p0=chars, p1=MAX_OUTBOUND_CHARS),
             "sources",
         )
 
@@ -1132,6 +1235,7 @@ def confirmation_of(
     skipped: tuple[PostingRef, ...] = (),
     track: bool = False,
     batch_state: str = "",
+    result_language: str = "zh-CN",
 ) -> ParentConfirmation:
     """The confirmation of exactly what the review shows, with the server's sources, recipient, notice and limits, and
     the postings the user skipped on those sources as the server read them (U3-D3c)."""
@@ -1149,6 +1253,7 @@ def confirmation_of(
         skipped=skipped,
         track_recommendations=track,
         batch_state=batch_state,
+        result_language=result_language if result_language in i18n.LANGUAGES else "zh-CN",
     )
 
 
@@ -1156,7 +1261,7 @@ def confirmation_of(
 
 
 @router.get(BASE)
-def input_page(request: Request, user: CurrentUser = Depends(current_user)):
+def input_page(request: Request, notice: str = "", user: CurrentUser = Depends(current_user)):
     rt = runtime(request)
     origin = request.query_params.get("from", "")
     # Kept directions handed over from the records page (U3-C3b): ids and revisions only, read again below.
@@ -1169,14 +1274,62 @@ def input_page(request: Request, user: CurrentUser = Depends(current_user)):
         if task is not None and task.draft is not None:
             inputs = task.draft.inputs
 
+    reselect: list[str] = []
+    summary_id = request.query_params.get("summary", "")
+
+    if inputs is None and summary_id:
+        # 使用这些条件 from a kept search summary (owner redesign, plans 5.1 and 5.4): only what it can show is filled
+        # in. A dimension that searched only its listed values gives those values; one that also searched others, or
+        # left that undecided, gives none and asks to choose again. Experiences and tracking are never carried over,
+        # nothing runs, and no earlier approval is used.
+        with rt.database.transaction() as db:
+            kept_summary = records.kept_search(db, user.id, summary_id)
+
+        if kept_summary is None:
+            raise NotFound()
+
+        inputs, reselect = summary_inputs(kept_summary.summary)
+
     if inputs is None:
         with rt.database.transaction() as db:
             inputs = replace(fresh_inputs(current_preferences(db, user.id)), kept=handed)
 
-    return input_form(request, user, inputs)
+    # What a form saved on the way here, from its leave dialog (UI batch 1: every page a form links to says it).
+    notice_text = LIBRARY_NOTICES.get(notice) or (t("jobx.prefilled") if summary_id else None)
+
+    return input_form(request, user, inputs, reselect, where="scope" if reselect else "", notice=notice_text, status_code=200)
 
 
-def input_form(request: Request, user: CurrentUser, inputs: SearchInputs, problems=(), *, where: str = "") -> Response:
+def summary_inputs(summary: Mapping) -> tuple[SearchInputs, list[str]]:
+    """The setup page's values from a kept search summary, and the dimensions to choose again (see input_page)."""
+    scope = summary.get("scope") or {}
+    parts, reselect = {}, []
+
+    for dimension in Dimension:
+        part = scope.get(dimension.value) or {}
+        values = tuple(value for value in part.get("values") or () if isinstance(value, str) and value.strip())
+
+        if part.get("others") == Others.EXCLUDED.value and values:
+            parts[dimension.value] = Wanted(ticked=values, added="\n".join(values), others=Others.EXCLUDED.value)
+        else:
+            parts[dimension.value] = Wanted()
+            reselect.append(t("jobx.reselect", label=DIMENSION_NAMES[dimension]))
+
+    targets = "、".join(value for value in scope.get("targets") or () if isinstance(value, str))
+
+    return SearchInputs(targets=targets, **parts, result_language=i18n.result_language(None), picked=True), reselect
+
+
+def input_form(
+    request: Request,
+    user: CurrentUser,
+    inputs: SearchInputs,
+    problems=(),
+    *,
+    where: str = "",
+    notice: str | None = None,
+    status_code: int | None = None,
+) -> Response:
     """The input page with what the user entered; an experience whose version is gone is not ticked again."""
     rt = runtime(request)
 
@@ -1187,7 +1340,11 @@ def input_form(request: Request, user: CurrentUser, inputs: SearchInputs, proble
         # Every kept direction a search may take now is offered; only those chosen, as they were chosen, are ticked.
         candidates = kept_for_search(db, user.id, rt.now())
         kept = check_kept(db, user.id, inputs.kept, rt.now())
+        # Each field of each experience and of the preferences, as a search would send it (sent, left out by the user,
+        # or stopped by the outbound review), for the setup page's choice of what to send (owner review, plan 5.2).
+        pref_plans = [plan for plan in preference_plans(db, user.id, inputs.left_out) if plan.field not in rules.SCOPE_FIELDS]
 
+    plans = {entry.item_id: source_plan(entry, inputs.left_out) for entry in snapshot.experiences}
     offered = {(entry.item_id, entry.version_id) for entry in snapshot.experiences}
     ticked = {item_id for item_id, version_id in inputs.chosen if (item_id, version_id) in offered}
     prefill = rules.prefill(saved)
@@ -1199,8 +1356,10 @@ def input_form(request: Request, user: CurrentUser, inputs: SearchInputs, proble
             "area": "jobs",
             "section": "discover",
             "inputs": inputs,
+            # Directions first, then cities and types, as the setup page shows them (the discover image).
             "dimensions": [
-                (dimension, DIMENSION_LABELS[dimension], prefill[dimension], inputs.of(dimension)) for dimension in Dimension
+                (dimension, DIMENSION_NAMES[dimension], prefill[dimension], inputs.of(dimension))
+                for dimension in (Dimension.DIRECTION, Dimension.CITY, Dimension.JOB_TYPE)
             ],
             "experiences": snapshot.experiences,
             "unconfirmed": unconfirmed,
@@ -1212,6 +1371,7 @@ def input_form(request: Request, user: CurrentUser, inputs: SearchInputs, proble
             "analysed_preferences": [name for name in saved if name not in rules.SCOPE_FIELDS and saved.get(name)],
             "problems": problems,
             "where": where,
+            "notice": notice,
             "tracing": searches_of(request).tracing(),
             "unsaved_input": bool(problems),
             "PREVIEW": searches_of(request).sources.banner,
@@ -1220,16 +1380,117 @@ def input_form(request: Request, user: CurrentUser, inputs: SearchInputs, proble
             "MAX_EXPERIENCES": MAX_EXPERIENCES,
             "VALUE_CHARS": VALUE_CHARS,
             "Others": Others,
-            "CATEGORY_LABELS": CATEGORY_LABELS,
+            # The new setup page (owner redesign, plan 5.1): a one-time key for 开始查找, the city choices, the job
+            # types offered as choices, and the values chosen so far for each dimension.
+            "start_key": secrets.token_urlsafe(18),
+            "CITY_CHOICES": CITY_CHOICES,
+            "TYPE_CHOICES": TYPE_CHOICES,
+            "picked": {dimension.value: _shown_picks(dimension, prefill[dimension], inputs) for dimension in Dimension},
+            "plans": plans,
+            "pref_plans": pref_plans,
+            "SEND": SEND,
+            "BLOCKED": BLOCKED,
+            "PREFERENCES_KEY": PREFERENCES_KEY,
+            "found_labels": analysis_text.found_labels,
         },
         user=user,
-        status_code=422 if problems else 200,
+        status_code=status_code or (422 if problems else 200),
     )
+
+
+# The job types the setup page offers as choices (plan 5.1: 全职, 实习, 兼职; a contract type only where the sources
+# and the rules read one, which they do not now).
+TYPE_CHOICES = ("全职", "实习", "兼职")
+
+
+def _shown_picks(dimension: Dimension, offer, inputs: SearchInputs) -> list[tuple[str, bool]]:
+    """The values the setup page shows as choices of a dimension, each with whether it is chosen: the preferences'
+    values (chosen in a new search), then the job types offered, then values chosen before (after a failed start)."""
+    given = inputs.of(dimension)
+    chosen = set(given.ticked) if inputs.picked else set(given.ticked) | set(rules.values_of(given.added))
+    shown = list(dict.fromkeys(offer.values))
+
+    if dimension is Dimension.JOB_TYPE:
+        shown += [value for value in TYPE_CHOICES if value not in shown]
+
+    shown += [value for value in chosen if value not in shown]
+
+    return [(value, value in chosen) for value in shown]
 
 
 @router.post(f"{BASE}/review")
 def review(request: Request, user: CurrentUser = Depends(current_user), form: FormData = Depends(checked_fields)):
     return new_review(request, user, inputs_from(form))
+
+
+START_KEY = re.compile(r"[A-Za-z0-9_-]{16,64}")
+
+
+@router.post(f"{BASE}/start")
+def start_search(request: Request, user: CurrentUser = Depends(current_user), form: FormData = Depends(checked_fields)):
+    """设置 → 开始查找 in one protected post (owner redesign, plan 5.2), with nothing skipped: the review's checks (the
+    scope as start() checks it, the kept directions, the material and what of it is held back, the confirmation and its
+    fingerprint, all made by the server, bound to this user and session) and then the confirmation's checks and start
+    (start_reviewed) with exactly what that review would have shown as sent. Whatever keeps it from starting returns
+    to the setup page with what was entered, and nothing is sent. A one-time key from the page starts at most one search.
+    """
+    searches = searches_of(request)
+    key = form.get("start_key", "")
+
+    if not START_KEY.fullmatch(key or ""):
+        raise HTTPException(status_code=400)
+
+    taken, earlier = searches.start_keys.reserve(user.id, user.token_hash, key)
+
+    if not taken:
+        if earlier:
+            return see_other(f"{BASE}/tasks/{earlier}")
+
+        return message_page(
+            request,
+            title=t("jobx.start_busy_title"),
+            message=t("jobx.start_busy"),
+            status_code=409,
+            user=user,
+            links=[(BASE, t("job.dweb.71"))],
+        )
+
+    started = None
+
+    try:
+        inputs = inputs_from(form)
+
+        # What the confirmation would refuse before anything is kept: said on the setup page, with what was entered.
+        if searches.tracing():
+            return input_form(request, user, inputs, (t("job.dweb.75"),), status_code=409)
+
+        refusal = searches.start_problem(user.id)
+
+        if refusal is not None:
+            return input_form(request, user, inputs, (t("job.dweb.76", p0=refusal),), status_code=409)
+
+        created = create_review(request, user, inputs)
+
+        if isinstance(created, Response):
+            return created
+
+        response = start_reviewed(request, user, created, _sent(created.draft.material), "start", created.fingerprint)
+        task = searches.store.get(created.id, user.id, user.token_hash)
+
+        if task is not None and task.stage is not Stage.REVIEW:
+            started = task.id
+        elif task is not None and response.status_code != 303:
+            # Not started (busy, a stale form, the batch said no): the reviewed search is dropped and the setup page
+            # says so, with what was entered; nothing was sent.
+            searches.store.discard(task.id, user.id, user.token_hash)
+
+            return input_form(request, user, inputs, (t("jobx.start_failed"),), status_code=409)
+
+        # Started, or (something the review rested on changed in the meantime) a new review to confirm: either way the
+        # server's own page.
+        return response
+    finally:
+        searches.start_keys.settle(user.id, user.token_hash, key, started)
 
 
 def new_review(request: Request, user: CurrentUser, inputs: SearchInputs, *, replaces: str | None = None, notice: str = "") -> Response:
@@ -1238,6 +1499,17 @@ def new_review(request: Request, user: CurrentUser, inputs: SearchInputs, *, rep
     The scope is checked as start() checks it (tools.scope_check), read-only: what keeps it from starting is shown on
     the input page, with what was entered, and no search is kept.
     """
+    created = create_review(request, user, inputs, replaces=replaces)
+
+    if isinstance(created, Response):
+        return created
+
+    return see_other(f"{BASE}/tasks/{created.id}" + (f"?notice={notice}" if notice else ""))
+
+
+def create_review(request: Request, user: CurrentUser, inputs: SearchInputs, *, replaces: str | None = None):
+    """The search to confirm, checked and kept (its confirmation and fingerprint made by the server), or the page that
+    says why it cannot be kept. Shared by the review (new_review) and the one-step start (start_search)."""
     rt = runtime(request)
     searches = searches_of(request)
     material, problems, where = None, (), ""
@@ -1247,6 +1519,15 @@ def new_review(request: Request, user: CurrentUser, inputs: SearchInputs, *, rep
         names = tuple(entry.name for entry in kept.kept)
         scope = build_scope(inputs, current_preferences(db, user.id), names)
         problems, where = presentation.kept_problems(kept), "kept"
+
+        if not problems and inputs.picked:
+            # The new setup page has no "any value" choice: a dimension needs at least one value chosen (plan 5.1),
+            # said next to it instead of widening the search for the user.
+            problems, where = [
+                t("jobx.choose_some", label=DIMENSION_NAMES[dimension])
+                for dimension in Dimension
+                if not inputs.of(dimension).ticked and not (dimension is Dimension.DIRECTION and names)
+            ], "scope"
 
         if not problems:
             problems, where = text_problems(inputs) or kept_name_problems(names) or list(scope_check(scope)), "scope"
@@ -1279,22 +1560,23 @@ def new_review(request: Request, user: CurrentUser, inputs: SearchInputs, *, rep
             skipped,
             track,
             searches.batch_state(),
+            inputs.result_language,
         )
         task = searches.store.create(user.id, user.token_hash, confirmation, draft=Draft(inputs, material))
     except TooManyTasks:
         return message_page(
             request,
-            title="暂时不能开始新的查找",
-            message="服务器上正在保留的临时查找太多了。请稍后再试，或先取消你不需要的查找。",
+            title=t("job.dweb.69"),
+            message=t("job.dweb.70"),
             status_code=503,
             user=user,
-            links=[(BASE, "返回找岗位")],
+            links=[(BASE, t("job.dweb.71"))],
         )
 
     if replaces:
         searches.store.discard(replaces, user.id, user.token_hash)
 
-    return see_other(f"{BASE}/tasks/{task.id}" + (f"?notice={notice}" if notice else ""))
+    return task
 
 
 # --- one search -------------------------------------------------------------------------
@@ -1312,14 +1594,13 @@ def _task(request: Request, user: CurrentUser, task_id: str):
 def gone_page(request: Request, user: CurrentUser) -> Response:
     return message_page(
         request,
-        title="找不到这次查找",
+        title=t("job.dweb.72"),
         message=(
-            f"它可能已经过期（临时结果保留 {TASK_TTL_SECONDS // 60} 分钟）、服务已重启、你已退出登录，或者它属于其他会话。"
-            "需要的话，请重新开始一次查找。"
+            t("job.dweb.73", p0=TASK_TTL_SECONDS // 60)
         ),
         status_code=404,
         user=user,
-        links=[(BASE, "返回找岗位")],
+        links=[(BASE, t("job.dweb.71"))],
     )
 
 
@@ -1349,7 +1630,7 @@ def task_page(task_id: str, request: Request, notice: str = "", user: CurrentUse
     }
 
     if task.stage is Stage.CANCELLED:
-        context["cancelled_by"] = presentation.CANCELLED_BY.get(task.cancelled_by, "这次查找已停止")
+        context["cancelled_by"] = presentation.CANCELLED_BY.get(task.cancelled_by, t("job.dweb.74"))
 
     # Why it did not run, when it did not: nothing was sent then.
     context["problem"] = presentation.problem_text(task.problem) if task.problem is not None else None
@@ -1374,7 +1655,7 @@ def review_page(request: Request, user: CurrentUser, task, *, notice=None, error
             "material": material,
             "scope_lines": presentation.scope_lines(task.confirmation.scope),
             "sources": [
-                (grant.name, presentation.evidence_label(grant.evidence, searches_of(request).sources.evidence_note))
+                (source_label(grant.name), presentation.evidence_label(grant.evidence, searches_of(request).sources.evidence_note))
                 for grant in task.confirmation.sources
             ],
             "limits": task.confirmation.limits,
@@ -1389,11 +1670,11 @@ def review_page(request: Request, user: CurrentUser, task, *, notice=None, error
             "LIVE_NOTICE": searches.notice,
             "service_lines": searches.service_lines(),
             "refusal": searches.start_problem(user.id),
+            "refusals": searches.start_problems(user.id),
             "SEND": SEND,
             "LEFT_OUT": LEFT_OUT,
             "BLOCKED": BLOCKED,
             "PREFERENCES_KEY": PREFERENCES_KEY,
-            "CATEGORY_LABELS": CATEGORY_LABELS,
             "found_labels": analysis_text.found_labels,
             "TASK_TTL_MINUTES": TASK_TTL_SECONDS // 60,
             # 临时留存并跟踪这次的推荐 (U3-D4b-2): held as confirmed, or why not although ticked.
@@ -1454,9 +1735,17 @@ def confirm(task_id: str, request: Request, user: CurrentUser = Depends(current_
         # not confirmed; it is redone with what is left now (D6 plan, 3.2).
         return new_review(request, user, task.draft.inputs, replaces=task.id, notice="batch_changed")
 
+    return start_reviewed(request, user, task, set(form.getlist("send")), form.get("action", ""), form.get("fingerprint", ""))
+
+
+def start_reviewed(request: Request, user: CurrentUser, task, chosen: set[str], action: str, fingerprint: str) -> Response:
+    """confirm()'s checks and start for a reviewed search: what is sent (chosen, of the sendable fields), the kept
+    directions and the skips read again, the batch and the service asked again, then one start under the write lock.
+    The one-step start (start_search) comes here with the reviewed selection and the fingerprint the server made."""
+    searches = searches_of(request)
     material = task.draft.material
     sendable = _sendable(material)
-    ticked = set(form.getlist("send")) & sendable
+    ticked = chosen & sendable
     inputs = task.draft.inputs
 
     if ticked != _sent(material):
@@ -1466,11 +1755,11 @@ def confirm(task_id: str, request: Request, user: CurrentUser = Depends(current_
         return _voided(request, user, task, inputs)
 
     if ticked != _sent(material):
-        notice = "scope_changed" if form.get("action") == "start" else "scope_updated"
+        notice = "scope_changed" if action == "start" else "scope_updated"
 
         return new_review(request, user, inputs, replaces=task.id, notice=notice)
 
-    if form.get("action") != "start":
+    if action != "start":
         return see_other(f"{BASE}/tasks/{task.id}")
 
     if searches.tracing():
@@ -1478,7 +1767,7 @@ def confirm(task_id: str, request: Request, user: CurrentUser = Depends(current_
             request,
             user,
             task,
-            error="环境里设置了可能打开 LangSmith 追踪的变量，所以没有开始，什么都没有发送。请去掉这些变量后重新启动本地网页。",
+            error=t("job.dweb.75"),
             status_code=409,
         )
 
@@ -1487,15 +1776,15 @@ def confirm(task_id: str, request: Request, user: CurrentUser = Depends(current_
     if refusal is not None:
         # Validation B and the D6 batch only: asked again right before the start; the batch's begin() asks once more,
         # under its lock, before it takes anything, and the search's binding once more inside the gate.
-        return review_page(request, user, task, error=f"{refusal}，所以没有开始，什么都没有发送。", status_code=409)
+        return review_page(request, user, task, error=t("job.dweb.76", p0=refusal), status_code=409)
 
     try:
         # The D6 batch's operation for this search: begun before it starts, or nothing starts (D6 plan, 3.2).
         operation = searches.begin_operation(OperationKind.SEARCH, user.id, task.id, _Stops(searches.store, task.id))
     except BatchRefused as refused:
-        return review_page(request, user, task, error=f"{refused}，所以没有开始，什么都没有发送。", status_code=409)
+        return review_page(request, user, task, error=t("job.dweb.76", p0=refused), status_code=409)
 
-    begun = _start(request, user, task, inputs, form.get("fingerprint", ""))
+    begun = _start(request, user, task, inputs, fingerprint)
 
     if isinstance(begun, str):
         searches.end_operation(operation, "not_started")
@@ -1544,7 +1833,7 @@ def confirm(task_id: str, request: Request, user: CurrentUser = Depends(current_
 
     if outcome is Start.BUSY:
         return review_page(
-            request, user, task, error="你已经有一个查找正在进行。请等它结束，或者取消它之后再开始。", status_code=409
+            request, user, task, error=t("job.dweb.77"), status_code=409
         )
 
     if outcome is Start.STALE_FORM:
@@ -1552,7 +1841,7 @@ def confirm(task_id: str, request: Request, user: CurrentUser = Depends(current_
             request,
             user,
             task,
-            error="这个确认来自旧的核对页面，所以没有开始。请看一遍下面最新的核对内容后再确认。",
+            error=t("job.dweb.78"),
             status_code=409,
         )
 
@@ -1670,7 +1959,7 @@ def outcome_context(request: Request, user: CurrentUser, task) -> dict:
 
         changed = bool(problems) or any(saved.get(item.field) != item.text for item in confirmation.preferences)
 
-    names = {grant.source_id: grant.name for grant in confirmation.sources}
+    names = {grant.source_id: source_label(grant.name) for grant in confirmation.sources}
     # What the user kept of it (U3-D3a), read from the library on every view; nothing here writes.
     sources = searches_of(request).sources
     keepable = records.search_keepable(task, sources.keep)
@@ -1708,9 +1997,13 @@ def outcome_context(request: Request, user: CurrentUser, task) -> dict:
         ],
         "trace_steps": [presentation.step_view(step) for step in finished.trace.steps],
         "searches": presentation.search_lines(outcome.searches, names),
-        "source_names": "、".join(grant.name for grant in confirmation.sources),
+        # A search that did not come to an answer, said short (plan 5.3); and whether any did, so that "nothing found"
+        # is never said of a search that could not look.
+        "failed_searches": presentation.failed_search_lines(outcome.searches, names),
+        "searched_any": any(record.outcome is Outcome.DONE for record in outcome.searches),
+        "source_names": list_join(source_label(grant.name) for grant in confirmation.sources),
         "end_label": presentation.end_label(outcome.end),
-        "NOT_PERSONALISED": NOT_PERSONALISED,
+        "NOT_PERSONALISED": NOT_PERSONALISED_TEXT,
         "UNLISTED_LABELS": presentation.UNLISTED_LABELS,
         "blocked_lines": presentation.blocked_lines(outcome.blocked),
         "end_note": presentation.end_note(outcome),
@@ -1718,10 +2011,13 @@ def outcome_context(request: Request, user: CurrentUser, task) -> dict:
         "versions": {source.entry.item_id: source.entry.version_number for source in material.sources},
         "stated": presentation.stated,
         "checked_text": partial(presentation.checked_text, note=searches_of(request).sources.checked_note),
+        "found_check_text": partial(presentation.found_check_text, note=searches_of(request).sources.checked_note),
         "SOURCE_SET": searches_of(request).sources,
         "place_text": presentation.place_text,
         "type_text": presentation.type_text,
         "partial_lines": [presentation.partial_text(read) for read in outcome.partial],
+        # Each combination in the page's language; the outcome keeps them as the rules wrote them.
+        "unsearched_lines": [rules.combination_words(shown) for shown in outcome.unsearched],
         "deadlines_text": presentation.deadlines_text,
         "evidence_label": partial(presentation.evidence_label, note=searches_of(request).sources.evidence_note),
         "shown_ref": synthetic_ref,
@@ -1730,7 +2026,6 @@ def outcome_context(request: Request, user: CurrentUser, task) -> dict:
         "reason_labels": analysis_text.reason_labels,
         "BASIS_LABELS": analysis_text.BASIS_LABELS,
         "GROUP_HEADINGS": analysis_text.GROUP_HEADINGS,
-        "PREFERENCE_TOPICS": PREFERENCE_TOPICS,
         "Group": RequirementGroup,
         "Category": Category,
     }
